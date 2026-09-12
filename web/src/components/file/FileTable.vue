@@ -523,6 +523,27 @@ onUnmounted(() => {
 function handleHeaderMenuKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") closeDirectoryContextMenu();
 }
+
+// #region 兼容ios上长按开启右键菜单
+let contextMenuTouchTimer: number | null = null;
+function clearContextMenuTouchTimer() {
+  if (contextMenuTouchTimer != null) {
+    clearTimeout(contextMenuTouchTimer);
+    contextMenuTouchTimer = null;
+  }
+}
+function handleContextMenuTouchStart(event: TouchEvent, file: FileItem) {
+  if (!props.isAdmin) return;
+  if (event.touches.length !== 1) return
+  const touch = event.touches[0];
+  clearContextMenuTouchTimer();
+  contextMenuTouchTimer = window.setTimeout(() => {
+    event.preventDefault();
+    contextMenuTouchTimer = null;
+    openContextMenu(new MouseEvent("",{clientX:touch.clientX, clientY:touch.clientY}), file);
+  }, 500);
+}
+// #endregion
 </script>
 
 <template>
@@ -623,6 +644,10 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
           :draggable="isAdmin && !isInlineProcessing(f) && !isInlineRenaming(f)"
           @click="onRowClick($event, f)"
           @contextmenu.prevent.stop="openContextMenu($event, f)"
+          @touchstart="handleContextMenuTouchStart($event, f)"
+          @touchmove="clearContextMenuTouchTimer"
+          @touchend="clearContextMenuTouchTimer"
+          @touchcancel="clearContextMenuTouchTimer"
           @dragstart="handleDragStart($event, f)"
           @drag="handleDragMove($event)"
           @dragend="handleDragEnd"
@@ -930,6 +955,11 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
 </template>
 
 <style scoped>
+tr {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .file-list {
   overflow-x: auto;
   position: relative;

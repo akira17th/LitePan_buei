@@ -1,3 +1,8 @@
+> 在原项目基础上增加：
+> 1. 兼容ios端，长按表格行弹出右键菜单
+>
+> 0. 自动打包到GHCR（仅amd64），docker image: ghcr.io/akira17th/litepan_buei:latest
+
 <a name="readme-top"></a>
 
 <div align="center">
