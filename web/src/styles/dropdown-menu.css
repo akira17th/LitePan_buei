@@ -137,4 +137,6 @@
 .menu-panel--floating {
   position: fixed;
   z-index: var(--z-dropdown);
+  -webkit-user-select: none;
+  user-select: none;
 }
