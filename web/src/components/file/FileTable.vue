@@ -7,6 +7,7 @@ import type { DeleteFileHooks } from "@/composables/useFileActions";
 import { useFileTableInline } from "@/composables/useFileTableInline";
 import FileIcon from "./FileIcon.vue";
 import FileTableHeader from "./FileTableHeader.vue";
+import FileInlineConfirmButtons from "./FileInlineConfirmButtons.vue";
 import FileGridSortMenu from "./FileGridSortMenu.vue";
 import FileContextMenu from "./FileContextMenu.vue";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
@@ -603,24 +604,12 @@ function handleContextMenuTouchStart(event: TouchEvent, file: FileItem) {
                 @keydown.esc.prevent="cancelInlineCreateFolder()"
                 @blur="submitInlineCreateFolder()"
               />
-              <button
-                type="button"
-                class="folder-inline-btn confirm"
-                title="确认"
-                @mousedown.prevent
-                @click="submitInlineCreateFolder()"
-              >
-                ✓
-              </button>
-              <button
-                type="button"
-                class="folder-inline-btn cancel"
-                title="取消"
-                @mousedown.prevent
-                @click="cancelInlineCreateFolder()"
-              >
-                ×
-              </button>
+              <FileInlineConfirmButtons
+                confirm-title="确认"
+                cancel-title="取消"
+                @confirm="submitInlineCreateFolder()"
+                @cancel="cancelInlineCreateFolder()"
+              />
             </div>
           </td>
           <td class="size-col">-</td>
@@ -682,24 +671,12 @@ function handleContextMenuTouchStart(event: TouchEvent, file: FileItem) {
                 @keydown.esc.prevent="cancelInlineRename()"
                 @blur="submitInlineRename()"
               />
-              <button
-                type="button"
-                class="folder-inline-btn confirm"
-                title="确认"
-                @mousedown.prevent
-                @click="submitInlineRename()"
-              >
-                ✓
-              </button>
-              <button
-                type="button"
-                class="folder-inline-btn cancel"
-                title="取消"
-                @mousedown.prevent
-                @click="cancelInlineRename()"
-              >
-                ×
-              </button>
+              <FileInlineConfirmButtons
+                confirm-title="确认"
+                cancel-title="取消"
+                @confirm="submitInlineRename()"
+                @cancel="cancelInlineRename()"
+              />
             </div>
             <div v-else class="file-name" @click.stop="emit('open', f)">
               <span class="file-icon-wrap"><FileIcon :file="f" :size="18" /></span>
@@ -789,22 +766,7 @@ function handleContextMenuTouchStart(event: TouchEvent, file: FileItem) {
                 @keydown.esc.prevent="cancelInlineCreateFolder()"
                 @blur="submitInlineCreateFolder()"
               />
-              <button
-                type="button"
-                class="folder-inline-btn confirm"
-                @mousedown.prevent
-                @click="submitInlineCreateFolder()"
-              >
-                ✓
-              </button>
-              <button
-                type="button"
-                class="folder-inline-btn cancel"
-                @mousedown.prevent
-                @click="cancelInlineCreateFolder()"
-              >
-                ×
-              </button>
+              <FileInlineConfirmButtons @confirm="submitInlineCreateFolder()" @cancel="cancelInlineCreateFolder()" />
             </div>
           </div>
         </article>
@@ -861,22 +823,7 @@ function handleContextMenuTouchStart(event: TouchEvent, file: FileItem) {
               @blur="submitInlineRename()"
             />
             <div class="inline-rename-wrap">
-              <button
-                type="button"
-                class="folder-inline-btn confirm"
-                @mousedown.prevent
-                @click="submitInlineRename()"
-              >
-                ✓
-              </button>
-              <button
-                type="button"
-                class="folder-inline-btn cancel"
-                @mousedown.prevent
-                @click="cancelInlineRename()"
-              >
-                ×
-              </button>
+              <FileInlineConfirmButtons @confirm="submitInlineRename()" @cancel="cancelInlineRename()" />
             </div>
           </div>
 
@@ -980,7 +927,6 @@ tr {
   color: var(--text-muted);
 }
 
-.state--empty p,
 .state--empty-cell {
   margin: 0;
   font-style: italic;
