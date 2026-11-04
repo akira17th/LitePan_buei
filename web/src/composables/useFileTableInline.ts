@@ -25,6 +25,7 @@ export function useFileTableInline(options: {
   createFolder: (name: string) => Promise<boolean>;
   deleteFile: (file: FileItem, hooks?: DeleteFileHooks) => Promise<boolean>;
   downloadFile: (file: FileItem) => void;
+  openExternalApp: (file: FileItem, extApp: string) => void;
   moveFile: (file: FileItem) => void;
   copyFile: (file: FileItem) => void;
   batchDeleteFiles: () => void;
@@ -166,6 +167,12 @@ export function useFileTableInline(options: {
       { action: useBatchActions ? "batch-move" : "move", label: useBatchActions ? "批量移动" : "移动到" },
       { action: useBatchActions ? "batch-copy" : "copy", label: useBatchActions ? "批量复制" : "复制到" },
     );
+    // #region iina/infuse打开
+    if (!file.is_dir && /\.(mp4|mkv|mov|webm)$/i.test(file.name)) {
+      items.push({ action: "open-infuse", label: "用 Infuse 打开" });
+      items.push({ action: "open-iina", label: "用 IINA 打开" });
+    }
+    // #endregion
     return items;
   }
 
@@ -287,6 +294,9 @@ export function useFileTableInline(options: {
     if (action === "batch-delete") options.batchDeleteFiles();
     if (action === "batch-move") options.batchMoveFiles();
     if (action === "batch-copy") options.batchCopyFiles();
+
+    if (action === "open-iina") options.openExternalApp(file, "iina");
+    if (action === "open-infuse") options.openExternalApp(file, "infuse");
   }
 
   function handleClickOutside() {

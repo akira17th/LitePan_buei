@@ -1134,6 +1134,7 @@ homeFooterStatus.onOpenTaskPanel(openTaskPanel);
             :create-folder="fileActions.createFolder"
             :delete-file="fileActions.deleteFile"
             :download-file="fileActions.downloadFile"
+            :open-external-app="fileActions.openExternalApp"
             :move-file="fileActions.requestSingleMove"
             :copy-file="fileActions.requestSingleCopy"
             :batch-delete-files="fileActions.requestBatchDelete"

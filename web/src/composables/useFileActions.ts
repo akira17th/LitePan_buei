@@ -325,6 +325,25 @@ export function useFileActions(options: {
     toast.success(`开始下载：${file.name}`);
   }
 
+  // 用外部播放器打开
+  function openExternalApp(file: FileItem, extApp: string) {
+    const accountId = options.getAccountId();
+    if (accountId == null || file.is_dir) return;
+    if (extApp !== "iina" && extApp !== "infuse") {
+      toast.warning(`不支持的外部程序：${file.name}`);
+      return
+    }
+    const url = filesApi.downloadURL(accountId, file.id, file.name);
+    const encodedUrl = encodeURIComponent(window.location.href.replace(/\/+$/, '') + '/' + url.replace(/^\/+/, ''));
+    const link = document.createElement("a");
+    if (extApp === "iina") link.href = "iina://weblink?url=" + encodedUrl;
+    if (extApp === "infuse") link.href = 'infuse://x-callback-url/play?url=' + encodedUrl;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
   function requestSingleMove(file: FileItem) {
     openTransfer("move", [file]);
   }
@@ -410,5 +429,6 @@ export function useFileActions(options: {
     requestBatchDelete,
     requestBatchMove,
     requestBatchCopy,
+    openExternalApp,
   };
 }

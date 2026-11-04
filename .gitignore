@@ -16,6 +16,7 @@
 .DS_Store
 .idea/
 .vscode/
+.tools/
 
 # 前端依赖与本地缓存
 web/node_modules/
