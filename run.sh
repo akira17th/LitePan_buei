@@ -10,6 +10,7 @@ export GOPATH="$PROJECT_DIR/.tools/gopath"
 export GOMODCACHE="$GOPATH/pkg/mod"
 export GOCACHE="$PROJECT_DIR/.tools/gocache"
 export GOTOOLCHAIN=local
+export LITEPAN_CORS_ORIGINS="http://10.0.0.5:5173,http://10.0.0.5:5211"
 
 # 检查环境
 for cmd in go npm; do

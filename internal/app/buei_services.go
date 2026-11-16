@@ -1,0 +1,23 @@
+package app
+
+import (
+	"litepan/internal/buei/guangyashare"
+	"litepan/internal/logx"
+	"litepan/internal/store"
+)
+
+// bueiServices 汇总 buei 定制服务，避免上游 servicesBundle 导入具体功能包。
+type bueiServices struct {
+	guangyaShare *guangyashare.Service
+}
+
+func wireBueiServices(st *storeBundle, core *coreBundle, logs *logx.Manager) *bueiServices {
+	return &bueiServices{
+		guangyaShare: guangyashare.New(guangyashare.Options{
+			Exec:     core.exec,
+			Accounts: st.store.Accounts,
+			Links:    store.NewGuangyaShareLinkRepo(st.db),
+			Log:      logs.For(logx.ModuleSystem),
+		}),
+	}
+}

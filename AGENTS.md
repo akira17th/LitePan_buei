@@ -76,6 +76,7 @@
 | 本地一键启动脚本 | `run.sh` |
 | 本地运行 / 镜像构建说明 | `readme_run.md` |
 | README 定制说明 | `README.md` |
+| 光鸭分享收藏（收藏链接 / 解析 / 类型勾选 / 转存） | `internal/buei/guangyashare/`、`internal/store/buei_guangya_share_repo.go`、`drivers/Guangya/buei_share.go`、`internal/api/buei_guangya_share.go`、`web/src/components/buei/` |
 | `.tools/` 忽略 | `.gitignore` |
 | 删除一条上游注释（无功能影响） | `drivers/all.go` |
 
@@ -357,7 +358,7 @@ HTTP
 - 迁移文件在 `internal/store/migrations/NNNN_name.sql`，按版本号顺序执行，记录在 `schema_migrations`。
 - 迁移 SQL 按分号拆分执行，**字符串字面量里不要出现分号**。
 - 已执行的迁移绝不能修改或改编号；只能新增后续迁移。
-- 当前最新迁移为 `0022_upload_task_batches.sql`；buei 新迁移从 `0023` 起。
+- 当前最新迁移为 `0023_buei_guangya_share_links.sql`；buei 新迁移从 `0024` 起。
 
 ### 4.8 全局设置
 
@@ -586,7 +587,7 @@ import _ "litepan/drivers/BueiXxx"
 internal/domain/buei_myfeature.go       # 实体 + Repository 接口
 internal/store/buei_myfeature_repo.go   # type myFeatureRepo struct{ db *DB }
                                         # func NewMyFeatureRepo(db *DB) *myFeatureRepo
-internal/store/migrations/0023_buei_myfeature.sql
+internal/store/migrations/0024_buei_myfeature.sql
 ```
 
 - 在 `internal/app/wire_buei.go` 里用 `store.NewMyFeatureRepo(st.db)` 构造，传给服务。
@@ -597,7 +598,7 @@ internal/store/migrations/0023_buei_myfeature.sql
 
 ### 7.5 新增迁移
 
-1. 从当前最大编号 +1 开始，例如 `0023_buei_myfeature.sql`。
+1. 从当前最大编号 +1 开始，例如 `0024_buei_myfeature.sql`。
 2. 文件名格式必须是 `NNNN_name.sql`（迁移加载器按第一个 `_` 解析版本号）。
 3. 迁移内容会被按 `;` 拆分逐条执行；不要在字符串字面量里写分号。
 4. 已发布/已执行的迁移不能改内容或改编号；需要变更就新增下一号迁移。

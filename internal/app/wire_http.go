@@ -164,6 +164,7 @@ func wireHTTPServer(cfg config.Config, logs *logx.Manager, st *storeBundle, core
 		DataDir:           cfg.DataDir,
 		StrmDir:           cfg.StrmDir,
 		OnSettingsUpdated: cacheSettingsHook(core.cache, st.settings, cfg.DataDir),
+		Buei:              api.BueiDeps{GuangyaShare: svc.buei.guangyaShare}, // buei: extension deps
 	})
 
 	return &http.Server{

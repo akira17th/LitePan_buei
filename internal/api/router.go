@@ -97,6 +97,7 @@ type Deps struct {
 	DataDir           string
 	StrmDir           string
 	OnSettingsUpdated func(map[string]string)
+	Buei              BueiDeps // buei: extension deps
 }
 
 // Handler 持有处理请求所需的依赖。
@@ -140,6 +141,7 @@ type Handler struct {
 	dataDir           string
 	strmDir           string
 	onSettingsUpdated func(map[string]string)
+	buei              BueiDeps // buei: extension deps
 
 	devMu       sync.Mutex
 	devUnlocked bool
@@ -192,6 +194,7 @@ func NewRouter(d Deps) http.Handler {
 		dataDir:           d.DataDir,
 		strmDir:           d.StrmDir,
 		onSettingsUpdated: d.OnSettingsUpdated,
+		buei:              d.Buei, // buei: extension deps
 	}
 
 	r := chi.NewRouter()
@@ -384,6 +387,9 @@ func NewRouter(d Deps) http.Handler {
 					r.Post("/execute", h.executeSpaceCleanup)
 					r.Get("/report", h.latestSpaceCleanupReport)
 				})
+				// #region buei:extension routes
+				h.registerBueiRoutes(r)
+				// #endregion buei:extension routes
 				r.Route("/tools/cover-extract", func(r chi.Router) {
 					r.Put("/enabled", h.updateCoverExtractEnabled)
 					r.Get("/files", h.listCoverExtractFiles)

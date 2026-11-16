@@ -54,9 +54,13 @@ type servicesBundle struct {
 	fnosProxy        *fnosproxy.Service
 	favorites        *favorites.Service
 	quarktv          *quarktv.Service
+	buei             *bueiServices // buei: extension services
 }
 
 func wireServices(cfg config.Config, logs *logx.Manager, st *storeBundle, core *coreBundle) *servicesBundle {
+	// #region buei:extension services
+	bueiSvc := wireBueiServices(st, core, logs)
+	// #endregion buei:extension services
 	var startupGate <-chan struct{}
 	if core != nil && core.sched != nil {
 		startupGate = core.sched.StartupReady()
@@ -240,5 +244,6 @@ func wireServices(cfg config.Config, logs *logx.Manager, st *storeBundle, core *
 		fnosProxy:        fnosProxySvc,
 		favorites:        favoritesSvc,
 		quarktv:          quarktvSvc,
+		buei:             bueiSvc, // buei: extension services
 	}
 }

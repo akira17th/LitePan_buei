@@ -19,6 +19,9 @@ import LocalUploadToolCard from "@/components/admin/LocalUploadToolCard.vue";
 import ProxyToolsPanel from "@/components/admin/ProxyToolsPanel.vue";
 import QuarkTVToolCard from "@/components/admin/QuarkTVToolCard.vue";
 import StrmDeleteToolCard from "@/components/admin/StrmDeleteToolCard.vue";
+// #region buei:guangya-share
+import BueiGuangyaShareToolCard from "@/components/buei/BueiGuangyaShareToolCard.vue";
+// #endregion buei:guangya-share
 import SvgIcon from "@/components/icons/SvgIcon.vue";
 
 const props = withDefaults(defineProps<{ searchOpen?: boolean }>(), { searchOpen: false });
@@ -28,7 +31,7 @@ const { runLoad } = useSettingsLoad();
 
 const searchQuery = ref("");
 const searchInputRef = ref<HTMLInputElement | null>(null);
-const cardTitles = ["Emby/Jellyfin 反代", "飞牛影视反代", "115 STRM 增强", "夸克 STRM 接管", "AI 辅助识别", "目录整理分类", "从服务器上传", "垃圾清理工具", "视频海报生成", "STRM 删除监控"];
+const cardTitles = ["Emby/Jellyfin 反代", "飞牛影视反代", "115 STRM 增强", "夸克 STRM 接管", "AI 辅助识别", "目录整理分类", "从服务器上传", "垃圾清理工具", "视频海报生成", "STRM 删除监控", "光鸭分享收藏"];
 
 function matches(title: string) {
   return containsQuery(title, searchQuery.value);
@@ -181,6 +184,10 @@ async function clearCache() {
       <CoverExtractToolCard :search-query="searchQuery" />
 
       <StrmDeleteToolCard :search-query="searchQuery" />
+
+      <!-- #region buei:guangya-share -->
+      <BueiGuangyaShareToolCard :search-query="searchQuery" />
+      <!-- #endregion buei:guangya-share -->
     </div>
     <div v-if="!hasMatch" class="tool-search__empty">没有找到相关工具</div>
   </div>
