@@ -210,7 +210,10 @@ export const useBrowserStore = defineStore("browser", () => {
   async function openFavorite(favorite: BrowserFavoriteItem) {
     const accountId = currentAccountId.value;
     if (accountId == null) return;
-    await openDirectory(accountId, favorite.crumbs, { silent: true });
+    // #region buei:browser-url
+    // 收藏夹跳转也走可见加载流程，确保 URL 在列表加载成功后才写入。
+    await openDirectory(accountId, favorite.crumbs);
+    // #endregion
   }
 
   async function ensureValidCurrentAccount() {
@@ -293,10 +296,15 @@ export const useBrowserStore = defineStore("browser", () => {
         await loadFavorites(accountId, { silent: true });
       }
     }
-    breadcrumb.value = crumbs.length ? cloneCrumbs(crumbs) : [ROOT];
+    // #region buei:browser-url
+    const nextCrumbs = crumbs.length ? cloneCrumbs(crumbs) : [ROOT];
+    breadcrumb.value = nextCrumbs;
+    const attemptedParentId = nextCrumbs[nextCrumbs.length - 1]?.id ?? "";
     if (await loadFiles(opts)) return;
-    // 同一账号内跳转失败就退回原路径；跨账号时账号已经切走，不回滚
-    if (sameAccount) breadcrumb.value = previous;
+    // 同一账号内跳转失败就退回原路径；跨账号时账号已经切走，不回滚。
+    // 只有当前仍停在这次尝试的目录时才回滚，避免旧请求覆盖快速前进/后退的新位置。
+    if (sameAccount && currentParentId.value === attemptedParentId) breadcrumb.value = previous;
+    // #endregion
   }
 
   async function fetchCacheHitRate() {
@@ -342,7 +350,11 @@ export const useBrowserStore = defineStore("browser", () => {
       if (!silent) toast.error(error.value);
       return false;
     } finally {
-      if (!silent && requestSeq === loadFilesSeq) loading.value = false;
+      // #region buei:browser-url
+      // 静默请求也可能取代正在显示 loading 的请求；只要它是最新请求，就要负责收尾，
+      // 否则 loading 会永久卡住，URL 同步和列表骨架都无法恢复。
+      if (requestSeq === loadFilesSeq) loading.value = false;
+      // #endregion
     }
   }
 
@@ -414,11 +426,15 @@ export const useBrowserStore = defineStore("browser", () => {
     breadcrumb.value = previous;
   }
 
+  // #region buei:browser-url
   async function goTo(index: number) {
     if (index >= breadcrumb.value.length - 1) return;
+    const previous = breadcrumb.value;
     breadcrumb.value = breadcrumb.value.slice(0, index + 1);
-    await loadFiles();
+    if (await loadFiles()) return;
+    breadcrumb.value = previous;
   }
+  // #endregion
 
   function downloadURL(file: FileItem): string {
     return filesApi.downloadURL(currentAccountId.value as number, file.id);

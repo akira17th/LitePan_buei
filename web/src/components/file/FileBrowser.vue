@@ -21,6 +21,10 @@ import { getApiErrorMessage } from "@/api/client";
 import { generateCurrentDirectoryStrm } from "@/api/strm";
 import { useStrmDirectoryPrompt } from "@/composables/useStrmDirectoryPrompt";
 import { useHomeFooterStatus } from "@/composables/useHomeFooterStatus";
+// #region buei:browser-url
+import { useBueiBrowserUrlSync } from "@/composables/useBueiBrowserUrlSync";
+import { browserLocationKey, parseBrowserLocationQuery } from "@/utils/bueiBrowserLocation";
+// #endregion
 import { fileKind } from "@/utils/fileIcon";
 import { publicApi } from "@/api/public";
 import AccountSelector from "./AccountSelector.vue";
@@ -101,6 +105,26 @@ const shareCreateOpen = ref(false);
 const shareManageOpen = ref(false);
 const shareFiles = ref<FileItem[]>([]);
 let nameAlignApplyTimer: number | undefined;
+
+// #region buei:browser-url
+const browserUrlSync = useBueiBrowserUrlSync({
+  route,
+  router,
+  accountId: currentAccountId,
+  breadcrumb,
+  loading,
+  bootstrapping: browserBootstrapping,
+  accountExists: (accountId) => accounts.value.some((account) => account.id === accountId),
+  applyLocation: async (location, opts) => {
+    await store.openDirectory(location.accountId, location.crumbs, {
+      silent: opts?.silent ?? false,
+    });
+  },
+  onInvalid: (reason) => {
+    toast.error(`目录链接无效：${reason}`);
+  },
+});
+// #endregion
 
 // 悬浮账号列表与简约模式不冲突：简约模式下左侧仍保留悬浮图标，账号下拉选择则不渲染。
 const floatingAccountSwitchEnabled = computed(
@@ -653,10 +677,26 @@ function handleOfflineTasksCreated(tasks: OfflineDownloadTask[]) {
   void uploadApi.openUploadTaskPanel("offline");
 }
 
-const initialLocation = !hasPendingBrowserLocationReset() ? loadSavedBrowserLocation() : null;
+// #region buei:browser-url
+const initialRouteParse = parseBrowserLocationQuery(route.query);
+const initialRouteLocation = initialRouteParse.status === "valid" ? initialRouteParse.location : null;
+const initialLocation =
+  initialRouteLocation ??
+  (initialRouteParse.status === "none" && !hasPendingBrowserLocationReset()
+    ? loadSavedBrowserLocation()
+    : null);
 if (initialLocation) {
   store.primeLocation(initialLocation.accountId, initialLocation.crumbs);
 }
+
+function currentLocationKey(): string {
+  if (currentAccountId.value == null) return "";
+  return browserLocationKey({
+    accountId: currentAccountId.value,
+    crumbs: breadcrumb.value.length ? breadcrumb.value : [{ id: "", name: "根目录" }],
+  });
+}
+// #endregion
 
 function openFavoriteNameModal() {
   if (currentParentId.value === "") {
@@ -935,17 +975,35 @@ onMounted(async () => {
   // 公共系统配置只影响账号切换 UI 与 STRM 提示，不在文件首屏关键路径上，后台并行拉取。
   void loadPublicSystemConfig();
   await store.loadAccounts();
-  if (accounts.value.length) {
-    const shouldResetToHome = consumeResetBrowserLocationOnce();
-    if (shouldResetToHome) {
-      await store.resetToDefaultAccount();
-    } else {
-      const restored = await restoreBrowserLocation();
-      if (!restored) {
-        await store.resetToDefaultAccount();
+  const shouldResetToHome = consumeResetBrowserLocationOnce();
+  // #region buei:browser-url
+  if (!accounts.value.length) {
+    await store.resetToDefaultAccount();
+  } else if (initialRouteParse.status === "valid") {
+    const target = initialRouteParse.location;
+    if (accounts.value.some((account) => account.id === target.accountId)) {
+      await store.openDirectory(target.accountId, target.crumbs, { silent: true });
+      if (error.value || currentLocationKey() !== browserLocationKey(target)) {
+        await store.selectAccount(target.accountId);
+        toast.error("目录链接无效，已回到该账号根目录");
       }
+    } else {
+      await store.resetToDefaultAccount();
+      toast.error("目录链接无效，已回到默认目录");
+    }
+  } else if (initialRouteParse.status === "invalid") {
+    await store.resetToDefaultAccount();
+    toast.error("目录链接无效，已回到默认目录");
+  } else if (shouldResetToHome) {
+    await store.resetToDefaultAccount();
+  } else {
+    const restored = await restoreBrowserLocation();
+    if (!restored) {
+      await store.resetToDefaultAccount();
     }
   }
+  await browserUrlSync.start();
+  // #endregion
   browserBootstrapping.value = false;
   await nextTick();
   window.requestAnimationFrame(() => {

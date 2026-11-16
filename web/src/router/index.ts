@@ -29,7 +29,7 @@ export const router = createRouter({
   routes,
 });
 
-router.beforeEach(async (to) => {
+router.beforeEach(async (to, from) => {
   if (to.meta.title) {
     document.title = `${String(to.meta.title)} - LitePan`;
   }
@@ -66,6 +66,10 @@ router.beforeEach(async (to) => {
   }
 
   if (to.name === "home") {
+    // #region buei:browser-url
+    // 同一首页内切换目录只是 query 变化，复用已加载的认证状态，避免每次点击都请求 /auth/status。
+    if (from.name === "home" && auth.loaded && (auth.sessionAdmin || auth.publicIndexEnabled)) return true;
+    // #endregion
     if (auth.loaded && auth.sessionAdmin) return true;
     try {
       const status = await fetchAuthStatus();
