@@ -2,7 +2,7 @@ name: Build and Publish Docker Image
 
 on:
   push:
-    branches: [main]      # 推 main 分支立即触发
+    branches: [buei]      # 推 buei 分支立即触发
     tags: ['v*']          # 打 v 开头的 tag 触发
   workflow_dispatch:      # 允许在 Actions 页面手动触发
 
@@ -43,7 +43,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/buei' }}
 
       - name: Build and push
         uses: docker/build-push-action@v6

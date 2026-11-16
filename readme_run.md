@@ -155,7 +155,7 @@ name: Build and Publish Docker Image
 
 on:
   push:
-    branches: [main]      # 推 main 分支立即触发
+    branches: [buei]      # 推 buei 分支立即触发
     tags: ['v*']          # 打 v 开头的 tag 触发
   workflow_dispatch:      # 允许在 Actions 页面手动触发
 
@@ -196,13 +196,13 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/buei' }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64   # 当前只构建 amd64；需要 arm64 可改为 linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -212,9 +212,9 @@ jobs:
 
 > 提示：
 > - 最终镜像地址为 `ghcr.io/你的用户名/litepan_buei`（`你的用户名` 即仓库所属账号，自动取自 `github.repository_owner`）。
-> - `platforms` 默认同时构建 `amd64` 和 `arm64`（NAS 常用 arm64）。如果觉得构建太慢，
->   可以只保留 `linux/amd64`。
+> - 当前 workflow 只构建 `linux/amd64`；需要 arm64（NAS 常用）时，把 `platforms` 改成 `linux/amd64,linux/arm64`，构建时间会明显变长。
 > - 想改镜像名，改 `IMAGE_NAME` 即可（GHCR 要求全小写）。
+> - 推 `buei` 分支会更新 `latest`；其它分支不会自动触发（`v*` tag 仍会构建）。
 > - 打 tag 如 `v0.5.1` 时，会自动额外生成 `0.5.1`、`0.5` 这样的标签。
 
 ### 4.3 推送代码触发构建
@@ -223,14 +223,14 @@ jobs:
 cd LitePan_buei
 git add .
 git commit -m "add docker build workflow"
-git push origin main
+git push origin buei
 ```
 
 推送后：
 
 1. 打开仓库的 `Actions` 标签页，能看到 `Build and Publish Docker Image` 正在运行。
 2. 绿色 ✓ 表示构建并推送成功。
-3. 之后每次 `git push origin main` 或 `git push origin v0.5.1`（tag）都会自动触发。
+3. 之后每次 `git push origin buei` 或 `git push origin v0.5.1`（tag）都会自动触发；推 `buei` 会同时更新 `latest` 镜像。
 
 ### 4.4 拉取 / 使用自动打包的镜像
 
@@ -411,8 +411,8 @@ docker run -d \
 **Q4：FUSE 挂载不可用 / 报 `fuse: device not found`？**
 Docker 方式需要 `--device /dev/fuse:/dev/fuse`、`privileged: true`、`pid: "host"`，且宿主机内核支持 fuse。不用挂载功能可忽略。
 
-**Q5：GitHub Actions 构建 arm64 太慢或超时？**
-把 workflow 里 `platforms: linux/amd64,linux/arm64` 改成 `platforms: linux/amd64`。
+**Q5：想让 GitHub Actions 构建 arm64？**
+当前 workflow 只构建 `linux/amd64`。把 `platforms` 改成 `linux/amd64,linux/arm64` 即可；构建会明显变慢，必要时再改回只保留 amd64。
 
 **Q6：不想每次 push 都触发构建？**
 删掉 workflow 里的 `push:` 段，只保留 `workflow_dispatch:`，改成在 Actions 页面手动点 `Run workflow`。
