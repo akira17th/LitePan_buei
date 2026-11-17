@@ -9,6 +9,7 @@ func (h *Handler) registerBueiRoutes(r chi.Router) {
 		r.Post("/parse", h.bueiGuangyaShareParse)
 		r.Post("/list", h.bueiGuangyaShareList)
 		r.Post("/transfer", h.bueiGuangyaShareTransfer)
+		r.Post("/discard", h.bueiGuangyaShareDiscard)
 		r.Get("/saved", h.bueiGuangyaShareSavedList)
 		r.Delete("/saved/{id}", h.bueiGuangyaShareSavedDelete)
 	})

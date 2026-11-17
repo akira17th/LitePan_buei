@@ -6,12 +6,13 @@ import (
 )
 
 // 文件大类，前端据此做快速勾选与筛选。与光鸭 fileType 枚举不完全一致：
-// 字幕/字体/代码/种子/安装包等统一归入 other，避免工具栏过长。
+// 字体/代码/种子/安装包等统一归入 other，字幕单独成类。
 const (
 	KindFolder   = "folder"
 	KindVideo    = "video"
 	KindAudio    = "audio"
 	KindImage    = "image"
+	KindSubtitle = "subtitle"
 	KindDocument = "document"
 	KindArchive  = "archive"
 	KindOther    = "other"
@@ -25,6 +26,7 @@ const (
 	fileTypeAudio    = 3
 	fileTypeDocument = 4
 	fileTypeArchive  = 5
+	fileTypeSubtitle = 6
 )
 
 var kindByExtension = map[string]string{
@@ -42,6 +44,13 @@ var kindByExtension = map[string]string{
 	".webp": KindImage, ".bmp": KindImage, ".svg": KindImage, ".heic": KindImage,
 	".tif": KindImage, ".tiff": KindImage, ".avif": KindImage, ".raw": KindImage,
 
+	".srt": KindSubtitle, ".ass": KindSubtitle, ".ssa": KindSubtitle,
+	".vtt": KindSubtitle, ".sub": KindSubtitle, ".idx": KindSubtitle,
+	".sup": KindSubtitle, ".smi": KindSubtitle, ".sami": KindSubtitle,
+	".mpl2": KindSubtitle, ".ttml": KindSubtitle, ".dfxp": KindSubtitle,
+	".sbv": KindSubtitle, ".pgs": KindSubtitle,
+	".usf": KindSubtitle, ".stl": KindSubtitle, ".mks": KindSubtitle,
+
 	".pdf": KindDocument, ".doc": KindDocument, ".docx": KindDocument, ".xls": KindDocument,
 	".xlsx": KindDocument, ".ppt": KindDocument, ".pptx": KindDocument, ".txt": KindDocument,
 	".md": KindDocument, ".epub": KindDocument, ".mobi": KindDocument, ".azw3": KindDocument,
@@ -56,6 +65,10 @@ func classifyKind(name string, fileType int, isDir bool) string {
 	if isDir {
 		return KindFolder
 	}
+	// 字幕后缀优先于光鸭 fileType，避免服务端把 .srt 等归到文档类。
+	if kindByExtension[strings.ToLower(path.Ext(name))] == KindSubtitle {
+		return KindSubtitle
+	}
 	switch fileType {
 	case fileTypeImage:
 		return KindImage
@@ -67,6 +80,8 @@ func classifyKind(name string, fileType int, isDir bool) string {
 		return KindDocument
 	case fileTypeArchive:
 		return KindArchive
+	case fileTypeSubtitle:
+		return KindSubtitle
 	}
 	if kind, ok := kindByExtension[strings.ToLower(path.Ext(name))]; ok {
 		return kind

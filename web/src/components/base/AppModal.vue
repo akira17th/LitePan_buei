@@ -18,8 +18,12 @@ const props = withDefaults(
     bodyFlush?: boolean;
     // headPlain：极简头部（白底、无分割线、与内容一体），用于极简风弹窗。
     headPlain?: boolean;
+    // #region buei:modal-wide
+    // wide：bare 弹窗允许更宽的宽度上限（左右分栏工作区）。
+    wide?: boolean;
+    // #endregion buei:modal-wide
   }>(),
-  { title: "", size: "md", bare: false, nested: false, footerDivider: false, bodyFlush: false, headPlain: false },
+  { title: "", size: "md", bare: false, nested: false, footerDivider: false, bodyFlush: false, headPlain: false, wide: false },
 );
 const emit = defineEmits<{ close: [] }>();
 
@@ -32,9 +36,10 @@ useModalDismiss(computed(() => props.open), () => emit("close"));
       <!-- overlay 滚动：溢出时滚动条在视口右侧，而非弹窗内部 -->
       <div v-if="open" class="overlay" :class="{ 'overlay--nested': nested }">
         <div class="overlay__center">
+          <!-- buei:modal-wide：bare 弹窗可通过 wide 放宽宽度上限 -->
           <div
             class="modal"
-            :class="bare ? 'modal--bare' : `modal--${size}`"
+            :class="[bare ? 'modal--bare' : `modal--${size}`, { 'modal--wide': wide }]"
             role="dialog"
           >
             <template v-if="bare">
@@ -130,6 +135,11 @@ useModalDismiss(computed(() => props.open), () => emit("close"));
   max-width: min(94vw, 960px);
   overflow: visible;
 }
+/* #region buei:modal-wide */
+.modal--wide {
+  max-width: min(94vw, 1240px);
+}
+/* #endregion buei:modal-wide */
 
 .modal__head {
   display: flex;

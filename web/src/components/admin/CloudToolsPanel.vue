@@ -129,6 +129,9 @@ async function clearCache() {
       </div>
     </div>
     <div class="cloud-tools__grid">
+      <!-- #region buei:guangya-share -->
+      <BueiGuangyaShareToolCard :search-query="searchQuery" />
+      <!-- #endregion buei:guangya-share -->
       <ProxyToolsPanel :search-query="searchQuery" />
       <ToolCard
         v-show="matches('115 STRM 增强')"
@@ -185,9 +188,6 @@ async function clearCache() {
 
       <StrmDeleteToolCard :search-query="searchQuery" />
 
-      <!-- #region buei:guangya-share -->
-      <BueiGuangyaShareToolCard :search-query="searchQuery" />
-      <!-- #endregion buei:guangya-share -->
     </div>
     <div v-if="!hasMatch" class="tool-search__empty">没有找到相关工具</div>
   </div>

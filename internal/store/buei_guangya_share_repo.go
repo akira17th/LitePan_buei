@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"litepan/internal/domain"
@@ -17,13 +19,15 @@ func NewGuangyaShareLinkRepo(db *DB) domain.GuangyaShareLinkRepository {
 	return &guangyaShareLinkRepo{db: db}
 }
 
-const guangyaShareLinkColumns = `id, share_id, url, password, title, owner, created_at, updated_at, last_used_at`
+const guangyaShareLinkColumns = `id, share_id, url, password, title, owner, created_at, updated_at, last_used_at,
+	last_account_id, last_parent_id, last_base_path, last_base_dirs, last_title, last_season, last_is_series,
+	last_browse_path, rename_replace_enabled, rename_replace_find, rename_replace_with`
 
 func (r *guangyaShareLinkRepo) List(ctx context.Context) ([]*domain.GuangyaShareLink, error) {
 	rows, err := r.db.read.QueryContext(ctx,
 		`SELECT `+guangyaShareLinkColumns+`
 		 FROM buei_guangya_share_links
-		 ORDER BY last_used_at DESC, id DESC`)
+		 ORDER BY id ASC`)
 	if err != nil {
 		return nil, wrapDB(err)
 	}
@@ -95,8 +99,42 @@ func (r *guangyaShareLinkRepo) Upsert(ctx context.Context, link *domain.GuangyaS
 	return saved, nil
 }
 
-func (r *guangyaShareLinkRepo) Delete(ctx context.Context, id int64) error {
-	result, err := r.db.write.ExecContext(ctx, `DELETE FROM buei_guangya_share_links WHERE id=?`, id)
+func (r *guangyaShareLinkRepo) UpdateDestination(ctx context.Context, shareID string, dest *domain.GuangyaShareDestination) error {
+	shareID = strings.TrimSpace(shareID)
+	if shareID == "" {
+		return domain.Errorf(domain.CodeValidation, "分享 ID 不能为空")
+	}
+	var (
+		accountID int64
+		parentID  string
+		basePath  string
+		baseDirs  = []byte("[]")
+		title     string
+		season    = 1
+		isSeries  = 1
+	)
+	if dest != nil {
+		accountID = dest.AccountID
+		parentID = dest.ParentID
+		basePath = dest.BasePath
+		dirs := dest.BaseDirs
+		if dirs == nil {
+			dirs = []string{}
+		}
+		if data, err := json.Marshal(dirs); err == nil {
+			baseDirs = data
+		}
+		title = dest.Title
+		season = dest.Season
+		isSeries = boolToInt(dest.IsSeries)
+	}
+	result, err := r.db.write.ExecContext(ctx,
+		`UPDATE buei_guangya_share_links
+		 SET last_account_id=?, last_parent_id=?, last_base_path=?, last_base_dirs=?, last_title=?,
+		     last_season=?, last_is_series=?, updated_at=?
+		 WHERE share_id=?`,
+		accountID, parentID, basePath, string(baseDirs), title, season, isSeries, tsValue(time.Now().UTC()), shareID,
+	)
 	if err != nil {
 		return wrapDB(err)
 	}
@@ -110,25 +148,139 @@ func (r *guangyaShareLinkRepo) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (r *guangyaShareLinkRepo) UpdateBrowsePath(ctx context.Context, shareID string, crumbs []domain.GuangyaShareBrowseCrumb) error {
+	shareID = strings.TrimSpace(shareID)
+	if shareID == "" {
+		return domain.Errorf(domain.CodeValidation, "分享 ID 不能为空")
+	}
+	if crumbs == nil {
+		crumbs = []domain.GuangyaShareBrowseCrumb{}
+	}
+	data, err := json.Marshal(crumbs)
+	if err != nil {
+		return wrapDB(err)
+	}
+	result, err := r.db.write.ExecContext(ctx,
+		`UPDATE buei_guangya_share_links SET last_browse_path=?, updated_at=? WHERE share_id=?`,
+		string(data), tsValue(time.Now().UTC()), shareID,
+	)
+	if err != nil {
+		return wrapDB(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return wrapDB(err)
+	}
+	if affected == 0 {
+		return domain.Errf(domain.CodeNotFound)
+	}
+	return nil
+}
+
+func (r *guangyaShareLinkRepo) UpdateRenameReplace(ctx context.Context, shareID string, rule domain.GuangyaShareRenameReplace) error {
+	shareID = strings.TrimSpace(shareID)
+	if shareID == "" {
+		return domain.Errorf(domain.CodeValidation, "分享 ID 不能为空")
+	}
+	result, err := r.db.write.ExecContext(ctx,
+		`UPDATE buei_guangya_share_links
+		 SET rename_replace_enabled=?, rename_replace_find=?, rename_replace_with=?, updated_at=?
+		 WHERE share_id=?`,
+		boolToInt(rule.Enabled), rule.Find, rule.ReplaceWith, tsValue(time.Now().UTC()), shareID,
+	)
+	if err != nil {
+		return wrapDB(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return wrapDB(err)
+	}
+	if affected == 0 {
+		return domain.Errf(domain.CodeNotFound)
+	}
+	return nil
+}
+
+func (r *guangyaShareLinkRepo) Delete(ctx context.Context, id int64) (string, error) {
+	tx, err := r.db.write.BeginTx(ctx, nil)
+	if err != nil {
+		return "", wrapDB(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var shareID string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT share_id FROM buei_guangya_share_links WHERE id=?`, id,
+	).Scan(&shareID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", domain.Errf(domain.CodeNotFound)
+		}
+		return "", wrapDB(err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM buei_guangya_share_links WHERE id=?`, id); err != nil {
+		return "", wrapDB(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", wrapDB(err)
+	}
+	return shareID, nil
+}
+
 type guangyaShareLinkScanner interface {
 	Scan(dest ...any) error
 }
 
 func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShareLink, error) {
 	var (
-		link      domain.GuangyaShareLink
-		createdAt sql.NullString
-		updatedAt sql.NullString
-		lastUsed  sql.NullString
+		link           domain.GuangyaShareLink
+		createdAt      sql.NullString
+		updatedAt      sql.NullString
+		lastUsed       sql.NullString
+		lastAccountID  int64
+		lastParentID   string
+		lastBasePath   string
+		lastBaseDirs   string
+		lastTitle      string
+		lastSeason     int
+		lastIsSeries   int
+		lastBrowsePath string
+		replaceEnabled int
+		replaceFind    string
+		replaceWith    string
 	)
 	if err := scanner.Scan(
 		&link.ID, &link.ShareID, &link.URL, &link.Password, &link.Title, &link.Owner,
 		&createdAt, &updatedAt, &lastUsed,
+		&lastAccountID, &lastParentID, &lastBasePath, &lastBaseDirs,
+		&lastTitle, &lastSeason, &lastIsSeries, &lastBrowsePath,
+		&replaceEnabled, &replaceFind, &replaceWith,
 	); err != nil {
 		return nil, err
 	}
 	link.CreatedAt = parseTS(createdAt)
 	link.UpdatedAt = parseTS(updatedAt)
 	link.LastUsedAt = parseTS(lastUsed)
+	if lastAccountID > 0 {
+		dest := &domain.GuangyaShareDestination{
+			AccountID: lastAccountID,
+			ParentID:  lastParentID,
+			BasePath:  lastBasePath,
+			Title:     lastTitle,
+			Season:    lastSeason,
+			IsSeries:  lastIsSeries != 0,
+		}
+		if strings.TrimSpace(lastBaseDirs) != "" {
+			_ = json.Unmarshal([]byte(lastBaseDirs), &dest.BaseDirs)
+		}
+		link.LastDestination = dest
+	}
+	if strings.TrimSpace(lastBrowsePath) != "" {
+		_ = json.Unmarshal([]byte(lastBrowsePath), &link.LastBrowsePath)
+	}
+	link.RenameReplace = domain.GuangyaShareRenameReplace{
+		Enabled:     replaceEnabled != 0,
+		Find:        replaceFind,
+		ReplaceWith: replaceWith,
+	}
 	return &link, nil
 }

@@ -82,6 +82,37 @@ func TestParseShareLink(t *testing.T) {
 	}
 }
 
+func TestNormalizeTargetPath(t *testing.T) {
+	got, err := normalizeTargetPath([]string{" 剧名 (2026) ", "Season 01"})
+	if err != nil {
+		t.Fatalf("normalizeTargetPath() error = %v", err)
+	}
+	if len(got) != 2 || got[0] != "剧名 (2026)" || got[1] != "Season 01" {
+		t.Fatalf("normalizeTargetPath() = %#v", got)
+	}
+
+	if got, err := normalizeTargetPath([]string{"/", ".."}); err == nil || got != nil {
+		t.Fatalf("invalid path should fail, got %#v, %v", got, err)
+	}
+}
+
+func TestSanitizeFolderName(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "  走马上任 (2026)  ", want: "走马上任 (2026)"},
+		{in: "a/b\\c:d*e?f\"g<h>i|j", want: "a b c d e f g h i j"},
+		{in: "..", want: ""},
+		{in: "\x00\x01", want: ""},
+	}
+	for _, tc := range tests {
+		if got := sanitizeFolderName(tc.in); got != tc.want {
+			t.Fatalf("sanitizeFolderName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestClassifyKind(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -97,7 +128,10 @@ func TestClassifyKind(t *testing.T) {
 		{name: "extension image", fileName: "poster.JPG", want: KindImage},
 		{name: "extension document", fileName: "book.epub", want: KindDocument},
 		{name: "extension archive", fileName: "pack.7z", want: KindArchive},
-		{name: "subtitle falls back to other", fileName: "sub.srt", want: KindOther},
+		{name: "subtitle extension", fileName: "sub.srt", want: KindSubtitle},
+		{name: "ass subtitle extension", fileName: "sub.ASS", want: KindSubtitle},
+		{name: "guangya subtitle type", fileName: "无扩展名", fileType: fileTypeSubtitle, want: KindSubtitle},
+		{name: "subtitle extension overrides document type", fileName: "sub.srt", fileType: fileTypeDocument, want: KindSubtitle},
 		{name: "unknown", fileName: "file.xyz", want: KindOther},
 	}
 	for _, tc := range tests {

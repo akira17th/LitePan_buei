@@ -2,6 +2,7 @@ package app
 
 import (
 	"litepan/internal/buei/guangyashare"
+	"litepan/internal/cache"
 	"litepan/internal/logx"
 	"litepan/internal/store"
 )
@@ -14,10 +15,15 @@ type bueiServices struct {
 func wireBueiServices(st *storeBundle, core *coreBundle, logs *logx.Manager) *bueiServices {
 	return &bueiServices{
 		guangyaShare: guangyashare.New(guangyashare.Options{
-			Exec:     core.exec,
-			Accounts: st.store.Accounts,
-			Links:    store.NewGuangyaShareLinkRepo(st.db),
-			Log:      logs.For(logx.ModuleSystem),
+			Exec:      core.exec,
+			Accounts:  st.store.Accounts,
+			Links:     store.NewGuangyaShareLinkRepo(st.db),
+			Transfers: store.NewGuangyaShareTransferredRepo(st.db),
+			Configs:   st.store.Configs,
+			Log:       logs.For(logx.ModuleSystem),
+			InvalidateDir: func(accountID int64, parentID string) {
+				cache.InvalidateDirKeys(core.cache, accountID, parentID)
+			},
 		}),
 	}
 }
