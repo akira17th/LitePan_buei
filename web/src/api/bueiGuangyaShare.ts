@@ -34,6 +34,8 @@ export interface GuangyaShareDestination {
   is_series: boolean;
   base_dirs?: string[];
   auto_strm: boolean;
+  auto_scrape: boolean;
+  auto_scrape_task_id: number;
 }
 
 export interface GuangyaShareRenameReplace {
@@ -123,6 +125,12 @@ export interface GuangyaShareTransferPayload {
   browse_path: GuangyaShareBrowseCrumb[];
   rename_replace: GuangyaShareRenameReplace;
   auto_strm: boolean;
+  auto_scrape?: boolean;
+  auto_scrape_task_id?: number;
+  refresh_emby?: boolean;
+  emby_config_id?: string;
+  emby_mode?: "global" | "library" | string;
+  emby_library_id?: string;
   progress_id?: string;
 }
 
@@ -130,6 +138,8 @@ export type GuangyaShareTransferPhase =
   | "transfer"
   | "rename"
   | "strm"
+  | "scrape"
+  | "emby"
   | "done"
   | "failed"
   | "";
@@ -150,6 +160,11 @@ export interface GuangyaShareTransferResult {
   strm_matched: boolean;
   strm_scheduled: boolean;
   strm_error?: string;
+  scrape_started: boolean;
+  scrape_error?: string;
+  emby_refreshed: boolean;
+  emby_scheduled: boolean;
+  emby_error?: string;
 }
 
 export const bueiGuangyaShareApi = {
@@ -177,12 +192,12 @@ export const bueiGuangyaShareApi = {
     }),
   deleteSaved: (id: number) =>
     http.del<{ deleted: boolean }>(`/admin/tools/guangya-share/saved/${id}`),
-  // 大文件夹转存需要等待服务端任务，给足超时时间。
+  // 大文件夹转存需要等待服务端任务；开启自动刮削时还要等索引重建，给足超时时间。
   transfer: (payload: GuangyaShareTransferPayload, signal?: AbortSignal) =>
     http.postWithTimeout<GuangyaShareTransferResult>(
       "/admin/tools/guangya-share/transfer",
       payload,
-      180_000,
+      300_000,
       signal,
     ),
 };

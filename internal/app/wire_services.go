@@ -95,6 +95,10 @@ func wireServices(cfg config.Config, logs *logx.Manager, st *storeBundle, core *
 		StrmDir:  cfg.StrmDir,
 		Log:      logs.For(logx.ModuleSystem),
 	})
+	// #region buei:guangya share auto scrape
+	rebuildScrape, startScrape, waitScrape := bueiScrapeRunner(strmScrapeSvc)
+	bueiSvc.guangyaShare.SetScrapeRunner(rebuildScrape, startScrape, waitScrape)
+	// #endregion buei:guangya share auto scrape
 	strmSvc.SetOrganizeBusyChecker(mediaOrganizeSvc)
 	strmSvc.SetRetentionBusyChecker(retentionSvc)
 	strmSvc.SetStartupGate(startupGate)
@@ -195,6 +199,9 @@ func wireServices(cfg config.Config, logs *logx.Manager, st *storeBundle, core *
 			return item.ID, nil
 		},
 	})
+	// #region buei:guangya share emby refresh
+	bueiSvc.guangyaShare.SetEmbyRefresher(bueiEmbyRefresher(embyProxySvc))
+	// #endregion buei:guangya share emby refresh
 	fnosProxySvc := fnosproxy.New(fnosproxy.Options{
 		Settings:       st.settings,
 		Playback:       playbackSvc,

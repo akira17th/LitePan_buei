@@ -30,6 +30,9 @@ type bueiGuangyaShareDestinationDTO struct {
 	IsSeries  bool     `json:"is_series"`
 	BaseDirs  []string `json:"base_dirs,omitempty"`
 	AutoStrm  bool     `json:"auto_strm"`
+	// AutoScrape/ScrapeTaskID 是转存成功后自动刮削的开关与 STRM 任务。
+	AutoScrape   bool  `json:"auto_scrape"`
+	ScrapeTaskID int64 `json:"auto_scrape_task_id"`
 }
 
 type bueiGuangyaShareDestinationBaseDTO struct {
@@ -118,14 +121,16 @@ func bueiGuangyaShareDestinationToDTO(dest *domain.GuangyaShareDestination) *bue
 		return nil
 	}
 	return &bueiGuangyaShareDestinationDTO{
-		AccountID: dest.AccountID,
-		ParentID:  dest.ParentID,
-		BasePath:  dest.BasePath,
-		Title:     dest.Title,
-		Season:    dest.Season,
-		IsSeries:  dest.IsSeries,
-		BaseDirs:  dest.BaseDirs,
-		AutoStrm:  dest.AutoStrm,
+		AccountID:    dest.AccountID,
+		ParentID:     dest.ParentID,
+		BasePath:     dest.BasePath,
+		Title:        dest.Title,
+		Season:       dest.Season,
+		IsSeries:     dest.IsSeries,
+		BaseDirs:     dest.BaseDirs,
+		AutoStrm:     dest.AutoStrm,
+		AutoScrape:   dest.AutoScrape,
+		ScrapeTaskID: dest.ScrapeTaskID,
 	}
 }
 
@@ -231,21 +236,27 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var in struct {
-		URL        string   `json:"url"`
-		ShareID    string   `json:"share_id"`
-		Password   string   `json:"password"`
-		FileIDs    []string `json:"file_ids"`
-		AccountID  int64    `json:"account_id"`
-		ParentID   string   `json:"parent_id"`
-		TargetPath []string `json:"target_path"`
-		BasePath   string   `json:"base_path"`
-		BaseDirs   []string `json:"base_dirs"`
-		Title      string   `json:"title"`
-		Season     int      `json:"season"`
-		IsSeries   bool     `json:"is_series"`
-		AutoStrm   bool     `json:"auto_strm"`
-		ProgressID string   `json:"progress_id"`
-		Files      []struct {
+		URL           string   `json:"url"`
+		ShareID       string   `json:"share_id"`
+		Password      string   `json:"password"`
+		FileIDs       []string `json:"file_ids"`
+		AccountID     int64    `json:"account_id"`
+		ParentID      string   `json:"parent_id"`
+		TargetPath    []string `json:"target_path"`
+		BasePath      string   `json:"base_path"`
+		BaseDirs      []string `json:"base_dirs"`
+		Title         string   `json:"title"`
+		Season        int      `json:"season"`
+		IsSeries      bool     `json:"is_series"`
+		AutoStrm      bool     `json:"auto_strm"`
+		AutoScrape    bool     `json:"auto_scrape"`
+		ScrapeTaskID  int64    `json:"auto_scrape_task_id"`
+		RefreshEmby   bool     `json:"refresh_emby"`
+		EmbyConfigID  string   `json:"emby_config_id"`
+		EmbyMode      string   `json:"emby_mode"`
+		EmbyLibraryID string   `json:"emby_library_id"`
+		ProgressID    string   `json:"progress_id"`
+		Files         []struct {
 			FileID       string `json:"file_id"`
 			OriginalName string `json:"original_name"`
 			NewName      string `json:"new_name"`
@@ -304,6 +315,12 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 		BrowsePath:    browsePath,
 		RenameReplace: renameReplace,
 		AutoStrm:      in.AutoStrm,
+		AutoScrape:    in.AutoScrape,
+		ScrapeTaskID:  in.ScrapeTaskID,
+		RefreshEmby:   in.RefreshEmby,
+		EmbyConfigID:  in.EmbyConfigID,
+		EmbyMode:      in.EmbyMode,
+		EmbyLibraryID: in.EmbyLibraryID,
 		ProgressID:    in.ProgressID,
 	})
 	if err != nil {
@@ -320,6 +337,11 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 		"strm_matched":     res.StrmMatched,
 		"strm_scheduled":   res.StrmScheduled,
 		"strm_error":       res.StrmError,
+		"scrape_started":   res.ScrapeStarted,
+		"scrape_error":     res.ScrapeError,
+		"emby_refreshed":   res.EmbyRefreshed,
+		"emby_scheduled":   res.EmbyScheduled,
+		"emby_error":       res.EmbyError,
 	})
 }
 

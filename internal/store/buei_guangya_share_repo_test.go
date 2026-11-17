@@ -50,14 +50,16 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 	}
 
 	dest := &domain.GuangyaShareDestination{
-		AccountID: 2,
-		ParentID:  "dir-1",
-		BasePath:  "/媒体/电视剧",
-		BaseDirs:  []string{"媒体", "电视剧"},
-		Title:     "走马上任 (2026)",
-		Season:    1,
-		IsSeries:  true,
-		AutoStrm:  true,
+		AccountID:    2,
+		ParentID:     "dir-1",
+		BasePath:     "/媒体/电视剧",
+		BaseDirs:     []string{"媒体", "电视剧"},
+		Title:        "走马上任 (2026)",
+		Season:       1,
+		IsSeries:     true,
+		AutoStrm:     true,
+		AutoScrape:   true,
+		ScrapeTaskID: 9,
 	}
 	if err := repo.UpdateDestination(ctx, "1969_abc", dest); err != nil {
 		t.Fatalf("update destination: %v", err)
@@ -72,6 +74,7 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 	gotDest := links[0].LastDestination
 	if gotDest.AccountID != 2 || gotDest.ParentID != "dir-1" || gotDest.BasePath != "/媒体/电视剧" ||
 		gotDest.Title != "走马上任 (2026)" || gotDest.Season != 1 || !gotDest.IsSeries || !gotDest.AutoStrm ||
+		!gotDest.AutoScrape || gotDest.ScrapeTaskID != 9 ||
 		len(gotDest.BaseDirs) != 2 || gotDest.BaseDirs[0] != "媒体" || gotDest.BaseDirs[1] != "电视剧" {
 		t.Fatalf("unexpected destination: %+v", gotDest)
 	}

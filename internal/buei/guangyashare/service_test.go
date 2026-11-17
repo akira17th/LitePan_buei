@@ -413,6 +413,110 @@ func TestServiceParseReturnsSavedDestinationAndLastBase(t *testing.T) {
 	}
 }
 
+func TestScrapeEnabled(t *testing.T) {
+	base := TransferInput{AutoStrm: true, AutoScrape: true, ScrapeTaskID: 3}
+	if !scrapeEnabled(base) {
+		t.Fatal("STRM 与刮削都打开且选了任务时应启用刮削")
+	}
+	for name, in := range map[string]TransferInput{
+		"关闭 STRM": {AutoStrm: false, AutoScrape: true, ScrapeTaskID: 3},
+		"关闭刮削":    {AutoStrm: true, AutoScrape: false, ScrapeTaskID: 3},
+		"未选择任务":   {AutoStrm: true, AutoScrape: true},
+	} {
+		if scrapeEnabled(in) {
+			t.Fatalf("%s 时不应刮削", name)
+		}
+	}
+}
+
+func TestServiceScrapeAfterTransfer(t *testing.T) {
+	svc := &Service{}
+	if started, errText := svc.scrapeAfterTransfer(context.Background(), 5); started || errText != "" {
+		t.Fatalf("未注入刮削器时应静默跳过，实际 = %v/%q", started, errText)
+	}
+
+	var calls []string
+	svc.SetScrapeRunner(
+		func(_ context.Context, strmTaskID int64) error {
+			if strmTaskID != 7 {
+				t.Fatalf("unexpected strm task: %d", strmTaskID)
+			}
+			calls = append(calls, "rebuild")
+			return nil
+		},
+		func(_ context.Context, strmTaskID int64) error {
+			if strmTaskID != 7 {
+				t.Fatalf("unexpected strm task: %d", strmTaskID)
+			}
+			calls = append(calls, "start")
+			return nil
+		},
+		func(_ context.Context, strmTaskID int64) error {
+			calls = append(calls, "wait")
+			return nil
+		},
+	)
+	started, errText := svc.scrapeAfterTransfer(context.Background(), 7)
+	if !started || errText != "" {
+		t.Fatalf("unexpected scrape result: %v/%q", started, errText)
+	}
+	if len(calls) != 2 || calls[0] != "rebuild" || calls[1] != "start" {
+		t.Fatalf("应先重建索引再开始刮削，实际调用顺序 = %v", calls)
+	}
+
+	startCalls := 0
+	svc.SetScrapeRunner(
+		func(context.Context, int64) error { return errors.New("index failed") },
+		func(context.Context, int64) error { startCalls++; return nil },
+		nil,
+	)
+	if started, errText := svc.scrapeAfterTransfer(context.Background(), 7); started || errText == "" {
+		t.Fatalf("重建索引失败时应回传错误，实际 = %v/%q", started, errText)
+	}
+	if startCalls != 0 {
+		t.Fatal("重建索引失败后不应继续启动刮削")
+	}
+}
+
+func TestEmbyActionNormalize(t *testing.T) {
+	in := TransferInput{RefreshEmby: true, EmbyConfigID: " c1 ", EmbyLibraryID: " lib1 ", EmbyMode: " library "}
+	action := in.embyAction()
+	if !action.enabled || action.configID != "c1" || action.mode != "library" || action.libraryID != "lib1" {
+		t.Fatalf("unexpected emby action: %+v", action)
+	}
+	if got := (TransferInput{EmbyMode: "other"}).embyAction().mode; got != "global" {
+		t.Fatalf("未知范围应回退为 global，实际 %q", got)
+	}
+}
+
+func TestServiceEmbyActions(t *testing.T) {
+	svc := &Service{}
+	if ok, errText := svc.refreshEmbyNow(context.Background(), embyAction{enabled: true}); ok || errText != "" {
+		t.Fatalf("未注入刷库器时应静默跳过，实际 = %v/%q", ok, errText)
+	}
+
+	var calls []string
+	svc.SetScrapeRunner(nil, nil, func(_ context.Context, strmTaskID int64) error {
+		if strmTaskID != 11 {
+			t.Fatalf("unexpected strm task: %d", strmTaskID)
+		}
+		calls = append(calls, "wait")
+		return nil
+	})
+	svc.SetEmbyRefresher(func(_ context.Context, configID, mode, libraryID string) error {
+		calls = append(calls, "refresh:"+configID+":"+mode+":"+libraryID)
+		return nil
+	})
+	svc.waitAndRefreshEmby(11, embyAction{enabled: true, configID: "c1", mode: "library", libraryID: "lib1"})
+	if len(calls) != 2 || calls[0] != "wait" || calls[1] != "refresh:c1:library:lib1" {
+		t.Fatalf("应先等刮削结束再刷库，实际调用顺序 = %v", calls)
+	}
+
+	if ok, errText := svc.refreshEmbyNow(context.Background(), embyAction{enabled: false, configID: "c1"}); ok || errText != "" {
+		t.Fatalf("未开启刷库时不应调用，实际 = %v/%q", ok, errText)
+	}
+}
+
 func TestServiceSaveDestination(t *testing.T) {
 	svc := newTestService(t, fakeShareAPI(t))
 	repo := newFakeLinkRepo()

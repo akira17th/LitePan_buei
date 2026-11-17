@@ -14,15 +14,24 @@ import {
 } from "@/api/bueiGuangyaShare";
 import { ApiError, getApiErrorMessage } from "@/api/client";
 import { filesApi } from "@/api/files";
+import { fetchStrmTasks, type StrmTask } from "@/api/strm";
+import { fetchStrmScrapeProgress, type StrmScrapeProgress } from "@/api/strmScrape";
+import {
+  fetchEmbyConfigs,
+  fetchEmbyLibraries,
+  type EmbyConfig,
+  type EmbyLibrary,
+} from "@/api/emby";
 import { buildBrowserLocationQuery } from "@/utils/bueiBrowserLocation";
 import { toast } from "@/composables/useToast";
-import { confirm, showConfirm } from "@/composables/useConfirm";
+import { confirm } from "@/composables/useConfirm";
 import { formatSize, formatTime, formatTimeShort } from "@/utils/format";
 import { useAccountsStore } from "@/stores/accounts";
 import AppButton from "@/components/base/AppButton.vue";
 import AppModal from "@/components/base/AppModal.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
 import AccountFolderField from "@/components/admin/AccountFolderField.vue";
+import AppSelect from "@/components/base/AppSelect.vue";
 import FolderPickerModal from "@/components/file/FolderPickerModal.vue";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
 import BueiGuangyaShareConfirm, {
@@ -95,8 +104,28 @@ const destination = ref<DestinationBase>({ accountId: 0, accountName: "", parent
 const folderTitle = ref("");
 const isSeries = ref(true);
 const season = ref(1);
-// 转存成功后执行：默认自动为转存目标文件夹生成 STRM。
+// 联动动作：生成 STRM 后可选刮削元数据与 Emby 刷库。
 const autoStrm = ref(true);
+const autoScrape = ref(true);
+const scrapeTaskId = ref<number | null>(null);
+const scrapeTasks = ref<StrmTask[]>([]);
+const scrapeTasksLoading = ref(false);
+const scrapeTasksError = ref("");
+// 刮削元数据的实时进度（后端只保留一份刮削进度快照）。
+const scrapeProgress = ref<StrmScrapeProgress | null>(null);
+// 联动动作 3：Emby 刷库。
+const embyRefresh = ref(true);
+const embyConfigId = ref("");
+const embyMode = ref<"global" | "library">("global");
+const embyLibraryId = ref("");
+const embyConfigs = ref<EmbyConfig[]>([]);
+const embyLibraries = ref<EmbyLibrary[]>([]);
+const embyConfigsLoading = ref(false);
+const embyLibrariesLoading = ref(false);
+const embyError = ref("");
+let scrapePollTimer: number | undefined;
+let scrapeWatchId = 0;
+let scrapePollDeadline = 0;
 const pickerOpen = ref(false);
 const transferring = ref(false);
 const discarding = ref(false);
@@ -113,6 +142,223 @@ const renameReplaceWith = ref("");
 const renameStartEpisode = ref(1);
 const transferConfirmOpen = ref(false);
 const pendingTransfer = ref<PendingTransfer | null>(null);
+// 转存完成后的结果直接展示在同一个确认弹窗里。
+const transferDone = ref(false);
+const transferResult = ref({
+  renamed: 0,
+  renameSkipped: 0,
+  strmGenerated: 0,
+  strmMatched: false,
+  strmError: "",
+  scrapeStarted: false,
+  scrapeError: "",
+  embyRefreshed: false,
+  embyScheduled: false,
+  embyError: "",
+});
+
+const scrapeAvailable = computed(() => scrapeTasks.value.length > 0);
+
+const embyAvailable = computed(() => embyConfigs.value.length > 0);
+const embyConfigOptions = computed(() =>
+  embyConfigs.value.map((config) => ({
+    value: config.id,
+    label: config.name || config.emby_url || "未命名配置",
+  })),
+);
+const embyLibraryOptions = computed(() =>
+  embyLibraries.value.map((library) => ({ value: library.id, label: library.name || library.id })),
+);
+const embyModeOptions = [
+  { value: "global", label: "全局扫描" },
+  { value: "library", label: "指定媒体库扫描" },
+];
+// 未配置 Emby、未选配置，或库扫描模式未选媒体库时不刷库。
+const embyEffective = computed(
+  () =>
+    embyRefresh.value &&
+    embyAvailable.value &&
+    !!embyConfigId.value &&
+    (embyMode.value !== "library" || !!embyLibraryId.value),
+);
+
+function ensureEmbyConfig() {
+  const current = embyConfigId.value;
+  if (current && embyConfigs.value.some((config) => config.id === current)) return;
+  embyConfigId.value = embyConfigs.value[0]?.id || "";
+}
+
+async function loadEmbyConfigs() {
+  if (embyConfigsLoading.value) return;
+  embyConfigsLoading.value = true;
+  embyError.value = "";
+  try {
+    const state = await fetchEmbyConfigs();
+    embyConfigs.value = Array.isArray(state?.items) ? state.items : [];
+    ensureEmbyConfig();
+    if (embyMode.value === "library") void loadEmbyLibraries();
+  } catch (error) {
+    embyConfigs.value = [];
+    embyError.value = getApiErrorMessage(error, "加载 Emby/Jellyfin 配置失败");
+  } finally {
+    embyConfigsLoading.value = false;
+  }
+}
+
+async function loadEmbyLibraries() {
+  const configId = embyConfigId.value;
+  if (!configId) {
+    embyLibraries.value = [];
+    embyLibraryId.value = "";
+    return;
+  }
+  embyLibrariesLoading.value = true;
+  embyError.value = "";
+  try {
+    const list = await fetchEmbyLibraries(configId);
+    if (embyConfigId.value !== configId) return;
+    embyLibraries.value = Array.isArray(list) ? list : [];
+    if (!embyLibraries.value.some((library) => library.id === embyLibraryId.value)) {
+      embyLibraryId.value = embyLibraries.value[0]?.id || "";
+    }
+  } catch (error) {
+    embyLibraries.value = [];
+    embyLibraryId.value = "";
+    embyError.value = getApiErrorMessage(error, "加载 Emby/Jellyfin 媒体库失败");
+  } finally {
+    embyLibrariesLoading.value = false;
+  }
+}
+
+watch(embyConfigId, () => {
+  embyLibraries.value = [];
+  embyLibraryId.value = "";
+  if (embyMode.value === "library") void loadEmbyLibraries();
+});
+
+watch(embyMode, (mode) => {
+  if (mode === "library") {
+    void loadEmbyLibraries();
+  } else {
+    embyLibraries.value = [];
+    embyLibraryId.value = "";
+  }
+});
+
+function stopScrapePolling() {
+  if (scrapePollTimer !== undefined) {
+    window.clearTimeout(scrapePollTimer);
+    scrapePollTimer = undefined;
+  }
+}
+
+// 轮询刮削进度；只关心本次触发的 STRM 任务，完成后保留最终结果用于展示。
+async function pollScrapeProgress(taskId: number) {
+  stopScrapePolling();
+  if (!taskId || scrapeWatchId !== taskId) return;
+  try {
+    const progress = await fetchStrmScrapeProgress();
+    if (scrapeWatchId !== taskId) return;
+    if (Number(progress.strm_task_id) === taskId) {
+      scrapeProgress.value = progress;
+      if (!progress.running) {
+        scrapeWatchId = 0;
+        return;
+      }
+    }
+  } catch {
+    // 进度只是辅助展示，失败后继续重试。
+  }
+  if (scrapeWatchId !== taskId) return;
+  if (Date.now() > scrapePollDeadline) {
+    scrapeWatchId = 0;
+    return;
+  }
+  scrapePollTimer = window.setTimeout(() => void pollScrapeProgress(taskId), 2000);
+}
+
+function watchScrapeProgress(taskId: number) {
+  if (!taskId) return;
+  scrapeWatchId = taskId;
+  scrapePollDeadline = Date.now() + 30 * 60 * 1000;
+  void pollScrapeProgress(taskId);
+}
+
+const scrapeStatus = computed(() => {
+  const progress = scrapeProgress.value;
+  const taskId = Number(scrapeTaskId.value || 0);
+  if (!progress || !taskId || Number(progress.strm_task_id) !== taskId) return null;
+  const total = Number(progress.total || 0);
+  const done = Number(progress.done || 0);
+  if (progress.running) {
+    const percent = total > 0 ? Math.min(100, Math.round((done * 100) / total)) : 0;
+    return {
+      running: true,
+      failed: false,
+      percent,
+      text: total > 0 ? `刮削中 ${done}/${total}` : "刮削准备中…",
+      message: progress.message || "",
+    };
+  }
+  if (progress.error) {
+    return { running: false, failed: true, percent: 100, text: `刮削失败：${progress.error}`, message: "" };
+  }
+  const parts: string[] = [];
+  const success = Math.max(0, done - Number(progress.skipped || 0) - Number(progress.failed || 0));
+  if (success) parts.push(`成功 ${success}`);
+  if (progress.skipped) parts.push(`跳过 ${progress.skipped}`);
+  if (progress.failed) parts.push(`失败 ${progress.failed}`);
+  return {
+    running: false,
+    failed: false,
+    percent: 100,
+    text: parts.length ? `刮削完成：${parts.join("，")}` : "刮削完成",
+    message: "",
+  };
+});
+
+const scrapeTaskValue = computed({
+  get: () => (scrapeTaskId.value ? String(scrapeTaskId.value) : ""),
+  set: (value: string | number | boolean) => {
+    const text = String(value ?? "");
+    scrapeTaskId.value = text ? Number(text) : null;
+  },
+});
+
+const scrapeTaskOptions = computed(() =>
+  scrapeTasks.value.map((task) => ({
+    value: String(task.id),
+    label: task.name || `任务 #${task.id}`,
+  })),
+);
+
+function ensureScrapeTask() {
+  const current = scrapeTaskId.value;
+  if (current && scrapeTasks.value.some((task) => Number(task.id) === current)) return;
+  const first = scrapeTasks.value[0];
+  scrapeTaskId.value = first ? Number(first.id) : null;
+}
+
+async function loadScrapeTasks() {
+  if (scrapeTasksLoading.value) return;
+  scrapeTasksLoading.value = true;
+  scrapeTasksError.value = "";
+  try {
+    const list = await fetchStrmTasks();
+    scrapeTasks.value = Array.isArray(list) ? list : [];
+    ensureScrapeTask();
+  } catch (error) {
+    scrapeTasks.value = [];
+    scrapeTasksError.value = getApiErrorMessage(error, "加载 STRM 任务失败");
+  } finally {
+    scrapeTasksLoading.value = false;
+  }
+}
+
+// 生成 STRM 打开时，刮削元数据跟随打开（用户仍可再单独关闭）。
+watch(autoStrm, (on) => {
+  if (on) autoScrape.value = true;
+});
 // 转存阶段进度：由后端记录，前端轮询展示「转存中 → 重命名 → 生成 STRM」。
 const transferPhase = ref<GuangyaShareTransferPhase>("");
 let progressTimer: number | undefined;
@@ -126,6 +372,12 @@ interface PendingTransfer {
   browsePath: GuangyaShareBrowseCrumb[];
   renameReplace: { enabled: boolean; find: string; replaceWith: string };
   autoStrm: boolean;
+  autoScrape: boolean;
+  scrapeTaskId: number;
+  refreshEmby: boolean;
+  embyConfigId: string;
+  embyMode: "global" | "library";
+  embyLibraryId: string;
   unchangedCount: number;
   segments: string[];
   base: DestinationBase;
@@ -678,6 +930,10 @@ function applyDestinationForShare(res: GuangyaShareParseResult) {
   season.value = draft ? draft.season : 1;
   // 未保存过预设时保持默认开启。
   autoStrm.value = draft ? draft.auto_strm !== false : true;
+  autoScrape.value = draft ? draft.auto_scrape !== false : true;
+  scrapeTaskId.value = draft && draft.auto_scrape_task_id > 0 ? Number(draft.auto_scrape_task_id) : null;
+  // 任务列表可能还没加载完成，加载完成后 loadScrapeTasks 会再兜底选中。
+  if (scrapeTasks.value.length) ensureScrapeTask();
 }
 
 function normalizeFolderTitle() {
@@ -908,6 +1164,12 @@ function resetParse() {
   isSeries.value = true;
   season.value = 1;
   autoStrm.value = true;
+  autoScrape.value = true;
+  scrapeTaskId.value = null;
+  embyRefresh.value = true;
+  embyMode.value = "global";
+  embyLibraryId.value = "";
+  embyLibraries.value = [];
   sortKey.value = "time";
   sortDir.value = "desc";
 }
@@ -1156,6 +1418,13 @@ function submitTransfer() {
     browsePath,
     renameReplace,
     autoStrm: autoStrm.value,
+    // 保存用户偏好；真正是否刮削由后端结合 STRM 开关判断。
+    autoScrape: autoScrape.value && scrapeAvailable.value,
+    scrapeTaskId: scrapeTaskId.value ? Number(scrapeTaskId.value) : 0,
+    refreshEmby: embyEffective.value,
+    embyConfigId: embyConfigId.value,
+    embyMode: embyMode.value,
+    embyLibraryId: embyEffective.value ? embyLibraryId.value : "",
     unchangedCount: previews.length - changedRows.length,
     segments: [...targetSegments.value],
     base,
@@ -1163,13 +1432,33 @@ function submitTransfer() {
     season: seasonNumber.value,
     series: isSeries.value,
   };
+  transferDone.value = false;
   transferConfirmOpen.value = true;
+}
+
+function resetTransferDialog() {
+  transferConfirmOpen.value = false;
+  transferDone.value = false;
+  pendingTransfer.value = null;
+  // 进度只在这一个弹窗里展示，关闭后停止轮询。
+  stopScrapePolling();
+  scrapeWatchId = 0;
 }
 
 function cancelTransferConfirm() {
   if (transferring.value) return;
-  transferConfirmOpen.value = false;
-  pendingTransfer.value = null;
+  resetTransferDialog();
+}
+
+function stayAfterTransfer() {
+  resetTransferDialog();
+  toast.success("转存完成");
+}
+
+async function openAfterTransfer() {
+  const pending = pendingTransfer.value;
+  resetTransferDialog();
+  if (pending) await openTransferLocation(pending.base, pending.segments);
 }
 
 const transferPhaseLabel = computed(() => {
@@ -1178,6 +1467,10 @@ const transferPhaseLabel = computed(() => {
       return "重命名中…";
     case "strm":
       return "生成 STRM 中…";
+    case "scrape":
+      return "启动刮削中…";
+    case "emby":
+      return "刷库中…";
     case "done":
       return "即将完成…";
     default:
@@ -1257,6 +1550,12 @@ async function confirmTransfer() {
         replace_with: pending.renameReplace.replaceWith,
       },
       auto_strm: pending.autoStrm,
+      auto_scrape: pending.autoScrape,
+      auto_scrape_task_id: pending.scrapeTaskId,
+      refresh_emby: pending.refreshEmby,
+      emby_config_id: pending.embyConfigId,
+      emby_mode: pending.embyMode,
+      emby_library_id: pending.embyLibraryId,
       progress_id: progressId,
     });
     completed = res.completed;
@@ -1267,6 +1566,22 @@ async function confirmTransfer() {
     strmMatched = !!res.strm_matched;
     strmScheduled = !!res.strm_scheduled;
     strmError = res.strm_error || "";
+    transferResult.value = {
+      renamed,
+      renameSkipped,
+      strmGenerated,
+      strmMatched,
+      strmError,
+      scrapeStarted: !!res.scrape_started,
+      scrapeError: res.scrape_error || "",
+      embyRefreshed: !!res.emby_refreshed,
+      embyScheduled: !!res.emby_scheduled,
+      embyError: res.emby_error || "",
+    };
+    if (res.scrape_started && pending.scrapeTaskId) {
+      scrapeProgress.value = null;
+      watchScrapeProgress(Number(pending.scrapeTaskId));
+    }
     if (completed && result.value && pending.files.length) {
       const now = new Date().toISOString();
       const merged = new Map((result.value.transferred_files ?? []).map((file) => [file.file_id, file]));
@@ -1285,7 +1600,12 @@ async function confirmTransfer() {
     }
     clearSelection();
     if (!completed) {
-      const followUps = [renameScheduled ? "重命名" : "", strmScheduled ? "STRM 生成" : ""].filter(Boolean);
+      const followUps = [
+        renameScheduled ? "重命名" : "",
+        strmScheduled ? "STRM 生成" : "",
+        strmScheduled && pending.autoScrape ? "刮削" : "",
+        pending.refreshEmby ? "Emby 刷库" : "",
+      ].filter(Boolean);
       toast.info(
         followUps.length
           ? `转存任务已提交，完成后会自动执行${followUps.join("与")}，请稍后查看`
@@ -1300,47 +1620,12 @@ async function confirmTransfer() {
     progressIdRef = "";
     transferPhase.value = "";
     transferring.value = false;
-    transferConfirmOpen.value = false;
-    pendingTransfer.value = null;
-  }
-  if (!completed) return;
-
-  const renameNote = renamed
-    ? ` 已重命名 ${renamed} 项。`
-    : "";
-  const skippedNote = renameSkipped
-    ? ` 有 ${renameSkipped} 项未能重命名，请到目标目录检查。`
-    : "";
-  let strmNote = "";
-  if (pending.autoStrm) {
-    if (strmError) {
-      strmNote = ` 自动生成 STRM 失败：${strmError}`;
-    } else if (strmGenerated > 0) {
-      strmNote = ` 已生成 ${strmGenerated} 个 STRM。`;
-    } else if (strmMatched) {
-      strmNote = " STRM 已是最新，无需更新。";
+    if (completed) {
+      transferDone.value = true;
     } else {
-      strmNote = " 目标目录未匹配 STRM 任务，未生成 STRM。";
+      resetTransferDialog();
     }
   }
-  const choice = await showConfirm({
-    title: "转存完成",
-    message: `已将 ${pending.count} 项内容保存到「${pending.target}」。${renameNote}${skippedNote}${strmNote}`,
-    hint: "可以留在这里继续操作，或到前台文件页查看转存结果。",
-    icon: "info",
-    size: "sm",
-    actions: [
-      { id: "stay", label: "留在这里", variant: "cancel" },
-      { id: "open", label: "去前台查看", variant: "primary" },
-    ],
-    showCancel: false,
-  }).catch(() => null);
-  if (!choice) {
-    toast.success(`转存完成，已保存到 ${pending.target}`);
-    return;
-  }
-  if (choice.action !== "open") return;
-  await openTransferLocation(pending.base, pending.segments);
 }
 
 function close() {
@@ -1348,9 +1633,11 @@ function close() {
   parseAbort = null;
   parsing.value = false;
   pickerOpen.value = false;
-  transferConfirmOpen.value = false;
-  pendingTransfer.value = null;
+  resetTransferDialog();
   stopProgressPolling();
+  stopScrapePolling();
+  scrapeWatchId = 0;
+  scrapeProgress.value = null;
   progressIdRef = "";
   transferPhase.value = "";
   emit("close");
@@ -1375,6 +1662,8 @@ watch(
       void accountsStore.loadAccounts().catch(() => undefined);
     }
     void loadSavedLinks();
+    void loadScrapeTasks();
+    void loadEmbyConfigs();
     ensureDestination();
     await nextTick();
     urlInputRef.value?.focus();
@@ -1397,6 +1686,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   parseAbort?.abort();
   stopProgressPolling();
+  stopScrapePolling();
 });
 </script>
 
@@ -1921,11 +2211,14 @@ onBeforeUnmount(() => {
               :class="{ 'is-busy': transferring }"
             >
               <div class="gys__panel-head">
-                <h4>转存成功后执行</h4>
+                <h4>联动动作</h4>
+                <span class="gys__panel-hint">按顺序执行</span>
               </div>
               <div class="gys__switch-row">
                 <span class="gys__switch-text">
-                  <span class="gys__switch-title">自动生成 STRM</span>
+                  <span class="gys__switch-title">
+                    <span class="gys__action-no">1</span>生成 STRM
+                  </span>
                   <span class="gys__switch-desc">按目标目录命中的 STRM 任务生成/更新 STRM 文件</span>
                 </span>
                 <button
@@ -1934,13 +2227,110 @@ onBeforeUnmount(() => {
                   :class="{ 'is-on': autoStrm }"
                   role="switch"
                   :aria-checked="autoStrm"
-                  aria-label="自动生成 STRM"
+                  aria-label="生成 STRM"
                   :disabled="transferring"
                   @click="autoStrm = !autoStrm"
                 >
                   <span class="gys__switch-knob" />
                 </button>
               </div>
+
+              <div class="gys__switch-row" :class="{ 'is-disabled': !autoStrm || !scrapeAvailable }">
+                <span class="gys__switch-text">
+                  <span class="gys__switch-title">
+                    <span class="gys__action-no">2</span>刮削元数据
+                  </span>
+                  <span class="gys__switch-desc">
+                    <template v-if="!autoStrm">需先开启「生成 STRM」</template>
+                    <template v-else-if="!scrapeAvailable">暂无 STRM 任务可刮削</template>
+                    <template v-else>转存后重建刮削索引，并按所选任务开始刮削</template>
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  class="gys__switch"
+                  :class="{ 'is-on': autoScrape && autoStrm && scrapeAvailable }"
+                  role="switch"
+                  :aria-checked="autoScrape && autoStrm && scrapeAvailable"
+                  aria-label="刮削元数据"
+                  :disabled="transferring || !autoStrm || !scrapeAvailable"
+                  @click="autoScrape = !autoScrape"
+                >
+                  <span class="gys__switch-knob" />
+                </button>
+              </div>
+
+              <div v-if="autoStrm && autoScrape && scrapeAvailable" class="gys__scrape">
+                <span class="gys__field-label">
+                  刮削任务
+                  <span class="gys__field-hint">（对应「STRM 刮削 - 海报墙」中的任务）</span>
+                </span>
+                <AppSelect
+                  v-model="scrapeTaskValue"
+                  class="gys__scrape-select"
+                  :options="scrapeTaskOptions"
+                  :placeholder="scrapeTasksLoading ? '加载中…' : '选择刮削任务'"
+                  :disabled="transferring || scrapeTasksLoading"
+                />
+                <p v-if="scrapeTasksError" class="gys__rule-error">{{ scrapeTasksError }}</p>
+              </div>
+
+              <div class="gys__switch-row" :class="{ 'is-disabled': !embyAvailable }">
+                <span class="gys__switch-text">
+                  <span class="gys__switch-title">
+                    <span class="gys__action-no">3</span>Emby 刷库
+                  </span>
+                  <span class="gys__switch-desc">
+                    <template v-if="embyConfigsLoading">正在加载 Emby/Jellyfin 配置…</template>
+                    <template v-else-if="!embyAvailable">系统内还没有配置 Emby/Jellyfin</template>
+                    <template v-else-if="autoStrm && autoScrape && scrapeAvailable">
+                      等刮削完成后触发，避免刷到未刮削的内容
+                    </template>
+                    <template v-else>转存后触发一次媒体库扫描</template>
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  class="gys__switch"
+                  :class="{ 'is-on': embyRefresh && embyAvailable }"
+                  role="switch"
+                  :aria-checked="embyRefresh && embyAvailable"
+                  aria-label="Emby 刷库"
+                  :disabled="transferring || !embyAvailable || embyConfigsLoading"
+                  @click="embyRefresh = !embyRefresh"
+                >
+                  <span class="gys__switch-knob" />
+                </button>
+              </div>
+
+              <div v-if="embyRefresh && embyAvailable" class="gys__scrape">
+                <span class="gys__field-label">Emby 配置</span>
+                <AppSelect
+                  v-model="embyConfigId"
+                  class="gys__scrape-select"
+                  :options="embyConfigOptions"
+                  :placeholder="embyConfigsLoading ? '加载中…' : '选择 Emby/Jellyfin 配置'"
+                  :disabled="transferring || embyConfigsLoading"
+                />
+                <span class="gys__field-label">执行范围</span>
+                <AppSelect
+                  v-model="embyMode"
+                  class="gys__scrape-select"
+                  :options="embyModeOptions"
+                  :disabled="transferring"
+                />
+                <template v-if="embyMode === 'library'">
+                  <span class="gys__field-label">媒体库</span>
+                  <AppSelect
+                    v-model="embyLibraryId"
+                    class="gys__scrape-select"
+                    :options="embyLibraryOptions"
+                    :placeholder="embyLibrariesLoading ? '加载中…' : '选择媒体库'"
+                    :disabled="transferring || embyLibrariesLoading || !embyConfigId"
+                  />
+                </template>
+              </div>
+              <p v-if="embyError" class="gys__rule-error">{{ embyError }}</p>
             </section>
           </div>
 
@@ -1971,8 +2361,25 @@ onBeforeUnmount(() => {
     :loading="transferring"
     :phase="transferPhase"
     :auto-strm="pendingTransfer?.autoStrm !== false"
+    :done="transferDone"
+    :renamed="transferResult.renamed"
+    :rename-skipped="transferResult.renameSkipped"
+    :strm-generated="transferResult.strmGenerated"
+    :strm-matched="transferResult.strmMatched"
+    :strm-error="transferResult.strmError"
+    :auto-scrape="pendingTransfer?.autoScrape !== false"
+    :scrape-task-id="pendingTransfer?.scrapeTaskId || 0"
+    :scrape-started="transferResult.scrapeStarted"
+    :scrape-error="transferResult.scrapeError"
+    :scrape-progress="scrapeStatus"
+    :refresh-emby="pendingTransfer?.refreshEmby !== false"
+    :emby-refreshed="transferResult.embyRefreshed"
+    :emby-scheduled="transferResult.embyScheduled"
+    :emby-error="transferResult.embyError"
     @confirm="confirmTransfer"
     @cancel="cancelTransferConfirm"
+    @stay="stayAfterTransfer"
+    @open="openAfterTransfer"
   />
 
   <FolderPickerModal
@@ -3008,7 +3415,7 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-/* 「转存成功后执行」开关行 */
+/* 联动动作开关行 */
 .gys__switch-row {
   display: flex;
   align-items: center;
@@ -3055,6 +3462,50 @@ onBeforeUnmount(() => {
 .gys__switch:disabled {
   cursor: default;
   opacity: 0.6;
+}
+
+.gys__switch-row.is-disabled {
+  opacity: 0.55;
+}
+
+/* 联动动作的序号标记 */
+.gys__action-no {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--brand) 12%, var(--surface));
+  color: var(--brand);
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+
+.gys__scrape {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0 0;
+}
+
+/* 覆盖横向字段布局的固定宽度，避免纵向排布时撑出空白 */
+.gys__scrape .gys__field-label {
+  flex: 0 0 auto;
+  white-space: normal;
+  line-height: 1.4;
+}
+
+.gys__field-hint {
+  color: var(--text-muted);
+  opacity: 0.85;
+}
+
+.gys__scrape-select :deep(.select__trigger) {
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .gys__switch-knob {

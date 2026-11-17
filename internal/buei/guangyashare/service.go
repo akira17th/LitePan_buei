@@ -28,6 +28,12 @@ const (
 	maxRenamePairs      = 2000
 	// 转存成功后生成 STRM 的超时；失败只记录日志，不影响转存结果。
 	strmGenerateTimeout = 60 * time.Second
+	// 转存成功后自动刮削（重建索引 + 启动刮削）的超时。
+	scrapeTimeout = 2 * time.Minute
+	// Emby 刷库请求本身的超时；等待刮削完成另算。
+	embyRefreshTimeout = time.Minute
+	// 等待刮削完成的最长时间（后台执行，不阻塞转存请求）。
+	embyWaitTimeout = 6 * time.Hour
 	// lastBaseConfigKey 保存在通用 configs 表中，避免浏览器清理丢失上次转存位置。
 	lastBaseConfigKey = "buei_guangya_share_last_base"
 )
@@ -45,6 +51,14 @@ type Options struct {
 	// GenerateStrm 在指定目录内生成/更新 STRM；由装配层注入，为空时跳过。
 	// dirs 是目标目录相对账号根的目录段数组。
 	GenerateStrm func(ctx context.Context, accountID int64, parentID string, dirs []string) (generated int64, matched bool, err error)
+	// RebuildScrapeIndex 重建指定 STRM 任务的刮削索引；为空时跳过自动刮削。
+	RebuildScrapeIndex func(ctx context.Context, strmTaskID int64) error
+	// StartScrape 启动一次刮削；为空时跳过自动刮削。
+	StartScrape func(ctx context.Context, strmTaskID int64) error
+	// WaitScrapeDone 等待指定 STRM 任务的刮削结束；为空时不等。
+	WaitScrapeDone func(ctx context.Context, strmTaskID int64) error
+	// RefreshEmby 触发 Emby/Jellyfin 媒体库扫描；为空时跳过刷库。
+	RefreshEmby func(ctx context.Context, configID, mode, libraryID string) error
 }
 
 type cachedShareToken struct {
@@ -64,7 +78,12 @@ type Service struct {
 	invalidateDir func(accountID int64, parentID string)
 	// strmGen 同理由装配层注入，避免服务直接依赖 STRM 包。
 	strmGen func(ctx context.Context, accountID int64, parentID string, dirs []string) (int64, bool, error)
-	client  *shareClient
+	// 刮削同样通过注入的函数调用，保持包依赖干净。
+	rebuildScrapeIndex func(ctx context.Context, strmTaskID int64) error
+	startScrape        func(ctx context.Context, strmTaskID int64) error
+	waitScrapeDone     func(ctx context.Context, strmTaskID int64) error
+	refreshEmby        func(ctx context.Context, configID, mode, libraryID string) error
+	client             *shareClient
 	// progress 记录进行中的转存阶段，供前端轮询。
 	progress *transferProgressTracker
 
@@ -145,7 +164,19 @@ type TransferInput struct {
 	RenameReplace *domain.GuangyaShareRenameReplace
 	// AutoStrm 表示转存成功后自动在目标文件夹生成 STRM。
 	AutoStrm bool
-	// ProgressID 是前端生成的进度标识，用于轮询「转存 → 重命名 → 生成 STRM」阶段。
+	// AutoScrape 表示转存成功后自动重建刮削索引并开始刮削；仅在 AutoStrm 打开时生效。
+	AutoScrape bool
+	// ScrapeTaskID 是自动刮削使用的 STRM 任务 id。
+	ScrapeTaskID int64
+	// RefreshEmby 表示转存成功后触发 Emby/Jellyfin 刷库。
+	RefreshEmby bool
+	// EmbyConfigID 是系统内的 Emby/Jellyfin 配置 id。
+	EmbyConfigID string
+	// EmbyMode 是刷库执行范围：global（全局扫描）或 library（指定媒体库）。
+	EmbyMode string
+	// EmbyLibraryID 是指定媒体库扫描时的媒体库 id。
+	EmbyLibraryID string
+	// ProgressID 是前端生成的进度标识，用于轮询「转存 → 重命名 → 生成 STRM → 刮削」阶段。
 	ProgressID string
 }
 
@@ -182,6 +213,16 @@ type TransferResult struct {
 	StrmMatched bool `json:"strm_matched"`
 	// StrmScheduled 表示转存任务等待超时，STRM 生成已转为后台跟进。
 	StrmScheduled bool `json:"strm_scheduled"`
+	// ScrapeStarted 表示已重建刮削索引并启动刮削。
+	ScrapeStarted bool `json:"scrape_started"`
+	// ScrapeError 是自动刮削失败的原因（转存本身仍然成功）。
+	ScrapeError string `json:"scrape_error,omitempty"`
+	// EmbyRefreshed 表示已触发 Emby 刷库。
+	EmbyRefreshed bool `json:"emby_refreshed"`
+	// EmbyScheduled 表示需要等刮削结束后再刷库，已转后台执行。
+	EmbyScheduled bool `json:"emby_scheduled"`
+	// EmbyError 是刷库失败的原因（转存本身仍然成功）。
+	EmbyError string `json:"emby_error,omitempty"`
 	// StrmError 是自动生成 STRM 失败的原因（转存本身仍然成功）。
 	StrmError string `json:"strm_error,omitempty"`
 }
@@ -193,18 +234,40 @@ func New(opts Options) *Service {
 		logger = slog.Default()
 	}
 	return &Service{
-		exec:          opts.Exec,
-		accounts:      opts.Accounts,
-		links:         opts.Links,
-		transfers:     opts.Transfers,
-		configs:       opts.Configs,
-		log:           logger,
-		invalidateDir: opts.InvalidateDir,
-		strmGen:       opts.GenerateStrm,
-		client:        newShareClient(),
-		progress:      newTransferProgressTracker(),
-		tokens:        make(map[string]cachedShareToken),
+		exec:               opts.Exec,
+		accounts:           opts.Accounts,
+		links:              opts.Links,
+		transfers:          opts.Transfers,
+		configs:            opts.Configs,
+		log:                logger,
+		invalidateDir:      opts.InvalidateDir,
+		strmGen:            opts.GenerateStrm,
+		rebuildScrapeIndex: opts.RebuildScrapeIndex,
+		startScrape:        opts.StartScrape,
+		waitScrapeDone:     opts.WaitScrapeDone,
+		refreshEmby:        opts.RefreshEmby,
+		client:             newShareClient(),
+		progress:           newTransferProgressTracker(),
+		tokens:             make(map[string]cachedShareToken),
 	}
+}
+
+// SetScrapeRunner 注入自动刮削的三个步骤：重建索引、启动刮削与等待刮削结束。
+func (s *Service) SetScrapeRunner(rebuild, start, wait func(ctx context.Context, strmTaskID int64) error) {
+	if s == nil {
+		return
+	}
+	s.rebuildScrapeIndex = rebuild
+	s.startScrape = start
+	s.waitScrapeDone = wait
+}
+
+// SetEmbyRefresher 注入 Emby/Jellyfin 刷库调用。
+func (s *Service) SetEmbyRefresher(refresh func(ctx context.Context, configID, mode, libraryID string) error) {
+	if s == nil {
+		return
+	}
+	s.refreshEmby = refresh
 }
 
 // TransferProgress 返回一次转存的阶段进度，供前端轮询展示。
@@ -458,11 +521,36 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 			s.progress.setPhase(progressID, GuangyaSharePhaseStrm)
 			result.StrmGenerated, result.StrmMatched, result.StrmError = s.generateStrm(ctx, in.AccountID, targetParentID, strmDirs)
 		}
-	} else if len(files) > 0 || in.AutoStrm {
-		// 任务等待超时：文件可能仍在落地，重命名与 STRM 生成一起转为后台跟进。
-		s.scheduleAfterRestore(shareID, in.AccountID, targetParentID, renamePlan, files, strmDirs, in.AutoStrm)
+		emby := in.embyAction()
+		if scrapeEnabled(in) {
+			s.progress.setPhase(progressID, GuangyaSharePhaseScrape)
+			result.ScrapeStarted, result.ScrapeError = s.scrapeAfterTransfer(ctx, in.ScrapeTaskID)
+		}
+		// 刮削是异步任务：开启刮削时转后台等刮削结束再刷库，避免请求超时。
+		if emby.enabled {
+			if result.ScrapeStarted {
+				result.EmbyScheduled = true
+				s.scheduleEmbyAfterScrape(in.ScrapeTaskID, emby)
+			} else {
+				s.progress.setPhase(progressID, GuangyaSharePhaseEmby)
+				result.EmbyRefreshed, result.EmbyError = s.refreshEmbyNow(ctx, emby)
+			}
+		}
+	} else if len(files) > 0 || in.AutoStrm || in.RefreshEmby {
+		// 任务等待超时：文件可能仍在落地，重命名与后续联动动作一起转为后台跟进。
+		actions := postTransferActions{
+			strmDirs:     strmDirs,
+			autoStrm:     in.AutoStrm,
+			scrapeTaskID: 0,
+			emby:         in.embyAction(),
+		}
+		if scrapeEnabled(in) {
+			actions.scrapeTaskID = in.ScrapeTaskID
+		}
+		s.scheduleAfterRestore(shareID, in.AccountID, targetParentID, renamePlan, files, actions)
 		result.RenameScheduled = true
 		result.StrmScheduled = in.AutoStrm
+		result.EmbyScheduled = actions.emby.enabled
 	}
 
 	// 任务提交成功即记录目标预设；completed=false 只表示等待超时，任务通常仍在执行。
@@ -473,14 +561,16 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 	s.saveBrowsePath(ctx, shareID, in.BrowsePath)
 	s.saveRenameReplace(ctx, shareID, in.RenameReplace)
 	s.saveDestination(ctx, shareID, &domain.GuangyaShareDestination{
-		AccountID: in.AccountID,
-		ParentID:  strings.TrimSpace(in.ParentID),
-		BasePath:  normalizeDestinationBasePath(in.BasePath),
-		BaseDirs:  append([]string(nil), in.BaseDirs...),
-		Title:     storedTitle,
-		Season:    clampShareSeason(in.Season),
-		IsSeries:  in.IsSeries,
-		AutoStrm:  in.AutoStrm,
+		AccountID:    in.AccountID,
+		ParentID:     strings.TrimSpace(in.ParentID),
+		BasePath:     normalizeDestinationBasePath(in.BasePath),
+		BaseDirs:     append([]string(nil), in.BaseDirs...),
+		Title:        storedTitle,
+		Season:       clampShareSeason(in.Season),
+		IsSeries:     in.IsSeries,
+		AutoStrm:     in.AutoStrm,
+		AutoScrape:   in.AutoScrape,
+		ScrapeTaskID: in.ScrapeTaskID,
 	})
 
 	if !completed {
@@ -501,6 +591,99 @@ func targetDirectorySegments(baseDirs, targetPath []string) []string {
 		}
 	}
 	return dirs
+}
+
+// embyAction 是一次 Emby 刷库的参数。
+type embyAction struct {
+	enabled   bool
+	configID  string
+	mode      string
+	libraryID string
+}
+
+func (in TransferInput) embyAction() embyAction {
+	return embyAction{
+		enabled:   in.RefreshEmby,
+		configID:  strings.TrimSpace(in.EmbyConfigID),
+		mode:      normalizeEmbyMode(in.EmbyMode),
+		libraryID: strings.TrimSpace(in.EmbyLibraryID),
+	}
+}
+
+func normalizeEmbyMode(raw string) string {
+	if strings.TrimSpace(raw) == "library" {
+		return "library"
+	}
+	return "global"
+}
+
+// postTransferActions 是转存落地后需要依次执行的联动动作。
+type postTransferActions struct {
+	strmDirs     []string
+	autoStrm     bool
+	scrapeTaskID int64
+	emby         embyAction
+}
+
+// refreshEmbyNow 立即触发一次 Emby 刷库；失败只记录日志并回传原因。
+func (s *Service) refreshEmbyNow(ctx context.Context, action embyAction) (bool, string) {
+	if s == nil || s.refreshEmby == nil || !action.enabled {
+		return false, ""
+	}
+	runCtx, cancel := context.WithTimeout(ctx, embyRefreshTimeout)
+	defer cancel()
+	if err := s.refreshEmby(runCtx, action.configID, action.mode, action.libraryID); err != nil {
+		s.logger().Warn("光鸭分享转存后 Emby 刷库失败", "config_id", action.configID, "mode", action.mode, "error", err)
+		return false, err.Error()
+	}
+	s.logger().Info("光鸭分享转存后已触发 Emby 刷库", "config_id", action.configID, "mode", action.mode, "library_id", action.libraryID)
+	return true, ""
+}
+
+// scheduleEmbyAfterScrape 在后台等刮削结束后再刷库，避免阻塞转存请求。
+func (s *Service) scheduleEmbyAfterScrape(scrapeTaskID int64, action embyAction) {
+	go func() {
+		safego.Guard(s.logger(), "buei.guangyashare.emby", func() {
+			s.waitAndRefreshEmby(scrapeTaskID, action)
+		})
+	}()
+}
+
+// waitAndRefreshEmby 等待刮削结束（最长 embyWaitTimeout）后刷库。
+func (s *Service) waitAndRefreshEmby(scrapeTaskID int64, action embyAction) {
+	if s.waitScrapeDone != nil && scrapeTaskID > 0 {
+		waitCtx, cancel := context.WithTimeout(context.Background(), embyWaitTimeout)
+		err := s.waitScrapeDone(waitCtx, scrapeTaskID)
+		cancel()
+		if err != nil {
+			s.logger().Warn("等待刮削结束超时，仍继续 Emby 刷库", "strm_task_id", scrapeTaskID, "error", err)
+		}
+	}
+	s.refreshEmbyNow(context.Background(), action)
+}
+
+// scrapeEnabled 判断本次是否需要自动刮削：必须先生成 STRM，并选中了刮削任务。
+func scrapeEnabled(in TransferInput) bool {
+	return in.AutoStrm && in.AutoScrape && in.ScrapeTaskID > 0
+}
+
+// scrapeAfterTransfer 先重建刮削索引，再启动刮削；失败只记录日志并回传原因。
+func (s *Service) scrapeAfterTransfer(ctx context.Context, strmTaskID int64) (bool, string) {
+	if s == nil || strmTaskID <= 0 || s.rebuildScrapeIndex == nil || s.startScrape == nil {
+		return false, ""
+	}
+	runCtx, cancel := context.WithTimeout(ctx, scrapeTimeout)
+	defer cancel()
+	if err := s.rebuildScrapeIndex(runCtx, strmTaskID); err != nil {
+		s.logger().Warn("光鸭分享转存后重建刮削索引失败", "strm_task_id", strmTaskID, "error", err)
+		return false, err.Error()
+	}
+	if err := s.startScrape(runCtx, strmTaskID); err != nil {
+		s.logger().Warn("光鸭分享转存后启动刮削失败", "strm_task_id", strmTaskID, "error", err)
+		return false, err.Error()
+	}
+	s.logger().Info("光鸭分享转存后已启动自动刮削", "strm_task_id", strmTaskID)
+	return true, ""
 }
 
 // generateStrm 在目标目录生成 STRM；失败只记录日志并回传给前端提示，不影响转存结果。
@@ -675,7 +858,7 @@ func (s *Service) renameAfterRestore(ctx context.Context, accountID int64, paren
 }
 
 // scheduleAfterRestore 在转存任务等待超时后继续跟进，完成后补做重命名与 STRM 生成。
-func (s *Service) scheduleAfterRestore(shareID string, accountID int64, parentID string, plan []RenamePair, files []TransferFile, strmDirs []string, autoStrm bool) {
+func (s *Service) scheduleAfterRestore(shareID string, accountID int64, parentID string, plan []RenamePair, files []TransferFile, actions postTransferActions) {
 	log := s.logger()
 	// 后台等待的名单包含文件夹：只转存文件夹时也要等它们出现，避免过早生成 STRM。
 	waitPlan := plan
@@ -715,7 +898,7 @@ func (s *Service) scheduleAfterRestore(shareID string, accountID int64, parentID
 			}
 			s.saveTransferred(ctx, shareID, accountID, parentID, files)
 			// 后台补生成 STRM：使用独立超时，避免和重命名等待共享同一个 deadline。
-			if autoStrm {
+			if actions.autoStrm {
 				// 顶层条目出现后再留一点缓冲，让其余内容落盘。
 				settle := time.NewTimer(renameLaterInterval)
 				select {
@@ -724,10 +907,27 @@ func (s *Service) scheduleAfterRestore(shareID string, accountID int64, parentID
 				case <-settle.C:
 				}
 				strmCtx, strmCancel := context.WithTimeout(context.Background(), strmGenerateTimeout)
-				generated, _, strmErr := s.generateStrm(strmCtx, accountID, parentID, strmDirs)
+				generated, _, strmErr := s.generateStrm(strmCtx, accountID, parentID, actions.strmDirs)
 				strmCancel()
 				if strmErr == "" {
-					log.Info("光鸭分享转存后台补生成 STRM 结束", "account_id", accountID, "parent_id", parentID, "dirs", strmDirs, "count", generated)
+					log.Info("光鸭分享转存后台补生成 STRM 结束", "account_id", accountID, "parent_id", parentID, "dirs", actions.strmDirs, "count", generated)
+				}
+			}
+			scrapeStarted := false
+			if actions.autoStrm && actions.scrapeTaskID > 0 {
+				scrapeCtx, scrapeCancel := context.WithTimeout(context.Background(), scrapeTimeout)
+				started, scrapeErr := s.scrapeAfterTransfer(scrapeCtx, actions.scrapeTaskID)
+				scrapeStarted = started
+				if scrapeErr != "" {
+					log.Warn("光鸭分享转存后台自动刮削失败", "strm_task_id", actions.scrapeTaskID, "error", scrapeErr)
+				}
+				scrapeCancel()
+			}
+			if actions.emby.enabled {
+				if scrapeStarted {
+					s.waitAndRefreshEmby(actions.scrapeTaskID, actions.emby)
+				} else {
+					s.refreshEmbyNow(context.Background(), actions.emby)
 				}
 			}
 			log.Info("光鸭分享转存后台补重命名结束", "account_id", accountID, "parent_id", parentID, "renamed", renamed, "skipped", skipped)

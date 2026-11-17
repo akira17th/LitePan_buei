@@ -24,6 +24,10 @@ type GuangyaShareDestination struct {
 	BaseDirs  []string `json:"base_dirs,omitempty"`
 	// AutoStrm 表示转存成功后自动在目标文件夹生成 STRM。
 	AutoStrm bool `json:"auto_strm"`
+	// AutoScrape 表示转存成功后自动重建刮削索引并开始刮削（依赖 AutoStrm）。
+	AutoScrape bool `json:"auto_scrape"`
+	// ScrapeTaskID 是自动刮削使用的 STRM 任务（海报墙下拉选择）。
+	ScrapeTaskID int64 `json:"auto_scrape_task_id"`
 }
 
 // GuangyaShareRenameReplace 是保存的“替换文本”重命名规则。

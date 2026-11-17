@@ -35,7 +35,7 @@ onMounted(() => {
       :stat-value="guangyaAccounts.length"
       stat-label="个光鸭账号可转存"
     >
-      收藏光鸭分享链接，随时选择解析、逐层浏览，转存到指定账号目录，并可自动生成 STRM。
+      收藏光鸭分享链接，随时选择解析、逐层浏览，转存到指定账号目录，并按顺序联动生成 STRM、刮削元数据、刷库。
       <template #actions>
         <AppButton size="sm" variant="secondary" @click="open = true">打开工具</AppButton>
       </template>

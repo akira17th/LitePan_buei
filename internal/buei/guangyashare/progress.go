@@ -11,6 +11,8 @@ const (
 	GuangyaSharePhaseTransfer = "transfer"
 	GuangyaSharePhaseRename   = "rename"
 	GuangyaSharePhaseStrm     = "strm"
+	GuangyaSharePhaseScrape   = "scrape"
+	GuangyaSharePhaseEmby     = "emby"
 	GuangyaSharePhaseDone     = "done"
 	GuangyaSharePhaseFailed   = "failed"
 )

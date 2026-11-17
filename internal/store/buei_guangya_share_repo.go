@@ -21,7 +21,8 @@ func NewGuangyaShareLinkRepo(db *DB) domain.GuangyaShareLinkRepository {
 
 const guangyaShareLinkColumns = `id, share_id, url, password, title, owner, created_at, updated_at, last_used_at,
 	last_account_id, last_parent_id, last_base_path, last_base_dirs, last_title, last_season, last_is_series,
-	last_browse_path, rename_replace_enabled, rename_replace_find, rename_replace_with, auto_strm`
+	last_browse_path, rename_replace_enabled, rename_replace_find, rename_replace_with, auto_strm,
+	auto_scrape, auto_scrape_task_id`
 
 func (r *guangyaShareLinkRepo) List(ctx context.Context) ([]*domain.GuangyaShareLink, error) {
 	rows, err := r.db.read.QueryContext(ctx,
@@ -105,14 +106,16 @@ func (r *guangyaShareLinkRepo) UpdateDestination(ctx context.Context, shareID st
 		return domain.Errorf(domain.CodeValidation, "分享 ID 不能为空")
 	}
 	var (
-		accountID int64
-		parentID  string
-		basePath  string
-		baseDirs  = []byte("[]")
-		title     string
-		season    = 1
-		isSeries  = 1
-		autoStrm  = 1
+		accountID    int64
+		parentID     string
+		basePath     string
+		baseDirs     = []byte("[]")
+		title        string
+		season       = 1
+		isSeries     = 1
+		autoStrm     = 1
+		autoScrape   = 1
+		scrapeTaskID int64
 	)
 	if dest != nil {
 		accountID = dest.AccountID
@@ -129,13 +132,16 @@ func (r *guangyaShareLinkRepo) UpdateDestination(ctx context.Context, shareID st
 		season = dest.Season
 		isSeries = boolToInt(dest.IsSeries)
 		autoStrm = boolToInt(dest.AutoStrm)
+		autoScrape = boolToInt(dest.AutoScrape)
+		scrapeTaskID = dest.ScrapeTaskID
 	}
 	result, err := r.db.write.ExecContext(ctx,
 		`UPDATE buei_guangya_share_links
 		 SET last_account_id=?, last_parent_id=?, last_base_path=?, last_base_dirs=?, last_title=?,
-		     last_season=?, last_is_series=?, auto_strm=?, updated_at=?
+		     last_season=?, last_is_series=?, auto_strm=?, auto_scrape=?, auto_scrape_task_id=?, updated_at=?
 		 WHERE share_id=?`,
-		accountID, parentID, basePath, string(baseDirs), title, season, isSeries, autoStrm, tsValue(time.Now().UTC()), shareID,
+		accountID, parentID, basePath, string(baseDirs), title, season, isSeries, autoStrm,
+		autoScrape, scrapeTaskID, tsValue(time.Now().UTC()), shareID,
 	)
 	if err != nil {
 		return wrapDB(err)
@@ -250,13 +256,15 @@ func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShare
 		replaceFind    string
 		replaceWith    string
 		autoStrm       int
+		autoScrape     int
+		scrapeTaskID   int64
 	)
 	if err := scanner.Scan(
 		&link.ID, &link.ShareID, &link.URL, &link.Password, &link.Title, &link.Owner,
 		&createdAt, &updatedAt, &lastUsed,
 		&lastAccountID, &lastParentID, &lastBasePath, &lastBaseDirs,
 		&lastTitle, &lastSeason, &lastIsSeries, &lastBrowsePath,
-		&replaceEnabled, &replaceFind, &replaceWith, &autoStrm,
+		&replaceEnabled, &replaceFind, &replaceWith, &autoStrm, &autoScrape, &scrapeTaskID,
 	); err != nil {
 		return nil, err
 	}
@@ -265,13 +273,15 @@ func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShare
 	link.LastUsedAt = parseTS(lastUsed)
 	if lastAccountID > 0 {
 		dest := &domain.GuangyaShareDestination{
-			AccountID: lastAccountID,
-			ParentID:  lastParentID,
-			BasePath:  lastBasePath,
-			Title:     lastTitle,
-			Season:    lastSeason,
-			IsSeries:  lastIsSeries != 0,
-			AutoStrm:  autoStrm != 0,
+			AccountID:    lastAccountID,
+			ParentID:     lastParentID,
+			BasePath:     lastBasePath,
+			Title:        lastTitle,
+			Season:       lastSeason,
+			IsSeries:     lastIsSeries != 0,
+			AutoStrm:     autoStrm != 0,
+			AutoScrape:   autoScrape != 0,
+			ScrapeTaskID: scrapeTaskID,
 		}
 		if strings.TrimSpace(lastBaseDirs) != "" {
 			_ = json.Unmarshal([]byte(lastBaseDirs), &dest.BaseDirs)
