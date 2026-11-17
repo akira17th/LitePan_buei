@@ -71,6 +71,9 @@ func wireServices(cfg config.Config, logs *logx.Manager, st *storeBundle, core *
 	playbackSvc := playback.NewService(core.exec, core.cache)
 	playbackSvc.SetLogger(logs.For(logx.ModuleSystem))
 	strmSvc, coord := wireSTRM(st, fileSvc, playbackSvc, core.bus, logs, cfg.DataDir, cfg.StrmDir, cfg.ListenAddr, core.secret)
+	// #region buei:guangya share auto strm
+	bueiSvc.guangyaShare.SetStrmGenerator(bueiStrmDirectoryGenerator(core.exec, strmSvc))
+	// #endregion buei:guangya share auto strm
 	strmDeleteSvc := strmdelete.New(strmdelete.Options{
 		Configs: st.store.Configs,
 		Tasks:   st.store.StrmTasks,

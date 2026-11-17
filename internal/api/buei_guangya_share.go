@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"litepan/internal/buei/guangyashare"
 	"litepan/internal/domain"
@@ -28,6 +29,7 @@ type bueiGuangyaShareDestinationDTO struct {
 	Season    int      `json:"season"`
 	IsSeries  bool     `json:"is_series"`
 	BaseDirs  []string `json:"base_dirs,omitempty"`
+	AutoStrm  bool     `json:"auto_strm"`
 }
 
 type bueiGuangyaShareDestinationBaseDTO struct {
@@ -123,6 +125,7 @@ func bueiGuangyaShareDestinationToDTO(dest *domain.GuangyaShareDestination) *bue
 		Season:    dest.Season,
 		IsSeries:  dest.IsSeries,
 		BaseDirs:  dest.BaseDirs,
+		AutoStrm:  dest.AutoStrm,
 	}
 }
 
@@ -240,6 +243,8 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 		Title      string   `json:"title"`
 		Season     int      `json:"season"`
 		IsSeries   bool     `json:"is_series"`
+		AutoStrm   bool     `json:"auto_strm"`
+		ProgressID string   `json:"progress_id"`
 		Files      []struct {
 			FileID       string `json:"file_id"`
 			OriginalName string `json:"original_name"`
@@ -298,6 +303,8 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 		Files:         files,
 		BrowsePath:    browsePath,
 		RenameReplace: renameReplace,
+		AutoStrm:      in.AutoStrm,
+		ProgressID:    in.ProgressID,
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -309,6 +316,27 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 		"renamed":          res.Renamed,
 		"rename_skipped":   res.RenameSkipped,
 		"rename_scheduled": res.RenameScheduled,
+		"strm_generated":   res.StrmGenerated,
+		"strm_matched":     res.StrmMatched,
+		"strm_scheduled":   res.StrmScheduled,
+		"strm_error":       res.StrmError,
+	})
+}
+
+func (h *Handler) bueiGuangyaShareProgress(w http.ResponseWriter, r *http.Request) {
+	if !ensureServiceReady(w, h.buei.GuangyaShare != nil) {
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		writeErr(w, domain.Errorf(domain.CodeValidation, "缺少进度标识"))
+		return
+	}
+	progress, ok := h.buei.GuangyaShare.TransferProgress(id)
+	writeOK(w, map[string]any{
+		"found": ok,
+		"phase": progress.Phase,
+		"error": progress.Error,
 	})
 }
 

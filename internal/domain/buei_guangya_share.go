@@ -22,6 +22,8 @@ type GuangyaShareDestination struct {
 	Season    int      `json:"season"`
 	IsSeries  bool     `json:"is_series"`
 	BaseDirs  []string `json:"base_dirs,omitempty"`
+	// AutoStrm 表示转存成功后自动在目标文件夹生成 STRM。
+	AutoStrm bool `json:"auto_strm"`
 }
 
 // GuangyaShareRenameReplace 是保存的“替换文本”重命名规则。

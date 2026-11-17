@@ -3,6 +3,7 @@ package guangyashare
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -428,11 +429,12 @@ func TestServiceSaveDestination(t *testing.T) {
 		Title:     "测试电影 (2026)",
 		Season:    3,
 		IsSeries:  false,
+		AutoStrm:  true,
 	}
 	svc.saveDestination(context.Background(), testShareID, dest)
 
 	saved := repo.links[testShareID].LastDestination
-	if saved == nil || saved.ParentID != "dir-2" || saved.Title != "测试电影 (2026)" || saved.Season != 3 || saved.IsSeries ||
+	if saved == nil || saved.ParentID != "dir-2" || saved.Title != "测试电影 (2026)" || saved.Season != 3 || saved.IsSeries || !saved.AutoStrm ||
 		len(saved.BaseDirs) != 2 || saved.BaseDirs[1] != "电影" {
 		t.Fatalf("unexpected saved destination: %+v", saved)
 	}
@@ -506,6 +508,49 @@ func TestServiceTransferredHistory(t *testing.T) {
 	}
 	if len(transfers.files[testShareID]) != 0 {
 		t.Fatalf("transferred history should be deleted with link, got %+v", transfers.files[testShareID])
+	}
+}
+
+func TestTargetDirectorySegments(t *testing.T) {
+	got := targetDirectorySegments([]string{"媒体", "", "电视剧 "}, []string{"走马上任 (2026)", "Season 01"})
+	want := []string{"媒体", "电视剧", "走马上任 (2026)", "Season 01"}
+	if len(got) != len(want) {
+		t.Fatalf("targetDirectorySegments() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("targetDirectorySegments() = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestServiceGenerateStrm(t *testing.T) {
+	svc := &Service{}
+	if generated, matched, errText := svc.generateStrm(context.Background(), 2, "dir-1", []string{"剧集"}); generated != 0 || matched || errText != "" {
+		t.Fatalf("未注入生成器时应静默跳过，实际 = %d/%v/%q", generated, matched, errText)
+	}
+
+	var gotDirs []string
+	svc.SetStrmGenerator(func(_ context.Context, accountID int64, parentID string, dirs []string) (int64, bool, error) {
+		if accountID != 2 || parentID != "dir-1" {
+			t.Fatalf("unexpected target: %d %s", accountID, parentID)
+		}
+		gotDirs = append([]string{}, dirs...)
+		return 3, true, nil
+	})
+	generated, matched, errText := svc.generateStrm(context.Background(), 2, "dir-1", []string{"剧集", "Season 01"})
+	if generated != 3 || !matched || errText != "" {
+		t.Fatalf("unexpected generate result: %d/%v/%q", generated, matched, errText)
+	}
+	if len(gotDirs) != 2 || gotDirs[1] != "Season 01" {
+		t.Fatalf("unexpected dirs: %v", gotDirs)
+	}
+
+	svc.SetStrmGenerator(func(context.Context, int64, string, []string) (int64, bool, error) {
+		return 0, false, errors.New("strm task busy")
+	})
+	if generated, matched, errText := svc.generateStrm(context.Background(), 2, "dir-1", nil); generated != 0 || matched || errText == "" {
+		t.Fatalf("生成失败时应回传错误信息，实际 = %d/%v/%q", generated, matched, errText)
 	}
 }
 

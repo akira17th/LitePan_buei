@@ -26,6 +26,8 @@ const (
 	renameLaterTimeout  = 15 * time.Minute
 	renameLaterInterval = 5 * time.Second
 	maxRenamePairs      = 2000
+	// 转存成功后生成 STRM 的超时；失败只记录日志，不影响转存结果。
+	strmGenerateTimeout = 60 * time.Second
 	// lastBaseConfigKey 保存在通用 configs 表中，避免浏览器清理丢失上次转存位置。
 	lastBaseConfigKey = "buei_guangya_share_last_base"
 )
@@ -40,6 +42,9 @@ type Options struct {
 	Log       *slog.Logger
 	// InvalidateDir 在重命名后失效目标目录缓存；为空时跳过。
 	InvalidateDir func(accountID int64, parentID string)
+	// GenerateStrm 在指定目录内生成/更新 STRM；由装配层注入，为空时跳过。
+	// dirs 是目标目录相对账号根的目录段数组。
+	GenerateStrm func(ctx context.Context, accountID int64, parentID string, dirs []string) (generated int64, matched bool, err error)
 }
 
 type cachedShareToken struct {
@@ -57,7 +62,11 @@ type Service struct {
 	log       *slog.Logger
 	// invalidateDir 由装配层注入，避免服务直接依赖缓存实现。
 	invalidateDir func(accountID int64, parentID string)
-	client        *shareClient
+	// strmGen 同理由装配层注入，避免服务直接依赖 STRM 包。
+	strmGen func(ctx context.Context, accountID int64, parentID string, dirs []string) (int64, bool, error)
+	client  *shareClient
+	// progress 记录进行中的转存阶段，供前端轮询。
+	progress *transferProgressTracker
 
 	tokenMu sync.Mutex
 	tokens  map[string]cachedShareToken
@@ -134,6 +143,10 @@ type TransferInput struct {
 	BrowsePath []domain.GuangyaShareBrowseCrumb
 	// RenameReplace 是本次使用的替换文本规则，成功后保存供下次直接应用。
 	RenameReplace *domain.GuangyaShareRenameReplace
+	// AutoStrm 表示转存成功后自动在目标文件夹生成 STRM。
+	AutoStrm bool
+	// ProgressID 是前端生成的进度标识，用于轮询「转存 → 重命名 → 生成 STRM」阶段。
+	ProgressID string
 }
 
 // TransferFile 是本次转存的一个文件及其新旧名称。
@@ -163,6 +176,14 @@ type TransferResult struct {
 	Renamed         int    `json:"renamed"`
 	RenameSkipped   int    `json:"rename_skipped"`
 	RenameScheduled bool   `json:"rename_scheduled"`
+	// StrmGenerated 是自动生成 STRM 时新建/更新的文件数；0 表示没有待生成内容。
+	StrmGenerated int64 `json:"strm_generated"`
+	// StrmMatched 表示目标目录命中了 STRM 任务；未命中时不会生成任何文件。
+	StrmMatched bool `json:"strm_matched"`
+	// StrmScheduled 表示转存任务等待超时，STRM 生成已转为后台跟进。
+	StrmScheduled bool `json:"strm_scheduled"`
+	// StrmError 是自动生成 STRM 失败的原因（转存本身仍然成功）。
+	StrmError string `json:"strm_error,omitempty"`
 }
 
 // New 创建服务。
@@ -179,9 +200,27 @@ func New(opts Options) *Service {
 		configs:       opts.Configs,
 		log:           logger,
 		invalidateDir: opts.InvalidateDir,
+		strmGen:       opts.GenerateStrm,
 		client:        newShareClient(),
+		progress:      newTransferProgressTracker(),
 		tokens:        make(map[string]cachedShareToken),
 	}
+}
+
+// TransferProgress 返回一次转存的阶段进度，供前端轮询展示。
+func (s *Service) TransferProgress(id string) (TransferProgress, bool) {
+	if s == nil {
+		return TransferProgress{}, false
+	}
+	return s.progress.get(id)
+}
+
+// SetStrmGenerator 注入转存后自动生成 STRM 的适配器；装配期调用一次。
+func (s *Service) SetStrmGenerator(gen func(ctx context.Context, accountID int64, parentID string, dirs []string) (int64, bool, error)) {
+	if s == nil {
+		return
+	}
+	s.strmGen = gen
 }
 
 // Parse 解析分享链接并列出分享根目录内容。
@@ -314,7 +353,7 @@ func (s *Service) List(ctx context.Context, in ListInput) (*ListResult, error) {
 }
 
 // Transfer 把分享内选中的文件转存到指定光鸭账号目录。
-func (s *Service) Transfer(ctx context.Context, in TransferInput) (*TransferResult, error) {
+func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *TransferResult, err error) {
 	if s == nil {
 		return nil, domain.Errorf(domain.CodeInternal, "光鸭分享服务未初始化")
 	}
@@ -347,6 +386,17 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (*TransferResu
 	if !account.IsActive {
 		return nil, domain.Errorf(domain.CodeValidation, "目标账号已停用")
 	}
+
+	progressID := strings.TrimSpace(in.ProgressID)
+	// 进度跟踪在真正开始转存时登记；前面的校验失败不需要进度。
+	s.progress.start(progressID)
+	defer func() {
+		if err != nil {
+			s.progress.finish(progressID, err.Error())
+			return
+		}
+		s.progress.finish(progressID, "")
+	}()
 
 	summary, err := s.client.shareSummary(ctx, shareID)
 	if err != nil {
@@ -396,16 +446,23 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (*TransferResu
 
 	files := normalizeTransferFiles(in.Files)
 	renamePlan := buildRenamePlan(files)
-	var renamed, renameSkipped int
-	renameScheduled := false
+	result := &TransferResult{TaskID: taskID, Completed: completed}
+	strmDirs := targetDirectorySegments(in.BaseDirs, targetPath)
 	if completed {
 		if len(renamePlan) > 0 {
-			renamed, renameSkipped = s.renameAfterRestore(ctx, in.AccountID, targetParentID, renamePlan)
+			s.progress.setPhase(progressID, GuangyaSharePhaseRename)
+			result.Renamed, result.RenameSkipped = s.renameAfterRestore(ctx, in.AccountID, targetParentID, renamePlan)
 		}
 		s.saveTransferred(ctx, shareID, in.AccountID, targetParentID, files)
-	} else if len(files) > 0 {
-		s.scheduleRenameAfterRestore(shareID, in.AccountID, targetParentID, renamePlan, files)
-		renameScheduled = true
+		if in.AutoStrm {
+			s.progress.setPhase(progressID, GuangyaSharePhaseStrm)
+			result.StrmGenerated, result.StrmMatched, result.StrmError = s.generateStrm(ctx, in.AccountID, targetParentID, strmDirs)
+		}
+	} else if len(files) > 0 || in.AutoStrm {
+		// 任务等待超时：文件可能仍在落地，重命名与 STRM 生成一起转为后台跟进。
+		s.scheduleAfterRestore(shareID, in.AccountID, targetParentID, renamePlan, files, strmDirs, in.AutoStrm)
+		result.RenameScheduled = true
+		result.StrmScheduled = in.AutoStrm
 	}
 
 	// 任务提交成功即记录目标预设；completed=false 只表示等待超时，任务通常仍在执行。
@@ -423,18 +480,45 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (*TransferResu
 		Title:     storedTitle,
 		Season:    clampShareSeason(in.Season),
 		IsSeries:  in.IsSeries,
+		AutoStrm:  in.AutoStrm,
 	})
 
 	if !completed {
 		s.log.Info("光鸭分享转存任务等待超时，任务可能仍在执行", "account_id", in.AccountID, "task_id", taskID, "count", len(fileIDs))
 	}
-	return &TransferResult{
-		TaskID:          taskID,
-		Completed:       completed,
-		Renamed:         renamed,
-		RenameSkipped:   renameSkipped,
-		RenameScheduled: renameScheduled,
-	}, nil
+	if result.StrmGenerated > 0 {
+		s.log.Info("光鸭分享转存后自动生成 STRM", "account_id", in.AccountID, "parent_id", targetParentID, "dirs", strmDirs, "count", result.StrmGenerated)
+	}
+	return result, nil
+}
+
+// targetDirectorySegments 拼出目标目录相对账号根的目录段数组。
+func targetDirectorySegments(baseDirs, targetPath []string) []string {
+	dirs := make([]string, 0, len(baseDirs)+len(targetPath))
+	for _, dir := range append(append([]string{}, baseDirs...), targetPath...) {
+		if trimmed := strings.TrimSpace(dir); trimmed != "" {
+			dirs = append(dirs, trimmed)
+		}
+	}
+	return dirs
+}
+
+// generateStrm 在目标目录生成 STRM；失败只记录日志并回传给前端提示，不影响转存结果。
+func (s *Service) generateStrm(ctx context.Context, accountID int64, parentID string, dirs []string) (int64, bool, string) {
+	if s == nil || s.strmGen == nil {
+		return 0, false, ""
+	}
+	runCtx, cancel := context.WithTimeout(ctx, strmGenerateTimeout)
+	defer cancel()
+	generated, matched, err := s.strmGen(runCtx, accountID, parentID, dirs)
+	if err != nil {
+		s.logger().Warn("光鸭分享转存后自动生成 STRM 失败", "account_id", accountID, "parent_id", parentID, "dirs", dirs, "error", err)
+		return 0, false, err.Error()
+	}
+	if !matched {
+		s.logger().Info("光鸭分享转存目标目录未匹配 STRM 任务，跳过自动生成", "account_id", accountID, "dirs", dirs)
+	}
+	return generated, matched, ""
 }
 
 // normalizeTransferFiles 清洗本次转存的文件清单，去重并限制条目数。
@@ -563,7 +647,7 @@ func (s *Service) renameAfterRestore(ctx context.Context, accountID int64, paren
 	}
 	deadline := time.Now().Add(renameWaitTimeout)
 	for {
-		present, err := s.targetFileNames(ctx, accountID, parentID)
+		present, err := s.targetEntryNames(ctx, accountID, parentID)
 		if err == nil && allNamesPresent(present, plan) {
 			break
 		}
@@ -590,17 +674,25 @@ func (s *Service) renameAfterRestore(ctx context.Context, accountID int64, paren
 	return renamed, skipped
 }
 
-// scheduleRenameAfterRestore 在转存任务等待超时后继续跟进，完成后补做重命名。
-func (s *Service) scheduleRenameAfterRestore(shareID string, accountID int64, parentID string, plan []RenamePair, files []TransferFile) {
+// scheduleAfterRestore 在转存任务等待超时后继续跟进，完成后补做重命名与 STRM 生成。
+func (s *Service) scheduleAfterRestore(shareID string, accountID int64, parentID string, plan []RenamePair, files []TransferFile, strmDirs []string, autoStrm bool) {
 	log := s.logger()
+	// 后台等待的名单包含文件夹：只转存文件夹时也要等它们出现，避免过早生成 STRM。
+	waitPlan := plan
+	if len(files) > 0 {
+		waitPlan = make([]RenamePair, 0, len(files))
+		for _, file := range files {
+			waitPlan = append(waitPlan, RenamePair{FileName: file.OriginalName, NewName: file.NewName})
+		}
+	}
 	go func() {
 		safego.Guard(log, "buei.guangyashare.rename", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), renameLaterTimeout)
 			defer cancel()
 			deadline := time.Now().Add(renameLaterTimeout)
 			for {
-				present, err := s.targetFileNames(ctx, accountID, parentID)
-				if err == nil && allNamesPresent(present, plan) {
+				present, err := s.targetEntryNames(ctx, accountID, parentID)
+				if err == nil && allNamesPresent(present, waitPlan) {
 					break
 				}
 				if time.Now().After(deadline) || ctx.Err() != nil {
@@ -622,6 +714,22 @@ func (s *Service) scheduleRenameAfterRestore(shareID string, accountID int64, pa
 				}
 			}
 			s.saveTransferred(ctx, shareID, accountID, parentID, files)
+			// 后台补生成 STRM：使用独立超时，避免和重命名等待共享同一个 deadline。
+			if autoStrm {
+				// 顶层条目出现后再留一点缓冲，让其余内容落盘。
+				settle := time.NewTimer(renameLaterInterval)
+				select {
+				case <-ctx.Done():
+					settle.Stop()
+				case <-settle.C:
+				}
+				strmCtx, strmCancel := context.WithTimeout(context.Background(), strmGenerateTimeout)
+				generated, _, strmErr := s.generateStrm(strmCtx, accountID, parentID, strmDirs)
+				strmCancel()
+				if strmErr == "" {
+					log.Info("光鸭分享转存后台补生成 STRM 结束", "account_id", accountID, "parent_id", parentID, "dirs", strmDirs, "count", generated)
+				}
+			}
 			log.Info("光鸭分享转存后台补重命名结束", "account_id", accountID, "parent_id", parentID, "renamed", renamed, "skipped", skipped)
 		})
 	}()
@@ -640,7 +748,7 @@ func allNamesPresent(present map[string]int, plan []RenamePair) bool {
 	return true
 }
 
-func (s *Service) targetFileNames(ctx context.Context, accountID int64, parentID string) (map[string]int, error) {
+func (s *Service) targetEntryNames(ctx context.Context, accountID int64, parentID string) (map[string]int, error) {
 	counts := map[string]int{}
 	err := s.exec.Run(ctx, accountID, func(drv driver.Driver) error {
 		items, listErr := drv.ListFiles(ctx, parentID)
@@ -648,9 +756,7 @@ func (s *Service) targetFileNames(ctx context.Context, accountID int64, parentID
 			return listErr
 		}
 		for _, item := range items {
-			if !item.IsDir {
-				counts[item.Name]++
-			}
+			counts[item.Name]++
 		}
 		return nil
 	})

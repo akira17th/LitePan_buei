@@ -21,7 +21,7 @@ func NewGuangyaShareLinkRepo(db *DB) domain.GuangyaShareLinkRepository {
 
 const guangyaShareLinkColumns = `id, share_id, url, password, title, owner, created_at, updated_at, last_used_at,
 	last_account_id, last_parent_id, last_base_path, last_base_dirs, last_title, last_season, last_is_series,
-	last_browse_path, rename_replace_enabled, rename_replace_find, rename_replace_with`
+	last_browse_path, rename_replace_enabled, rename_replace_find, rename_replace_with, auto_strm`
 
 func (r *guangyaShareLinkRepo) List(ctx context.Context) ([]*domain.GuangyaShareLink, error) {
 	rows, err := r.db.read.QueryContext(ctx,
@@ -112,6 +112,7 @@ func (r *guangyaShareLinkRepo) UpdateDestination(ctx context.Context, shareID st
 		title     string
 		season    = 1
 		isSeries  = 1
+		autoStrm  = 1
 	)
 	if dest != nil {
 		accountID = dest.AccountID
@@ -127,13 +128,14 @@ func (r *guangyaShareLinkRepo) UpdateDestination(ctx context.Context, shareID st
 		title = dest.Title
 		season = dest.Season
 		isSeries = boolToInt(dest.IsSeries)
+		autoStrm = boolToInt(dest.AutoStrm)
 	}
 	result, err := r.db.write.ExecContext(ctx,
 		`UPDATE buei_guangya_share_links
 		 SET last_account_id=?, last_parent_id=?, last_base_path=?, last_base_dirs=?, last_title=?,
-		     last_season=?, last_is_series=?, updated_at=?
+		     last_season=?, last_is_series=?, auto_strm=?, updated_at=?
 		 WHERE share_id=?`,
-		accountID, parentID, basePath, string(baseDirs), title, season, isSeries, tsValue(time.Now().UTC()), shareID,
+		accountID, parentID, basePath, string(baseDirs), title, season, isSeries, autoStrm, tsValue(time.Now().UTC()), shareID,
 	)
 	if err != nil {
 		return wrapDB(err)
@@ -247,13 +249,14 @@ func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShare
 		replaceEnabled int
 		replaceFind    string
 		replaceWith    string
+		autoStrm       int
 	)
 	if err := scanner.Scan(
 		&link.ID, &link.ShareID, &link.URL, &link.Password, &link.Title, &link.Owner,
 		&createdAt, &updatedAt, &lastUsed,
 		&lastAccountID, &lastParentID, &lastBasePath, &lastBaseDirs,
 		&lastTitle, &lastSeason, &lastIsSeries, &lastBrowsePath,
-		&replaceEnabled, &replaceFind, &replaceWith,
+		&replaceEnabled, &replaceFind, &replaceWith, &autoStrm,
 	); err != nil {
 		return nil, err
 	}
@@ -268,6 +271,7 @@ func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShare
 			Title:     lastTitle,
 			Season:    lastSeason,
 			IsSeries:  lastIsSeries != 0,
+			AutoStrm:  autoStrm != 0,
 		}
 		if strings.TrimSpace(lastBaseDirs) != "" {
 			_ = json.Unmarshal([]byte(lastBaseDirs), &dest.BaseDirs)

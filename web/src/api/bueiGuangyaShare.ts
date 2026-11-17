@@ -33,6 +33,7 @@ export interface GuangyaShareDestination {
   season: number;
   is_series: boolean;
   base_dirs?: string[];
+  auto_strm: boolean;
 }
 
 export interface GuangyaShareRenameReplace {
@@ -121,6 +122,22 @@ export interface GuangyaShareTransferPayload {
   files: GuangyaShareTransferFile[];
   browse_path: GuangyaShareBrowseCrumb[];
   rename_replace: GuangyaShareRenameReplace;
+  auto_strm: boolean;
+  progress_id?: string;
+}
+
+export type GuangyaShareTransferPhase =
+  | "transfer"
+  | "rename"
+  | "strm"
+  | "done"
+  | "failed"
+  | "";
+
+export interface GuangyaShareTransferProgress {
+  found: boolean;
+  phase: GuangyaShareTransferPhase;
+  error?: string;
 }
 
 export interface GuangyaShareTransferResult {
@@ -129,6 +146,10 @@ export interface GuangyaShareTransferResult {
   renamed: number;
   rename_skipped: number;
   rename_scheduled: boolean;
+  strm_generated: number;
+  strm_matched: boolean;
+  strm_scheduled: boolean;
+  strm_error?: string;
 }
 
 export const bueiGuangyaShareApi = {
@@ -147,6 +168,8 @@ export const bueiGuangyaShareApi = {
       signal,
     ),
   saved: () => http.get<{ items: GuangyaShareSavedLink[] }>("/admin/tools/guangya-share/saved"),
+  progress: (id: string) =>
+    http.get<GuangyaShareTransferProgress>("/admin/tools/guangya-share/progress", { id }),
   discard: (shareId: string, files: { file_id: string; original_name: string }[]) =>
     http.post<{ discarded: number }>("/admin/tools/guangya-share/discard", {
       share_id: shareId,

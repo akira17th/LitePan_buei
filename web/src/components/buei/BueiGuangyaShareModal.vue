@@ -6,6 +6,7 @@ import {
   type GuangyaShareItem,
   type GuangyaShareKind,
   type GuangyaShareParseResult,
+  type GuangyaShareTransferPhase,
   type GuangyaShareBrowseCrumb,
   type GuangyaShareRenameReplace,
   type GuangyaShareSavedLink,
@@ -94,6 +95,8 @@ const destination = ref<DestinationBase>({ accountId: 0, accountName: "", parent
 const folderTitle = ref("");
 const isSeries = ref(true);
 const season = ref(1);
+// 转存成功后执行：默认自动为转存目标文件夹生成 STRM。
+const autoStrm = ref(true);
 const pickerOpen = ref(false);
 const transferring = ref(false);
 const discarding = ref(false);
@@ -110,6 +113,10 @@ const renameReplaceWith = ref("");
 const renameStartEpisode = ref(1);
 const transferConfirmOpen = ref(false);
 const pendingTransfer = ref<PendingTransfer | null>(null);
+// 转存阶段进度：由后端记录，前端轮询展示「转存中 → 重命名 → 生成 STRM」。
+const transferPhase = ref<GuangyaShareTransferPhase>("");
+let progressTimer: number | undefined;
+let progressIdRef = "";
 
 interface PendingTransfer {
   target: string;
@@ -118,6 +125,7 @@ interface PendingTransfer {
   files: { fileId: string; originalName: string; newName: string; isDir: boolean }[];
   browsePath: GuangyaShareBrowseCrumb[];
   renameReplace: { enabled: boolean; find: string; replaceWith: string };
+  autoStrm: boolean;
   unchangedCount: number;
   segments: string[];
   base: DestinationBase;
@@ -668,6 +676,8 @@ function applyDestinationForShare(res: GuangyaShareParseResult) {
   folderTitle.value = toHalfWidthBrackets(draft?.title || res.title || res.items[0]?.name || "").trim();
   isSeries.value = draft ? draft.is_series : true;
   season.value = draft ? draft.season : 1;
+  // 未保存过预设时保持默认开启。
+  autoStrm.value = draft ? draft.auto_strm !== false : true;
 }
 
 function normalizeFolderTitle() {
@@ -897,6 +907,7 @@ function resetParse() {
   folderTitle.value = "";
   isSeries.value = true;
   season.value = 1;
+  autoStrm.value = true;
   sortKey.value = "time";
   sortDir.value = "desc";
 }
@@ -1144,6 +1155,7 @@ function submitTransfer() {
     files,
     browsePath,
     renameReplace,
+    autoStrm: autoStrm.value,
     unchangedCount: previews.length - changedRows.length,
     segments: [...targetSegments.value],
     base,
@@ -1160,15 +1172,64 @@ function cancelTransferConfirm() {
   pendingTransfer.value = null;
 }
 
+const transferPhaseLabel = computed(() => {
+  switch (transferPhase.value) {
+    case "rename":
+      return "重命名中…";
+    case "strm":
+      return "生成 STRM 中…";
+    case "done":
+      return "即将完成…";
+    default:
+      return "转存中…";
+  }
+});
+
+function newProgressId() {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi && typeof cryptoApi.randomUUID === "function") return cryptoApi.randomUUID();
+  return `gys-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function stopProgressPolling() {
+  if (progressTimer !== undefined) {
+    window.clearTimeout(progressTimer);
+    progressTimer = undefined;
+  }
+}
+
+// 轮询转存阶段；进度只是辅助展示，请求失败时安静重试。
+async function pollTransferProgress(id: string) {
+  stopProgressPolling();
+  try {
+    const progress = await bueiGuangyaShareApi.progress(id);
+    if (!transferring.value || progressIdRef !== id) return;
+    if (progress.found && progress.phase) transferPhase.value = progress.phase;
+  } catch {
+    // 忽略单次失败，下一轮继续。
+  } finally {
+    if (transferring.value && progressIdRef === id) {
+      progressTimer = window.setTimeout(() => void pollTransferProgress(id), 800);
+    }
+  }
+}
+
 async function confirmTransfer() {
   const pending = pendingTransfer.value;
   if (!pending || !result.value || transferring.value || discarding.value) return;
-  transferConfirmOpen.value = false;
   transferring.value = true;
+  transferPhase.value = "transfer";
+  const progressId = newProgressId();
+  progressIdRef = progressId;
+  void pollTransferProgress(progressId);
   let completed = false;
   let renamed = 0;
   let renameSkipped = 0;
   let renameScheduled = false;
+  let strmGenerated = 0;
+  let strmMatched = false;
+  let strmScheduled = false;
+  let strmError = "";
   try {
     const res = await bueiGuangyaShareApi.transfer({
       url: parsedURL.value || url.value.trim(),
@@ -1195,11 +1256,17 @@ async function confirmTransfer() {
         find: pending.renameReplace.find,
         replace_with: pending.renameReplace.replaceWith,
       },
+      auto_strm: pending.autoStrm,
+      progress_id: progressId,
     });
     completed = res.completed;
     renamed = res.renamed;
     renameSkipped = res.rename_skipped;
     renameScheduled = res.rename_scheduled;
+    strmGenerated = res.strm_generated || 0;
+    strmMatched = !!res.strm_matched;
+    strmScheduled = !!res.strm_scheduled;
+    strmError = res.strm_error || "";
     if (completed && result.value && pending.files.length) {
       const now = new Date().toISOString();
       const merged = new Map((result.value.transferred_files ?? []).map((file) => [file.file_id, file]));
@@ -1218,9 +1285,10 @@ async function confirmTransfer() {
     }
     clearSelection();
     if (!completed) {
+      const followUps = [renameScheduled ? "重命名" : "", strmScheduled ? "STRM 生成" : ""].filter(Boolean);
       toast.info(
-        renameScheduled
-          ? "转存任务已提交，完成后会自动重命名，请稍后查看"
+        followUps.length
+          ? `转存任务已提交，完成后会自动执行${followUps.join("与")}，请稍后查看`
           : "转存任务已提交，内容较多时可能需要稍等片刻",
       );
     }
@@ -1228,7 +1296,11 @@ async function confirmTransfer() {
     toast.error(getApiErrorMessage(error, "转存失败"));
     return;
   } finally {
+    stopProgressPolling();
+    progressIdRef = "";
+    transferPhase.value = "";
     transferring.value = false;
+    transferConfirmOpen.value = false;
     pendingTransfer.value = null;
   }
   if (!completed) return;
@@ -1239,9 +1311,21 @@ async function confirmTransfer() {
   const skippedNote = renameSkipped
     ? ` 有 ${renameSkipped} 项未能重命名，请到目标目录检查。`
     : "";
+  let strmNote = "";
+  if (pending.autoStrm) {
+    if (strmError) {
+      strmNote = ` 自动生成 STRM 失败：${strmError}`;
+    } else if (strmGenerated > 0) {
+      strmNote = ` 已生成 ${strmGenerated} 个 STRM。`;
+    } else if (strmMatched) {
+      strmNote = " STRM 已是最新，无需更新。";
+    } else {
+      strmNote = " 目标目录未匹配 STRM 任务，未生成 STRM。";
+    }
+  }
   const choice = await showConfirm({
     title: "转存完成",
-    message: `已将 ${pending.count} 项内容保存到「${pending.target}」。${renameNote}${skippedNote}`,
+    message: `已将 ${pending.count} 项内容保存到「${pending.target}」。${renameNote}${skippedNote}${strmNote}`,
     hint: "可以留在这里继续操作，或到前台文件页查看转存结果。",
     icon: "info",
     size: "sm",
@@ -1266,6 +1350,9 @@ function close() {
   pickerOpen.value = false;
   transferConfirmOpen.value = false;
   pendingTransfer.value = null;
+  stopProgressPolling();
+  progressIdRef = "";
+  transferPhase.value = "";
   emit("close");
 }
 
@@ -1309,6 +1396,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   parseAbort?.abort();
+  stopProgressPolling();
 });
 </script>
 
@@ -1826,6 +1914,34 @@ onBeforeUnmount(() => {
                 <p v-if="renameReplaceError" class="gys__rule-error">{{ renameReplaceError }}</p>
               </div>
             </section>
+
+            <section
+              v-if="result && !result.need_password"
+              class="gys__panel gys__panel--post"
+              :class="{ 'is-busy': transferring }"
+            >
+              <div class="gys__panel-head">
+                <h4>转存成功后执行</h4>
+              </div>
+              <div class="gys__switch-row">
+                <span class="gys__switch-text">
+                  <span class="gys__switch-title">自动生成 STRM</span>
+                  <span class="gys__switch-desc">按目标目录命中的 STRM 任务生成/更新 STRM 文件</span>
+                </span>
+                <button
+                  type="button"
+                  class="gys__switch"
+                  :class="{ 'is-on': autoStrm }"
+                  role="switch"
+                  :aria-checked="autoStrm"
+                  aria-label="自动生成 STRM"
+                  :disabled="transferring"
+                  @click="autoStrm = !autoStrm"
+                >
+                  <span class="gys__switch-knob" />
+                </button>
+              </div>
+            </section>
           </div>
 
           <div class="gys__sidefoot">
@@ -1838,7 +1954,7 @@ onBeforeUnmount(() => {
               <small v-else>可在不同目录中分别勾选</small>
             </div>
             <AppButton class="gys__transfer" variant="primary" :disabled="!canTransfer" @click="submitTransfer">
-              {{ transferring ? "转存中…" : "开始转存" }}
+              {{ transferring ? transferPhaseLabel : "开始转存" }}
             </AppButton>
           </div>
         </aside>
@@ -1853,6 +1969,8 @@ onBeforeUnmount(() => {
     :renames="pendingTransfer?.renames || []"
     :unchanged-count="pendingTransfer?.unchangedCount || 0"
     :loading="transferring"
+    :phase="transferPhase"
+    :auto-strm="pendingTransfer?.autoStrm !== false"
     @confirm="confirmTransfer"
     @cancel="cancelTransferConfirm"
   />
@@ -1878,7 +1996,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   width: min(94vw, 1240px);
-  height: min(90vh, 880px);
+  /* 预留 AppModal 遮罩的上下内边距，避免撑出页面级滚动条 */
+  height: min(88vh, 860px);
+  height: min(calc(100dvh - 96px), 860px);
   min-height: 0;
   background: var(--surface);
   border-radius: var(--radius-lg);
@@ -2879,6 +2999,80 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
 }
 
+.gys__panel--post {
+  flex: 0 0 auto;
+}
+
+.gys__panel--post.is-busy {
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+/* 「转存成功后执行」开关行 */
+.gys__switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0 2px;
+}
+
+.gys__switch-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.gys__switch-title {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.gys__switch-desc {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.gys__switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--border);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.gys__switch.is-on {
+  background: var(--brand);
+}
+
+.gys__switch:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.gys__switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform 0.15s ease;
+}
+
+.gys__switch.is-on .gys__switch-knob {
+  transform: translateX(16px);
+}
+
 .gys__rule {
   display: flex;
   align-items: flex-start;
@@ -3206,41 +3400,109 @@ onBeforeUnmount(() => {
   }
 }
 
+/* 窄屏：收藏 → 文件浏览 → 保存位置 → 自动重命名 依次纵向排列，转存按钮固定底部 */
 @media (max-width: 980px) {
   .gys {
-    width: 94vw;
-    height: min(92vh, 900px);
+    width: 96vw;
+    height: min(86vh, 800px);
+    height: min(calc(100dvh - 88px), 800px);
   }
+
   .gys__body {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+    padding: 10px 12px 0;
     overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
   }
-  .gys__main {
-    order: 1;
-    min-height: 340px;
-    padding: 0 14px 10px;
-  }
+
   .gys__savedcol {
+    order: 1;
+    flex: 0 0 auto;
+    min-height: 0;
+    max-height: 202px;
+    padding: 0;
+  }
+
+  .gys__main {
     order: 2;
-    max-height: 260px;
-    padding: 12px 14px;
+    flex: 0 0 auto;
+    min-height: 0;
+    padding: 0;
   }
+
+  /* 让保存位置与自动重命名参与同一列排布，底部按钮才能吸底 */
   .gys__side {
-    order: 3;
-    padding: 12px 14px;
+    display: contents;
   }
+
   .gys__side-scroll {
+    order: 3;
+    flex: 0 0 auto;
+    padding: 0;
     overflow: visible;
   }
-  .gys__savedcol .gys__panel--saved {
-    max-height: 240px;
+
+  .gys__sidefoot {
+    order: 4;
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    margin: auto 0 0;
+    padding: 8px 0 max(10px, env(safe-area-inset-bottom));
+    background: var(--surface);
+    border-top: 1px solid var(--border);
   }
+
+  .gys__panel--saved {
+    max-height: none;
+    min-height: 0;
+  }
+
+  .gys__panel--dest,
   .gys__panel--rename {
     flex: 0 0 auto;
   }
+
+  .gys__tablewrap {
+    flex: 0 0 auto;
+    max-height: 44vh;
+  }
+
   .gys__saved-body {
     overflow-y: auto;
+  }
+
+  .gys__sidefoot .gys__selection {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 600px) {
+  .gys {
+    width: 100%;
+    height: calc(100vh - 88px);
+    height: calc(100dvh - 88px);
+    max-height: none;
+    border-radius: var(--radius-md);
+  }
+
+  .gys__body {
+    padding: 8px 10px 0;
+  }
+
+  .gys__tablewrap {
+    max-height: 40vh;
+  }
+
+  .gys__table {
+    min-width: 540px;
   }
 }
 </style>
