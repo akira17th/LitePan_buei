@@ -53,13 +53,49 @@ type StepState = "pending" | "active" | "done" | "skipped";
 
 const PHASE_ORDER: GuangyaShareTransferPhase[] = ["transfer", "rename", "strm", "scrape", "emby"];
 
-const activeIndex = computed(() => {
-  if (props.done) return PHASE_ORDER.length;
-  if (!props.loading) return -1;
+// 主流程走完后，刮削与刷库仍在后台运行，不能直接把所有步骤标成完成。
+const phaseIndex = computed(() => {
   if (props.phase === "done" || props.phase === "failed") return PHASE_ORDER.length;
   const index = PHASE_ORDER.indexOf(props.phase || "transfer");
   return index < 0 ? 0 : index;
 });
+
+const asyncFinished = computed(() => props.phase === "done" || props.phase === "failed");
+
+const asyncRunning = computed(() => {
+  if (!props.done || asyncFinished.value) return false;
+  if (props.phase === "scrape" || props.phase === "emby") return true;
+  return !!props.scrapeProgress?.running || !!props.embyScheduled;
+});
+
+const dialogTitle = computed(() => {
+  if (!props.done) return "确认转存";
+  return asyncRunning.value ? "转存完成，联动处理中" : "转存完成";
+});
+
+function stepState(key: string, index: number, skipped: boolean): StepState {
+  if (skipped) return "skipped";
+  if (!props.done && !props.loading) return "pending";
+  if (!props.done) {
+    if (phaseIndex.value > index) return "done";
+    if (phaseIndex.value === index) return "active";
+    return "pending";
+  }
+  if (key === "transfer" || key === "rename" || key === "strm") return "done";
+  if (key === "scrape") {
+    if (asyncFinished.value || props.scrapeError) return "done";
+    if (props.scrapeProgress?.running) return "active";
+    // 刮削进度已结束，但后端可能还在等 5s 轮询切到刷库阶段。
+    if (props.scrapeProgress && !props.scrapeProgress.running) return "done";
+    if (props.scrapeStarted) return "active";
+    return "done";
+  }
+  // emby：刮削未结束时保持等待，刷库阶段再显示进行中。
+  if (asyncFinished.value || props.embyRefreshed || props.embyError) return "done";
+  if (props.phase === "emby") return "active";
+  if (props.embyScheduled) return "pending";
+  return "done";
+}
 
 // 每个阶段自己的结果摘要，完成时显示在该步骤下方。
 function stepDetail(key: string) {
@@ -88,8 +124,14 @@ function stepDetail(key: string) {
     case "emby":
       if (props.refreshEmby === false) return "已关闭";
       if (props.embyError) return `刷库失败：${props.embyError}`;
-      if (props.embyScheduled) return "刮削完成后自动刷库";
-      if (props.embyRefreshed) return "已触发刷库";
+      if (props.phase === "emby") return "刷库中…";
+      if (props.phase === "failed") return "刷库失败";
+      if (props.embyScheduled && props.phase !== "done") {
+        return props.scrapeProgress?.running || props.phase === "scrape"
+          ? "等待刮削完成"
+          : "准备刷库…";
+      }
+      if (props.embyRefreshed || props.phase === "done") return "已触发刷库";
       return "已跳过";
     default:
       return "";
@@ -110,14 +152,11 @@ const steps = computed(() => {
     },
     { key: "emby", label: "Emby 刷库", skipped: props.refreshEmby === false },
   ];
-  return defs.map((step, index) => {
-    let state: StepState;
-    if (step.skipped) state = "skipped";
-    else if (activeIndex.value > index) state = "done";
-    else if (activeIndex.value === index) state = "active";
-    else state = "pending";
-    return { ...step, state, detail: stepDetail(step.key) };
-  });
+  return defs.map((step, index) => ({
+    ...step,
+    state: stepState(step.key, index, step.skipped),
+    detail: stepDetail(step.key),
+  }));
 });
 
 const phaseText = computed(() => {
@@ -126,6 +165,10 @@ const phaseText = computed(() => {
       return "重命名中…";
     case "strm":
       return "生成 STRM 中…";
+    case "scrape":
+      return "刮削中…";
+    case "emby":
+      return "刷库中…";
     case "done":
       return "即将完成…";
     case "failed":
@@ -139,7 +182,7 @@ const phaseText = computed(() => {
 <template>
   <AppModal
     :open="open"
-    :title="done ? '转存完成' : '确认转存'"
+    :title="dialogTitle"
     size="lg"
     body-flush
     @close="!loading && emit('cancel')"
@@ -501,5 +544,30 @@ const phaseText = computed(() => {
 .gysc__arrow {
   color: var(--text-muted);
   flex-shrink: 0;
+}
+
+/* 窄屏重命名预览改为纵向，长文件名换行完整显示，不再截断 */
+@media (max-width: 640px) {
+  .gysc__row {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: 8px;
+  }
+
+  .gysc__old,
+  .gysc__new {
+    max-width: 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .gysc__arrow {
+    transform: rotate(90deg);
+    margin: 1px 0 1px 1px;
+  }
 }
 </style>

@@ -1,6 +1,6 @@
 import { http } from "./client";
 
-// buei 定制：后台「辅助工具 / 增强工具 / 光鸭分享收藏」。
+// buei 定制：后台「辅助工具 / 光鸭分享」。
 
 export type GuangyaShareKind =
   | "folder"
@@ -36,6 +36,10 @@ export interface GuangyaShareDestination {
   auto_strm: boolean;
   auto_scrape: boolean;
   auto_scrape_task_id: number;
+  refresh_emby?: boolean;
+  emby_config_id?: string;
+  emby_mode?: string;
+  emby_library_id?: string;
 }
 
 export interface GuangyaShareRenameReplace {

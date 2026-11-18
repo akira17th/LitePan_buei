@@ -108,6 +108,10 @@ type Settings struct {
 type RunRequest struct {
 	StrmTaskID int64  `json:"strm_task_id"`
 	WriteMode  string `json:"write_mode,omitempty"`
+	// #region buei:guangya-share
+	// IncludeDirs 限定只刮这些目录（相对任务输出根）；为空表示刮整个任务。
+	IncludeDirs []string `json:"include_dirs,omitempty"`
+	// #endregion buei:guangya-share
 }
 
 type Scope struct {

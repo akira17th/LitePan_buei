@@ -431,7 +431,7 @@ func TestScrapeEnabled(t *testing.T) {
 
 func TestServiceScrapeAfterTransfer(t *testing.T) {
 	svc := &Service{}
-	if started, errText := svc.scrapeAfterTransfer(context.Background(), 5); started || errText != "" {
+	if started, errText := svc.scrapeAfterTransfer(context.Background(), 5, nil); started || errText != "" {
 		t.Fatalf("未注入刮削器时应静默跳过，实际 = %v/%q", started, errText)
 	}
 
@@ -444,9 +444,12 @@ func TestServiceScrapeAfterTransfer(t *testing.T) {
 			calls = append(calls, "rebuild")
 			return nil
 		},
-		func(_ context.Context, strmTaskID int64) error {
+		func(_ context.Context, strmTaskID int64, remoteDirs []string) error {
 			if strmTaskID != 7 {
 				t.Fatalf("unexpected strm task: %d", strmTaskID)
+			}
+			if len(remoteDirs) != 2 || remoteDirs[0] != "国漫" || remoteDirs[1] != "剧名" {
+				t.Fatalf("unexpected remote dirs: %v", remoteDirs)
 			}
 			calls = append(calls, "start")
 			return nil
@@ -456,7 +459,7 @@ func TestServiceScrapeAfterTransfer(t *testing.T) {
 			return nil
 		},
 	)
-	started, errText := svc.scrapeAfterTransfer(context.Background(), 7)
+	started, errText := svc.scrapeAfterTransfer(context.Background(), 7, []string{"国漫", "剧名"})
 	if !started || errText != "" {
 		t.Fatalf("unexpected scrape result: %v/%q", started, errText)
 	}
@@ -467,10 +470,10 @@ func TestServiceScrapeAfterTransfer(t *testing.T) {
 	startCalls := 0
 	svc.SetScrapeRunner(
 		func(context.Context, int64) error { return errors.New("index failed") },
-		func(context.Context, int64) error { startCalls++; return nil },
+		func(context.Context, int64, []string) error { startCalls++; return nil },
 		nil,
 	)
-	if started, errText := svc.scrapeAfterTransfer(context.Background(), 7); started || errText == "" {
+	if started, errText := svc.scrapeAfterTransfer(context.Background(), 7, nil); started || errText == "" {
 		t.Fatalf("重建索引失败时应回传错误，实际 = %v/%q", started, errText)
 	}
 	if startCalls != 0 {
@@ -490,7 +493,7 @@ func TestEmbyActionNormalize(t *testing.T) {
 }
 
 func TestServiceEmbyActions(t *testing.T) {
-	svc := &Service{}
+	svc := &Service{progress: newTransferProgressTracker()}
 	if ok, errText := svc.refreshEmbyNow(context.Background(), embyAction{enabled: true}); ok || errText != "" {
 		t.Fatalf("未注入刷库器时应静默跳过，实际 = %v/%q", ok, errText)
 	}
@@ -507,9 +510,22 @@ func TestServiceEmbyActions(t *testing.T) {
 		calls = append(calls, "refresh:"+configID+":"+mode+":"+libraryID)
 		return nil
 	})
-	svc.waitAndRefreshEmby(11, embyAction{enabled: true, configID: "c1", mode: "library", libraryID: "lib1"})
+	svc.progress.start("p1")
+	svc.waitAndRefreshEmby("p1", 11, embyAction{enabled: true, configID: "c1", mode: "library", libraryID: "lib1"})
 	if len(calls) != 2 || calls[0] != "wait" || calls[1] != "refresh:c1:library:lib1" {
 		t.Fatalf("应先等刮削结束再刷库，实际调用顺序 = %v", calls)
+	}
+	if p, ok := svc.progress.get("p1"); !ok || p.Phase != GuangyaSharePhaseDone || p.Error != "" {
+		t.Fatalf("刷库成功后进度应为 done，实际 %+v", p)
+	}
+
+	svc.progress.start("p2")
+	svc.SetEmbyRefresher(func(context.Context, string, string, string) error {
+		return errors.New("emby 不可用")
+	})
+	svc.waitAndRefreshEmby("p2", 11, embyAction{enabled: true, configID: "c1"})
+	if p, ok := svc.progress.get("p2"); !ok || p.Phase != GuangyaSharePhaseFailed || p.Error == "" {
+		t.Fatalf("刷库失败后进度应为 failed，实际 %+v", p)
 	}
 
 	if ok, errText := svc.refreshEmbyNow(context.Background(), embyAction{enabled: false, configID: "c1"}); ok || errText != "" {
@@ -526,20 +542,25 @@ func TestServiceSaveDestination(t *testing.T) {
 	svc.configs = configs
 
 	dest := &domain.GuangyaShareDestination{
-		AccountID: 2,
-		ParentID:  "dir-2",
-		BasePath:  "/媒体/电影",
-		BaseDirs:  []string{"媒体", "电影"},
-		Title:     "测试电影 (2026)",
-		Season:    3,
-		IsSeries:  false,
-		AutoStrm:  true,
+		AccountID:     2,
+		ParentID:      "dir-2",
+		BasePath:      "/媒体/电影",
+		BaseDirs:      []string{"媒体", "电影"},
+		Title:         "测试电影 (2026)",
+		Season:        3,
+		IsSeries:      false,
+		AutoStrm:      true,
+		RefreshEmby:   true,
+		EmbyConfigID:  " emby-1 ",
+		EmbyMode:      " library ",
+		EmbyLibraryID: " lib-1 ",
 	}
 	svc.saveDestination(context.Background(), testShareID, dest)
 
 	saved := repo.links[testShareID].LastDestination
 	if saved == nil || saved.ParentID != "dir-2" || saved.Title != "测试电影 (2026)" || saved.Season != 3 || saved.IsSeries || !saved.AutoStrm ||
-		len(saved.BaseDirs) != 2 || saved.BaseDirs[1] != "电影" {
+		!saved.RefreshEmby || saved.EmbyConfigID != "emby-1" || saved.EmbyMode != "library" ||
+		saved.EmbyLibraryID != "lib-1" || len(saved.BaseDirs) != 2 || saved.BaseDirs[1] != "电影" {
 		t.Fatalf("unexpected saved destination: %+v", saved)
 	}
 	raw, ok := configs.values[lastBaseConfigKey]

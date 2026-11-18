@@ -33,6 +33,11 @@ type bueiGuangyaShareDestinationDTO struct {
 	// AutoScrape/ScrapeTaskID 是转存成功后自动刮削的开关与 STRM 任务。
 	AutoScrape   bool  `json:"auto_scrape"`
 	ScrapeTaskID int64 `json:"auto_scrape_task_id"`
+	// RefreshEmby/EmbyConfigID/EmbyMode/EmbyLibraryID 是转存成功后 Emby 刷库的预设。
+	RefreshEmby   bool   `json:"refresh_emby"`
+	EmbyConfigID  string `json:"emby_config_id"`
+	EmbyMode      string `json:"emby_mode"`
+	EmbyLibraryID string `json:"emby_library_id"`
 }
 
 type bueiGuangyaShareDestinationBaseDTO struct {
@@ -121,16 +126,20 @@ func bueiGuangyaShareDestinationToDTO(dest *domain.GuangyaShareDestination) *bue
 		return nil
 	}
 	return &bueiGuangyaShareDestinationDTO{
-		AccountID:    dest.AccountID,
-		ParentID:     dest.ParentID,
-		BasePath:     dest.BasePath,
-		Title:        dest.Title,
-		Season:       dest.Season,
-		IsSeries:     dest.IsSeries,
-		BaseDirs:     dest.BaseDirs,
-		AutoStrm:     dest.AutoStrm,
-		AutoScrape:   dest.AutoScrape,
-		ScrapeTaskID: dest.ScrapeTaskID,
+		AccountID:     dest.AccountID,
+		ParentID:      dest.ParentID,
+		BasePath:      dest.BasePath,
+		Title:         dest.Title,
+		Season:        dest.Season,
+		IsSeries:      dest.IsSeries,
+		BaseDirs:      dest.BaseDirs,
+		AutoStrm:      dest.AutoStrm,
+		AutoScrape:    dest.AutoScrape,
+		ScrapeTaskID:  dest.ScrapeTaskID,
+		RefreshEmby:   dest.RefreshEmby,
+		EmbyConfigID:  dest.EmbyConfigID,
+		EmbyMode:      dest.EmbyMode,
+		EmbyLibraryID: dest.EmbyLibraryID,
 	}
 }
 

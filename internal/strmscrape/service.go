@@ -487,6 +487,8 @@ func (s *Service) run(ctx context.Context, req RunRequest) error {
 		return err
 	}
 	works = filterWorksByScope(works, s.GetScope(req.StrmTaskID).ExcludedDirs)
+	// buei:guangya-share —— 光鸭转存后只刮本次落地的作品。
+	works = filterWorksByInclude(works, req.IncludeDirs)
 	if len(works) == 0 {
 		s.setProgress(func(p *Progress) {
 			p.Total = 0

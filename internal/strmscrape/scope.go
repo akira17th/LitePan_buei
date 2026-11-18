@@ -145,6 +145,29 @@ func (s *Service) ListScopeDirectories(ctx context.Context, strmTaskID int64, pa
 	return out, nil
 }
 
+// #region buei:guangya-share
+// filterWorksByInclude 与 filterWorksByScope 相对：只保留与给定目录重叠的作品。
+// 作品根可能位于目标目录之上（例如目标落在 Season 目录里），这种父级作品也算命中。
+func filterWorksByInclude(works []workGroup, includes []string) []workGroup {
+	includes = normalizeScopeDirs(includes)
+	if len(includes) == 0 {
+		return works
+	}
+	out := make([]workGroup, 0, len(works))
+	for _, work := range works {
+		rel := normalizeScopeDir(work.relKey)
+		for _, dir := range includes {
+			if rel == dir || strings.HasPrefix(rel, dir+"/") || strings.HasPrefix(dir, rel+"/") {
+				out = append(out, work)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// #endregion buei:guangya-share
+
 func filterWorksByScope(works []workGroup, excluded []string) []workGroup {
 	excluded = normalizeScopeDirs(excluded)
 	if len(excluded) == 0 {

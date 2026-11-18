@@ -28,6 +28,12 @@ type GuangyaShareDestination struct {
 	AutoScrape bool `json:"auto_scrape"`
 	// ScrapeTaskID 是自动刮削使用的 STRM 任务（海报墙下拉选择）。
 	ScrapeTaskID int64 `json:"auto_scrape_task_id"`
+	// RefreshEmby 表示转存成功后触发 Emby/Jellyfin 刷库。
+	RefreshEmby bool `json:"refresh_emby"`
+	// EmbyConfigID / EmbyMode / EmbyLibraryID 是刷库使用的配置、范围与媒体库。
+	EmbyConfigID  string `json:"emby_config_id"`
+	EmbyMode      string `json:"emby_mode"`
+	EmbyLibraryID string `json:"emby_library_id"`
 }
 
 // GuangyaShareRenameReplace 是保存的“替换文本”重命名规则。

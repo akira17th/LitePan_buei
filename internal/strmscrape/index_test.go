@@ -199,6 +199,42 @@ func TestFilterWorksByScope(t *testing.T) {
 	}
 }
 
+func TestFilterWorksByInclude(t *testing.T) {
+	works := []workGroup{
+		{relKey: "电影/阿凡达 (2009)"},
+		{relKey: "电视剧/藏锋 (2026)"},
+		{relKey: "临时测试/片段"},
+	}
+	cases := []struct {
+		name     string
+		includes []string
+		want     []string
+	}{
+		{"空范围保留全部", nil, []string{"电影/阿凡达 (2009)", "电视剧/藏锋 (2026)", "临时测试/片段"}},
+		{"命中作品目录", []string{"电视剧/藏锋 (2026)"}, []string{"电视剧/藏锋 (2026)"}},
+		{"命中季目录时保留上级作品", []string{"电视剧/藏锋 (2026)/Season 1"}, []string{"电视剧/藏锋 (2026)"}},
+		{"命中上级目录", []string{"临时测试"}, []string{"临时测试/片段"}},
+		{"前缀相似不误伤", []string{"电视剧/藏锋"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := filterWorksByInclude(works, tc.includes)
+			keys := make([]string, 0, len(got))
+			for _, work := range got {
+				keys = append(keys, work.relKey)
+			}
+			if len(keys) != len(tc.want) {
+				t.Fatalf("got=%v want=%v", keys, tc.want)
+			}
+			for i := range keys {
+				if keys[i] != tc.want[i] {
+					t.Fatalf("got=%v want=%v", keys, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestRelUnderAbsRootWithRelativeFull(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "strm_out")

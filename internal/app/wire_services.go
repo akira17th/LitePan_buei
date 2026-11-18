@@ -96,7 +96,7 @@ func wireServices(cfg config.Config, logs *logx.Manager, st *storeBundle, core *
 		Log:      logs.For(logx.ModuleSystem),
 	})
 	// #region buei:guangya share auto scrape
-	rebuildScrape, startScrape, waitScrape := bueiScrapeRunner(strmScrapeSvc)
+	rebuildScrape, startScrape, waitScrape := bueiScrapeRunner(strmSvc, strmScrapeSvc)
 	bueiSvc.guangyaShare.SetScrapeRunner(rebuildScrape, startScrape, waitScrape)
 	// #endregion buei:guangya share auto scrape
 	strmSvc.SetOrganizeBusyChecker(mediaOrganizeSvc)

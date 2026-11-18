@@ -9,8 +9,8 @@ import (
 	"litepan/internal/driver"
 )
 
-// buei 定制：光鸭分享收藏的转存能力。实现 driver.GuangyaShareRestorer，供「后台/辅助工具/
-// 增强工具/光鸭分享收藏」调用；分享解析与公开列表在 internal/buei/guangyashare 中完成。
+// buei 定制：光鸭分享的转存能力。实现 driver.GuangyaShareRestorer，供「后台/辅助工具/
+// 光鸭分享」调用；分享解析与公开列表在 internal/buei/guangyashare 中完成。
 const (
 	pathShareRestore = "/userres/v1/restore_share"
 

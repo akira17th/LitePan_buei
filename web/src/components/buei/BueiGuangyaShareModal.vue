@@ -28,7 +28,6 @@ import { confirm } from "@/composables/useConfirm";
 import { formatSize, formatTime, formatTimeShort } from "@/utils/format";
 import { useAccountsStore } from "@/stores/accounts";
 import AppButton from "@/components/base/AppButton.vue";
-import AppModal from "@/components/base/AppModal.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
 import AccountFolderField from "@/components/admin/AccountFolderField.vue";
 import AppSelect from "@/components/base/AppSelect.vue";
@@ -38,10 +37,7 @@ import BueiGuangyaShareConfirm, {
   type RenamePreviewRow,
 } from "@/components/buei/BueiGuangyaShareConfirm.vue";
 
-// buei 定制：后台「辅助工具 / 增强工具 / 光鸭分享收藏」工作区。
-
-const props = defineProps<{ open: boolean }>();
-const emit = defineEmits<{ close: [] }>();
+// buei 定制：后台「辅助工具 / 光鸭分享」独立 tab 的工作区。
 
 const router = useRouter();
 const accountsStore = useAccountsStore();
@@ -62,7 +58,6 @@ type DestinationBase = {
 const QUICK_FILE_KINDS = new Set<GuangyaShareKind>(["video", "image", "subtitle", "document"]);
 
 const url = ref("");
-const urlInputRef = ref<HTMLInputElement | null>(null);
 const crumbListRef = ref<HTMLElement | null>(null);
 const password = ref("");
 const parsing = ref(false);
@@ -121,8 +116,11 @@ const embyLibraryId = ref("");
 const embyConfigs = ref<EmbyConfig[]>([]);
 const embyLibraries = ref<EmbyLibrary[]>([]);
 const embyConfigsLoading = ref(false);
+const embyConfigsLoaded = ref(false);
 const embyLibrariesLoading = ref(false);
 const embyError = ref("");
+// 恢复预设时不要触发配置/范围的 watch 清空已保存的媒体库。
+let restoringEmby = false;
 let scrapePollTimer: number | undefined;
 let scrapeWatchId = 0;
 let scrapePollDeadline = 0;
@@ -183,6 +181,8 @@ const embyEffective = computed(
 );
 
 function ensureEmbyConfig() {
+  // 配置列表还没加载时保留已保存的配置，等加载完成再兜底。
+  if (!embyConfigsLoaded.value) return;
   const current = embyConfigId.value;
   if (current && embyConfigs.value.some((config) => config.id === current)) return;
   embyConfigId.value = embyConfigs.value[0]?.id || "";
@@ -195,10 +195,12 @@ async function loadEmbyConfigs() {
   try {
     const state = await fetchEmbyConfigs();
     embyConfigs.value = Array.isArray(state?.items) ? state.items : [];
+    embyConfigsLoaded.value = true;
     ensureEmbyConfig();
     if (embyMode.value === "library") void loadEmbyLibraries();
   } catch (error) {
     embyConfigs.value = [];
+    embyConfigsLoaded.value = true;
     embyError.value = getApiErrorMessage(error, "加载 Emby/Jellyfin 配置失败");
   } finally {
     embyConfigsLoading.value = false;
@@ -206,6 +208,7 @@ async function loadEmbyConfigs() {
 }
 
 async function loadEmbyLibraries() {
+  if (embyLibrariesLoading.value) return;
   const configId = embyConfigId.value;
   if (!configId) {
     embyLibraries.value = [];
@@ -231,12 +234,14 @@ async function loadEmbyLibraries() {
 }
 
 watch(embyConfigId, () => {
+  if (restoringEmby) return;
   embyLibraries.value = [];
   embyLibraryId.value = "";
   if (embyMode.value === "library") void loadEmbyLibraries();
 });
 
 watch(embyMode, (mode) => {
+  if (restoringEmby) return;
   if (mode === "library") {
     void loadEmbyLibraries();
   } else {
@@ -934,6 +939,17 @@ function applyDestinationForShare(res: GuangyaShareParseResult) {
   scrapeTaskId.value = draft && draft.auto_scrape_task_id > 0 ? Number(draft.auto_scrape_task_id) : null;
   // 任务列表可能还没加载完成，加载完成后 loadScrapeTasks 会再兜底选中。
   if (scrapeTasks.value.length) ensureScrapeTask();
+  // Emby 刷库预设：开关 / 配置 / 范围 / 媒体库。
+  restoringEmby = true;
+  embyRefresh.value = draft ? draft.refresh_emby !== false : true;
+  embyConfigId.value = draft?.emby_config_id || "";
+  embyMode.value = draft?.emby_mode === "library" ? "library" : "global";
+  embyLibraryId.value = draft?.emby_library_id || "";
+  if (embyConfigsLoaded.value) ensureEmbyConfig();
+  if (embyMode.value === "library" && embyConfigId.value) void loadEmbyLibraries();
+  void nextTick(() => {
+    restoringEmby = false;
+  });
 }
 
 function normalizeFolderTitle() {
@@ -1424,7 +1440,7 @@ function submitTransfer() {
     refreshEmby: embyEffective.value,
     embyConfigId: embyConfigId.value,
     embyMode: embyMode.value,
-    embyLibraryId: embyEffective.value ? embyLibraryId.value : "",
+    embyLibraryId: embyLibraryId.value,
     unchangedCount: previews.length - changedRows.length,
     segments: [...targetSegments.value],
     base,
@@ -1442,6 +1458,9 @@ function resetTransferDialog() {
   pendingTransfer.value = null;
   // 进度只在这一个弹窗里展示，关闭后停止轮询。
   stopScrapePolling();
+  stopProgressPolling();
+  progressIdRef = "";
+  transferPhase.value = "";
   scrapeWatchId = 0;
 }
 
@@ -1491,17 +1510,24 @@ function stopProgressPolling() {
   }
 }
 
-// 轮询转存阶段；进度只是辅助展示，请求失败时安静重试。
+function isProgressFinished(phase: string) {
+  return phase === "done" || phase === "failed";
+}
+
+// 轮询转存阶段；请求返回后如果刮削/刷库还在后台跑，继续轮询到真正结束。
 async function pollTransferProgress(id: string) {
   stopProgressPolling();
   try {
     const progress = await bueiGuangyaShareApi.progress(id);
-    if (!transferring.value || progressIdRef !== id) return;
-    if (progress.found && progress.phase) transferPhase.value = progress.phase;
+    if (progressIdRef !== id) return;
+    if (progress.found && progress.phase) {
+      transferPhase.value = progress.phase;
+      if (progress.error) transferResult.value.embyError = progress.error;
+    }
   } catch {
     // 忽略单次失败，下一轮继续。
   } finally {
-    if (transferring.value && progressIdRef === id) {
+    if (progressIdRef === id && !isProgressFinished(transferPhase.value)) {
       progressTimer = window.setTimeout(() => void pollTransferProgress(id), 800);
     }
   }
@@ -1616,59 +1642,45 @@ async function confirmTransfer() {
     toast.error(getApiErrorMessage(error, "转存失败"));
     return;
   } finally {
-    stopProgressPolling();
-    progressIdRef = "";
-    transferPhase.value = "";
     transferring.value = false;
     if (completed) {
       transferDone.value = true;
+      // 刮削/刷库仍在后台时保留轮询，弹窗里能看到它们的真实状态。
+      const asyncPending = !!(transferResult.value.scrapeStarted || transferResult.value.embyScheduled);
+      if (!asyncPending) {
+        stopProgressPolling();
+        progressIdRef = "";
+        transferPhase.value = "";
+      }
     } else {
       resetTransferDialog();
     }
   }
 }
 
-function close() {
-  parseAbort?.abort();
-  parseAbort = null;
-  parsing.value = false;
-  pickerOpen.value = false;
-  resetTransferDialog();
-  stopProgressPolling();
-  stopScrapePolling();
-  scrapeWatchId = 0;
-  scrapeProgress.value = null;
-  progressIdRef = "";
-  transferPhase.value = "";
-  emit("close");
-}
-
 function goPage(delta: number) {
   page.value = Math.min(totalPages.value, Math.max(1, page.value + delta));
 }
 
-watch(
-  () => props.open,
-  async (open) => {
-    if (!open) return;
-    // 每次打开都回到空白工作区；收藏列表仍在左侧，等待手动选择。
-    if (!transferring.value) {
-      resetParse();
-      url.value = "";
-      activeSavedLinkId.value = null;
-    }
-    parseError.value = "";
-    if (!accountsStore.accounts.length) {
-      void accountsStore.loadAccounts().catch(() => undefined);
-    }
-    void loadSavedLinks();
-    void loadScrapeTasks();
-    void loadEmbyConfigs();
-    ensureDestination();
-    await nextTick();
-    urlInputRef.value?.focus();
-  },
-);
+// 「辅助工具」tab 顶部按钮通过 ref 读取这些状态。
+const transferHint = computed(() => {
+  if (!result.value) return "先解析分享链接";
+  if (!selectedItems.value.length) return "先在文件列表勾选要转存的内容";
+  const parts: string[] = [];
+  if (selectedFolderCount.value) parts.push(`含 ${selectedFolderCount.value} 个文件夹`);
+  parts.push(`文件合计 ${formatSize(selectedFileSize.value)}`);
+  parts.push("文件夹按实际内容转存");
+  return parts.join(" · ");
+});
+
+defineExpose({
+  selectedCount: computed(() => selectedItems.value.length),
+  canTransfer,
+  transferring,
+  transferPhaseLabel,
+  transferHint,
+  submitTransfer,
+});
 
 watch(guangyaAccounts, (accounts) => {
   if (!destination.value.accountId && accounts.length) {
@@ -1677,9 +1689,17 @@ watch(guangyaAccounts, (accounts) => {
 });
 
 onMounted(() => {
+  // 进入 tab 即初始化工作区；收藏列表仍在左侧，等待手动选择。
   if (!accountsStore.accounts.length) {
     void accountsStore.loadAccounts().catch(() => undefined);
   }
+  resetParse();
+  url.value = "";
+  activeSavedLinkId.value = null;
+  parseError.value = "";
+  void loadSavedLinks();
+  void loadScrapeTasks();
+  void loadEmbyConfigs();
   ensureDestination();
 });
 
@@ -1691,24 +1711,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <AppModal :open="open" bare wide @close="close">
+  <!-- 单一根节点：父级 tab 用 v-show 控制显隐，多根节点会让指令属性无法透传。 -->
+  <div class="gys-page">
     <div class="gys">
-      <header class="gys__head">
-        <img class="gys__logo" src="/logos/guangya.png" alt="光鸭云盘" />
-        <div class="gys__headings">
-          <h3>光鸭分享收藏</h3>
-          <p>收藏分享链接，逐层浏览并转存到指定光鸭账号</p>
-        </div>
-        <button class="gys__close" type="button" aria-label="关闭" @click="close">
-          <SvgIcon name="xmark" :size="15" />
-        </button>
-      </header>
-
       <div class="gys__linkbar">
         <div class="gys__input-wrap">
           <SvgIcon name="hand-cloud" :size="16" class="gys__input-icon" />
           <input
-            ref="urlInputRef"
             v-model="url"
             class="gys__input"
             type="text"
@@ -2243,7 +2252,7 @@ onBeforeUnmount(() => {
                   <span class="gys__switch-desc">
                     <template v-if="!autoStrm">需先开启「生成 STRM」</template>
                     <template v-else-if="!scrapeAvailable">暂无 STRM 任务可刮削</template>
-                    <template v-else>转存后重建刮削索引，并按所选任务开始刮削</template>
+                    <template v-else>转存后重建刮削索引，只刮本次转存的作品</template>
                   </span>
                 </span>
                 <button
@@ -2334,23 +2343,9 @@ onBeforeUnmount(() => {
             </section>
           </div>
 
-          <div class="gys__sidefoot">
-            <div class="gys__selection">
-              <span class="gys__selection-main">
-                已选 <b>{{ selectedItems.length }}</b> 项
-                <template v-if="selectedFolderCount">（{{ selectedFolderCount }} 个文件夹）</template>
-              </span>
-              <small v-if="selectedItems.length">文件合计 {{ formatSize(selectedFileSize) }} · 文件夹按实际内容转存</small>
-              <small v-else>可在不同目录中分别勾选</small>
-            </div>
-            <AppButton class="gys__transfer" variant="primary" :disabled="!canTransfer" @click="submitTransfer">
-              {{ transferring ? transferPhaseLabel : "开始转存" }}
-            </AppButton>
-          </div>
         </aside>
       </div>
-    </div>
-  </AppModal>
+  </div>
 
   <BueiGuangyaShareConfirm
     :open="transferConfirmOpen"
@@ -2383,7 +2378,6 @@ onBeforeUnmount(() => {
   />
 
   <FolderPickerModal
-    v-if="open"
     :open="pickerOpen"
     nested
     selectable-account
@@ -2396,73 +2390,17 @@ onBeforeUnmount(() => {
     @close="pickerOpen = false"
     @resolve="onFolderResolved"
   />
+  </div>
 </template>
 
 <style scoped>
 .gys {
   display: flex;
   flex-direction: column;
-  width: min(94vw, 1240px);
-  /* 预留 AppModal 遮罩的上下内边距，避免撑出页面级滚动条 */
-  height: min(88vh, 860px);
-  height: min(calc(100dvh - 96px), 860px);
-  min-height: 0;
+  width: 100%;
   background: var(--surface);
   border-radius: var(--radius-lg);
   overflow: hidden;
-}
-
-.gys__head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex: 0 0 auto;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel-head-bg);
-}
-
-.gys__logo {
-  width: 34px;
-  height: 34px;
-  border-radius: var(--radius-md);
-  object-fit: cover;
-  flex-shrink: 0;
-}
-
-.gys__headings {
-  flex: 1;
-  min-width: 0;
-}
-
-.gys__headings h3 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.gys__headings p {
-  margin: 2px 0 0;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.gys__close {
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.gys__close:hover {
-  background: var(--surface-hover);
-  color: var(--text);
 }
 
 .gys__linkbar {
@@ -2544,21 +2482,16 @@ onBeforeUnmount(() => {
 .gys__body {
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr) 304px;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
 }
 
 .gys__savedcol {
   display: flex;
   flex-direction: column;
-  min-height: 0;
   padding: 2px 12px 12px 16px;
 }
 
 .gys__savedcol .gys__panel--saved {
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: 0 0 auto;
   max-height: none;
 }
 
@@ -2566,7 +2499,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  min-height: 0;
   padding: 0 14px 10px;
   user-select: none;
 }
@@ -2579,17 +2511,13 @@ onBeforeUnmount(() => {
 .gys__side {
   display: flex;
   flex-direction: column;
-  min-height: 0;
   padding: 0 16px 12px;
-  overflow: hidden;
 }
 
 .gys__side-scroll {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   flex-direction: column;
-  min-height: 0;
-  overflow-y: auto;
   padding-right: 2px;
 }
 
@@ -2821,9 +2749,35 @@ onBeforeUnmount(() => {
   cursor: default;
 }
 
+.gys__discard {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-regular);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.gys__discard:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  color: var(--danger);
+}
+
+.gys__discard:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .gys__tablewrap {
-  flex: 1;
-  min-height: 0;
+  flex: 0 0 auto;
+  /* 文件浏览表格限高，超出在表格内部滚动（表头已吸顶） */
+  max-height: 600px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   overflow: auto;
@@ -3191,9 +3145,8 @@ onBeforeUnmount(() => {
 }
 
 .gys__panel--saved {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-height: 120px;
-  max-height: 300px;
 }
 
 .gys__panel-head {
@@ -3646,9 +3599,7 @@ onBeforeUnmount(() => {
 }
 
 .gys__saved-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
+  flex: 0 1 auto;
   margin: 0 -4px -2px;
   padding: 0 4px 2px;
 }
@@ -3765,63 +3716,6 @@ onBeforeUnmount(() => {
   color: var(--danger);
 }
 
-.gys__sidefoot {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex: 0 0 auto;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--border);
-}
-
-.gys__selection {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--text-regular);
-}
-
-.gys__selection-main b {
-  color: var(--brand);
-}
-
-.gys__selection small {
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-.gys__discard {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: 0 0 auto;
-  height: 28px;
-  padding: 0 8px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.gys__discard:hover:not(:disabled) {
-  background: var(--surface-hover);
-  color: var(--danger);
-}
-
-.gys__discard:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.gys__transfer {
-  width: 100%;
-}
-
 .gys__empty {
   flex: 1;
   display: flex;
@@ -3851,41 +3745,28 @@ onBeforeUnmount(() => {
   }
 }
 
-/* 窄屏：收藏 → 文件浏览 → 保存位置 → 自动重命名 依次纵向排列，转存按钮固定底部 */
+/* 窄屏：收藏 → 文件浏览 → 保存位置 → 自动重命名 依次纵向排列，滚动交给页面。 */
 @media (max-width: 980px) {
-  .gys {
-    width: 96vw;
-    height: min(86vh, 800px);
-    height: min(calc(100dvh - 88px), 800px);
-  }
-
   .gys__body {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    min-height: 0;
     padding: 10px 12px 0;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    -webkit-overflow-scrolling: touch;
   }
 
   .gys__savedcol {
     order: 1;
     flex: 0 0 auto;
-    min-height: 0;
-    max-height: 202px;
     padding: 0;
   }
 
   .gys__main {
     order: 2;
     flex: 0 0 auto;
-    min-height: 0;
     padding: 0;
   }
 
-  /* 让保存位置与自动重命名参与同一列排布，底部按钮才能吸底 */
+  /* 让保存位置与自动重命名参与同一列排布 */
   .gys__side {
     display: contents;
   }
@@ -3894,22 +3775,9 @@ onBeforeUnmount(() => {
     order: 3;
     flex: 0 0 auto;
     padding: 0;
-    overflow: visible;
-  }
-
-  .gys__sidefoot {
-    order: 4;
-    position: sticky;
-    bottom: 0;
-    z-index: 2;
-    margin: auto 0 0;
-    padding: 8px 0 max(10px, env(safe-area-inset-bottom));
-    background: var(--surface);
-    border-top: 1px solid var(--border);
   }
 
   .gys__panel--saved {
-    max-height: none;
     min-height: 0;
   }
 
@@ -3917,39 +3785,15 @@ onBeforeUnmount(() => {
   .gys__panel--rename {
     flex: 0 0 auto;
   }
-
-  .gys__tablewrap {
-    flex: 0 0 auto;
-    max-height: 44vh;
-  }
-
-  .gys__saved-body {
-    overflow-y: auto;
-  }
-
-  .gys__sidefoot .gys__selection {
-    flex-direction: row;
-    align-items: baseline;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
 }
 
 @media (max-width: 600px) {
   .gys {
-    width: 100%;
-    height: calc(100vh - 88px);
-    height: calc(100dvh - 88px);
-    max-height: none;
     border-radius: var(--radius-md);
   }
 
   .gys__body {
     padding: 8px 10px 0;
-  }
-
-  .gys__tablewrap {
-    max-height: 40vh;
   }
 
   .gys__table {

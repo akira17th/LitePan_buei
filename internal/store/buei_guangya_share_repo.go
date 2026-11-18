@@ -22,7 +22,7 @@ func NewGuangyaShareLinkRepo(db *DB) domain.GuangyaShareLinkRepository {
 const guangyaShareLinkColumns = `id, share_id, url, password, title, owner, created_at, updated_at, last_used_at,
 	last_account_id, last_parent_id, last_base_path, last_base_dirs, last_title, last_season, last_is_series,
 	last_browse_path, rename_replace_enabled, rename_replace_find, rename_replace_with, auto_strm,
-	auto_scrape, auto_scrape_task_id`
+	auto_scrape, auto_scrape_task_id, auto_emby, emby_config_id, emby_mode, emby_library_id`
 
 func (r *guangyaShareLinkRepo) List(ctx context.Context) ([]*domain.GuangyaShareLink, error) {
 	rows, err := r.db.read.QueryContext(ctx,
@@ -116,6 +116,10 @@ func (r *guangyaShareLinkRepo) UpdateDestination(ctx context.Context, shareID st
 		autoStrm     = 1
 		autoScrape   = 1
 		scrapeTaskID int64
+		refreshEmby  = 1
+		embyConfigID string
+		embyMode     = "global"
+		embyLibrary  string
 	)
 	if dest != nil {
 		accountID = dest.AccountID
@@ -134,14 +138,23 @@ func (r *guangyaShareLinkRepo) UpdateDestination(ctx context.Context, shareID st
 		autoStrm = boolToInt(dest.AutoStrm)
 		autoScrape = boolToInt(dest.AutoScrape)
 		scrapeTaskID = dest.ScrapeTaskID
+		refreshEmby = boolToInt(dest.RefreshEmby)
+		embyConfigID = strings.TrimSpace(dest.EmbyConfigID)
+		embyMode = strings.TrimSpace(dest.EmbyMode)
+		if embyMode == "" {
+			embyMode = "global"
+		}
+		embyLibrary = strings.TrimSpace(dest.EmbyLibraryID)
 	}
 	result, err := r.db.write.ExecContext(ctx,
 		`UPDATE buei_guangya_share_links
 		 SET last_account_id=?, last_parent_id=?, last_base_path=?, last_base_dirs=?, last_title=?,
-		     last_season=?, last_is_series=?, auto_strm=?, auto_scrape=?, auto_scrape_task_id=?, updated_at=?
+		     last_season=?, last_is_series=?, auto_strm=?, auto_scrape=?, auto_scrape_task_id=?,
+		     auto_emby=?, emby_config_id=?, emby_mode=?, emby_library_id=?, updated_at=?
 		 WHERE share_id=?`,
 		accountID, parentID, basePath, string(baseDirs), title, season, isSeries, autoStrm,
-		autoScrape, scrapeTaskID, tsValue(time.Now().UTC()), shareID,
+		autoScrape, scrapeTaskID, refreshEmby, embyConfigID, embyMode, embyLibrary,
+		tsValue(time.Now().UTC()), shareID,
 	)
 	if err != nil {
 		return wrapDB(err)
@@ -238,6 +251,13 @@ type guangyaShareLinkScanner interface {
 	Scan(dest ...any) error
 }
 
+func normalizeGuangyaEmbyMode(raw string) string {
+	if strings.TrimSpace(raw) == "library" {
+		return "library"
+	}
+	return "global"
+}
+
 func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShareLink, error) {
 	var (
 		link           domain.GuangyaShareLink
@@ -258,6 +278,10 @@ func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShare
 		autoStrm       int
 		autoScrape     int
 		scrapeTaskID   int64
+		autoEmby       int
+		embyConfigID   string
+		embyMode       string
+		embyLibraryID  string
 	)
 	if err := scanner.Scan(
 		&link.ID, &link.ShareID, &link.URL, &link.Password, &link.Title, &link.Owner,
@@ -265,6 +289,7 @@ func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShare
 		&lastAccountID, &lastParentID, &lastBasePath, &lastBaseDirs,
 		&lastTitle, &lastSeason, &lastIsSeries, &lastBrowsePath,
 		&replaceEnabled, &replaceFind, &replaceWith, &autoStrm, &autoScrape, &scrapeTaskID,
+		&autoEmby, &embyConfigID, &embyMode, &embyLibraryID,
 	); err != nil {
 		return nil, err
 	}
@@ -273,15 +298,19 @@ func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShare
 	link.LastUsedAt = parseTS(lastUsed)
 	if lastAccountID > 0 {
 		dest := &domain.GuangyaShareDestination{
-			AccountID:    lastAccountID,
-			ParentID:     lastParentID,
-			BasePath:     lastBasePath,
-			Title:        lastTitle,
-			Season:       lastSeason,
-			IsSeries:     lastIsSeries != 0,
-			AutoStrm:     autoStrm != 0,
-			AutoScrape:   autoScrape != 0,
-			ScrapeTaskID: scrapeTaskID,
+			AccountID:     lastAccountID,
+			ParentID:      lastParentID,
+			BasePath:      lastBasePath,
+			Title:         lastTitle,
+			Season:        lastSeason,
+			IsSeries:      lastIsSeries != 0,
+			AutoStrm:      autoStrm != 0,
+			AutoScrape:    autoScrape != 0,
+			ScrapeTaskID:  scrapeTaskID,
+			RefreshEmby:   autoEmby != 0,
+			EmbyConfigID:  embyConfigID,
+			EmbyMode:      normalizeGuangyaEmbyMode(embyMode),
+			EmbyLibraryID: embyLibraryID,
 		}
 		if strings.TrimSpace(lastBaseDirs) != "" {
 			_ = json.Unmarshal([]byte(lastBaseDirs), &dest.BaseDirs)

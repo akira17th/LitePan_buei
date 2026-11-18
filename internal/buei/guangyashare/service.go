@@ -53,8 +53,8 @@ type Options struct {
 	GenerateStrm func(ctx context.Context, accountID int64, parentID string, dirs []string) (generated int64, matched bool, err error)
 	// RebuildScrapeIndex 重建指定 STRM 任务的刮削索引；为空时跳过自动刮削。
 	RebuildScrapeIndex func(ctx context.Context, strmTaskID int64) error
-	// StartScrape 启动一次刮削；为空时跳过自动刮削。
-	StartScrape func(ctx context.Context, strmTaskID int64) error
+	// StartScrape 启动一次刮削；remoteDirs 为本次转存的远端目录段，用于只刮该作品。
+	StartScrape func(ctx context.Context, strmTaskID int64, remoteDirs []string) error
 	// WaitScrapeDone 等待指定 STRM 任务的刮削结束；为空时不等。
 	WaitScrapeDone func(ctx context.Context, strmTaskID int64) error
 	// RefreshEmby 触发 Emby/Jellyfin 媒体库扫描；为空时跳过刷库。
@@ -80,7 +80,7 @@ type Service struct {
 	strmGen func(ctx context.Context, accountID int64, parentID string, dirs []string) (int64, bool, error)
 	// 刮削同样通过注入的函数调用，保持包依赖干净。
 	rebuildScrapeIndex func(ctx context.Context, strmTaskID int64) error
-	startScrape        func(ctx context.Context, strmTaskID int64) error
+	startScrape        func(ctx context.Context, strmTaskID int64, remoteDirs []string) error
 	waitScrapeDone     func(ctx context.Context, strmTaskID int64) error
 	refreshEmby        func(ctx context.Context, configID, mode, libraryID string) error
 	client             *shareClient
@@ -253,7 +253,11 @@ func New(opts Options) *Service {
 }
 
 // SetScrapeRunner 注入自动刮削的三个步骤：重建索引、启动刮削与等待刮削结束。
-func (s *Service) SetScrapeRunner(rebuild, start, wait func(ctx context.Context, strmTaskID int64) error) {
+func (s *Service) SetScrapeRunner(
+	rebuild func(ctx context.Context, strmTaskID int64) error,
+	start func(ctx context.Context, strmTaskID int64, remoteDirs []string) error,
+	wait func(ctx context.Context, strmTaskID int64) error,
+) {
 	if s == nil {
 		return
 	}
@@ -453,7 +457,12 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 	progressID := strings.TrimSpace(in.ProgressID)
 	// 进度跟踪在真正开始转存时登记；前面的校验失败不需要进度。
 	s.progress.start(progressID)
+	// 刮削/刷库是后台异步动作：它们结束前不要把进度标记为完成。
+	asyncPending := false
 	defer func() {
+		if asyncPending {
+			return
+		}
 		if err != nil {
 			s.progress.finish(progressID, err.Error())
 			return
@@ -524,17 +533,21 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 		emby := in.embyAction()
 		if scrapeEnabled(in) {
 			s.progress.setPhase(progressID, GuangyaSharePhaseScrape)
-			result.ScrapeStarted, result.ScrapeError = s.scrapeAfterTransfer(ctx, in.ScrapeTaskID)
+			result.ScrapeStarted, result.ScrapeError = s.scrapeAfterTransfer(ctx, in.ScrapeTaskID, strmDirs)
 		}
 		// 刮削是异步任务：开启刮削时转后台等刮削结束再刷库，避免请求超时。
-		if emby.enabled {
-			if result.ScrapeStarted {
+		if result.ScrapeStarted {
+			asyncPending = true
+			if emby.enabled {
 				result.EmbyScheduled = true
-				s.scheduleEmbyAfterScrape(in.ScrapeTaskID, emby)
+				s.scheduleEmbyAfterScrape(progressID, in.ScrapeTaskID, emby)
 			} else {
-				s.progress.setPhase(progressID, GuangyaSharePhaseEmby)
-				result.EmbyRefreshed, result.EmbyError = s.refreshEmbyNow(ctx, emby)
+				// 没开刷库时也要等刮削结束，前端才能看到真实的完成状态。
+				s.scheduleScrapeFinish(progressID, in.ScrapeTaskID)
 			}
+		} else if emby.enabled {
+			s.progress.setPhase(progressID, GuangyaSharePhaseEmby)
+			result.EmbyRefreshed, result.EmbyError = s.refreshEmbyNow(ctx, emby)
 		}
 	} else if len(files) > 0 || in.AutoStrm || in.RefreshEmby {
 		// 任务等待超时：文件可能仍在落地，重命名与后续联动动作一起转为后台跟进。
@@ -561,16 +574,20 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 	s.saveBrowsePath(ctx, shareID, in.BrowsePath)
 	s.saveRenameReplace(ctx, shareID, in.RenameReplace)
 	s.saveDestination(ctx, shareID, &domain.GuangyaShareDestination{
-		AccountID:    in.AccountID,
-		ParentID:     strings.TrimSpace(in.ParentID),
-		BasePath:     normalizeDestinationBasePath(in.BasePath),
-		BaseDirs:     append([]string(nil), in.BaseDirs...),
-		Title:        storedTitle,
-		Season:       clampShareSeason(in.Season),
-		IsSeries:     in.IsSeries,
-		AutoStrm:     in.AutoStrm,
-		AutoScrape:   in.AutoScrape,
-		ScrapeTaskID: in.ScrapeTaskID,
+		AccountID:     in.AccountID,
+		ParentID:      strings.TrimSpace(in.ParentID),
+		BasePath:      normalizeDestinationBasePath(in.BasePath),
+		BaseDirs:      append([]string(nil), in.BaseDirs...),
+		Title:         storedTitle,
+		Season:        clampShareSeason(in.Season),
+		IsSeries:      in.IsSeries,
+		AutoStrm:      in.AutoStrm,
+		AutoScrape:    in.AutoScrape,
+		ScrapeTaskID:  in.ScrapeTaskID,
+		RefreshEmby:   in.RefreshEmby,
+		EmbyConfigID:  strings.TrimSpace(in.EmbyConfigID),
+		EmbyMode:      normalizeEmbyMode(in.EmbyMode),
+		EmbyLibraryID: strings.TrimSpace(in.EmbyLibraryID),
 	})
 
 	if !completed {
@@ -640,26 +657,47 @@ func (s *Service) refreshEmbyNow(ctx context.Context, action embyAction) (bool, 
 	return true, ""
 }
 
-// scheduleEmbyAfterScrape 在后台等刮削结束后再刷库，避免阻塞转存请求。
-func (s *Service) scheduleEmbyAfterScrape(scrapeTaskID int64, action embyAction) {
+// scheduleScrapeFinish 在后台等刮削结束后结束进度条目（未开启刷库时）。
+func (s *Service) scheduleScrapeFinish(progressID string, scrapeTaskID int64) {
 	go func() {
-		safego.Guard(s.logger(), "buei.guangyashare.emby", func() {
-			s.waitAndRefreshEmby(scrapeTaskID, action)
+		safego.Guard(s.logger(), "buei.guangyashare.scrape", func() {
+			s.waitScrape(scrapeTaskID)
+			s.progress.finish(progressID, "")
 		})
 	}()
 }
 
-// waitAndRefreshEmby 等待刮削结束（最长 embyWaitTimeout）后刷库。
-func (s *Service) waitAndRefreshEmby(scrapeTaskID int64, action embyAction) {
-	if s.waitScrapeDone != nil && scrapeTaskID > 0 {
-		waitCtx, cancel := context.WithTimeout(context.Background(), embyWaitTimeout)
-		err := s.waitScrapeDone(waitCtx, scrapeTaskID)
-		cancel()
-		if err != nil {
-			s.logger().Warn("等待刮削结束超时，仍继续 Emby 刷库", "strm_task_id", scrapeTaskID, "error", err)
-		}
+// scheduleEmbyAfterScrape 在后台等刮削结束后再刷库，避免阻塞转存请求。
+func (s *Service) scheduleEmbyAfterScrape(progressID string, scrapeTaskID int64, action embyAction) {
+	go func() {
+		safego.Guard(s.logger(), "buei.guangyashare.emby", func() {
+			s.waitAndRefreshEmby(progressID, scrapeTaskID, action)
+		})
+	}()
+}
+
+// waitScrape 等待刮削结束（最长 embyWaitTimeout）；失败只记日志，后续动作照常执行。
+func (s *Service) waitScrape(scrapeTaskID int64) {
+	if s.waitScrapeDone == nil || scrapeTaskID <= 0 {
+		return
 	}
-	s.refreshEmbyNow(context.Background(), action)
+	waitCtx, cancel := context.WithTimeout(context.Background(), embyWaitTimeout)
+	if err := s.waitScrapeDone(waitCtx, scrapeTaskID); err != nil {
+		s.logger().Warn("等待刮削结束超时，仍继续后续联动动作", "strm_task_id", scrapeTaskID, "error", err)
+	}
+	cancel()
+}
+
+// waitAndRefreshEmby 等待刮削结束（最长 embyWaitTimeout）后刷库，并把最终结果写回进度。
+func (s *Service) waitAndRefreshEmby(progressID string, scrapeTaskID int64, action embyAction) {
+	s.waitScrape(scrapeTaskID)
+	if !action.enabled {
+		s.progress.finish(progressID, "")
+		return
+	}
+	s.progress.setPhase(progressID, GuangyaSharePhaseEmby)
+	_, errText := s.refreshEmbyNow(context.Background(), action)
+	s.progress.finish(progressID, errText)
 }
 
 // scrapeEnabled 判断本次是否需要自动刮削：必须先生成 STRM，并选中了刮削任务。
@@ -667,8 +705,9 @@ func scrapeEnabled(in TransferInput) bool {
 	return in.AutoStrm && in.AutoScrape && in.ScrapeTaskID > 0
 }
 
-// scrapeAfterTransfer 先重建刮削索引，再启动刮削；失败只记录日志并回传原因。
-func (s *Service) scrapeAfterTransfer(ctx context.Context, strmTaskID int64) (bool, string) {
+// scrapeAfterTransfer 先重建刮削索引，再启动刮削；remoteDirs 用于把刮削范围限定到本次转存的作品。
+// 失败只记录日志并回传原因。
+func (s *Service) scrapeAfterTransfer(ctx context.Context, strmTaskID int64, remoteDirs []string) (bool, string) {
 	if s == nil || strmTaskID <= 0 || s.rebuildScrapeIndex == nil || s.startScrape == nil {
 		return false, ""
 	}
@@ -678,11 +717,11 @@ func (s *Service) scrapeAfterTransfer(ctx context.Context, strmTaskID int64) (bo
 		s.logger().Warn("光鸭分享转存后重建刮削索引失败", "strm_task_id", strmTaskID, "error", err)
 		return false, err.Error()
 	}
-	if err := s.startScrape(runCtx, strmTaskID); err != nil {
-		s.logger().Warn("光鸭分享转存后启动刮削失败", "strm_task_id", strmTaskID, "error", err)
+	if err := s.startScrape(runCtx, strmTaskID, remoteDirs); err != nil {
+		s.logger().Warn("光鸭分享转存后启动刮削失败", "strm_task_id", strmTaskID, "dirs", remoteDirs, "error", err)
 		return false, err.Error()
 	}
-	s.logger().Info("光鸭分享转存后已启动自动刮削", "strm_task_id", strmTaskID)
+	s.logger().Info("光鸭分享转存后已启动自动刮削", "strm_task_id", strmTaskID, "dirs", remoteDirs)
 	return true, ""
 }
 
@@ -916,7 +955,7 @@ func (s *Service) scheduleAfterRestore(shareID string, accountID int64, parentID
 			scrapeStarted := false
 			if actions.autoStrm && actions.scrapeTaskID > 0 {
 				scrapeCtx, scrapeCancel := context.WithTimeout(context.Background(), scrapeTimeout)
-				started, scrapeErr := s.scrapeAfterTransfer(scrapeCtx, actions.scrapeTaskID)
+				started, scrapeErr := s.scrapeAfterTransfer(scrapeCtx, actions.scrapeTaskID, actions.strmDirs)
 				scrapeStarted = started
 				if scrapeErr != "" {
 					log.Warn("光鸭分享转存后台自动刮削失败", "strm_task_id", actions.scrapeTaskID, "error", scrapeErr)
@@ -925,7 +964,7 @@ func (s *Service) scheduleAfterRestore(shareID string, accountID int64, parentID
 			}
 			if actions.emby.enabled {
 				if scrapeStarted {
-					s.waitAndRefreshEmby(actions.scrapeTaskID, actions.emby)
+					s.waitAndRefreshEmby("", actions.scrapeTaskID, actions.emby)
 				} else {
 					s.refreshEmbyNow(context.Background(), actions.emby)
 				}
@@ -1194,6 +1233,22 @@ func (s *Service) saveBrowsePath(ctx context.Context, shareID string, crumbs []d
 func (s *Service) saveDestination(ctx context.Context, shareID string, dest *domain.GuangyaShareDestination) {
 	if dest == nil {
 		return
+	}
+	dest = &domain.GuangyaShareDestination{
+		AccountID:     dest.AccountID,
+		ParentID:      strings.TrimSpace(dest.ParentID),
+		BasePath:      dest.BasePath,
+		BaseDirs:      append([]string(nil), dest.BaseDirs...),
+		Title:         dest.Title,
+		Season:        dest.Season,
+		IsSeries:      dest.IsSeries,
+		AutoStrm:      dest.AutoStrm,
+		AutoScrape:    dest.AutoScrape,
+		ScrapeTaskID:  dest.ScrapeTaskID,
+		RefreshEmby:   dest.RefreshEmby,
+		EmbyConfigID:  strings.TrimSpace(dest.EmbyConfigID),
+		EmbyMode:      normalizeEmbyMode(dest.EmbyMode),
+		EmbyLibraryID: strings.TrimSpace(dest.EmbyLibraryID),
 	}
 	if s.links != nil {
 		if err := s.links.UpdateDestination(ctx, shareID, dest); err != nil {

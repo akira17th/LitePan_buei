@@ -76,7 +76,7 @@
 | 本地一键启动脚本 | `run.sh` |
 | 本地运行 / 镜像构建说明 | `readme_run.md` |
 | README 定制说明 | `README.md` |
-| 光鸭分享收藏（收藏链接 / 解析 / 类型勾选 / 目标路径预设（数据库） / 浏览目录记忆 / Shift 连选 / 自动重命名 / 转存历史 / 丢弃标记 / 转存 / 转存后联动动作（生成 STRM / 刮削元数据 / Emby 刷库）） | `internal/buei/guangyashare/`、`internal/store/buei_guangya_share_repo.go`、`drivers/Guangya/buei_share.go`、`internal/api/buei_guangya_share.go`、`web/src/components/buei/`（含 `AppModal` 的 `wide` 支持） |
+| 光鸭分享（辅助工具独立 tab；收藏链接 / 解析 / 类型勾选 / 目标路径预设（数据库） / 浏览目录记忆 / Shift 连选 / 自动重命名 / 转存历史 / 丢弃标记 / 转存 / 转存后联动动作（生成 STRM / 刮削元数据（只刮本次作品） / Emby 刷库（预设持久化））） | `internal/buei/guangyashare/`、`internal/store/buei_guangya_share_repo.go`、`drivers/Guangya/buei_share.go`、`internal/api/buei_guangya_share.go`、`web/src/components/buei/`（含 `AppModal` 的 `wide` / `inline` 支持） |
 | `.tools/` 忽略 | `.gitignore` |
 | 删除一条上游注释（无功能影响） | `drivers/all.go` |
 
@@ -358,7 +358,7 @@ HTTP
 - 迁移文件在 `internal/store/migrations/NNNN_name.sql`，按版本号顺序执行，记录在 `schema_migrations`。
 - 迁移 SQL 按分号拆分执行，**字符串字面量里不要出现分号**。
 - 已执行的迁移绝不能修改或改编号；只能新增后续迁移。
-- 当前最新迁移为 `0031_buei_guangya_share_auto_scrape.sql`；buei 新迁移从 `0032` 起。
+- 当前最新迁移为 `0032_buei_guangya_share_auto_emby.sql`；buei 新迁移从 `0033` 起。
 
 ### 4.8 全局设置
 
