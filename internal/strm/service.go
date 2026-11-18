@@ -344,6 +344,7 @@ func (s *Service) UpdateTask(ctx context.Context, id int64, task *domain.StrmTas
 	if err != nil {
 		return nil, err
 	}
+	nameChanged := strings.TrimSpace(existing.Name) != strings.TrimSpace(task.Name)
 	existing.Name = task.Name
 	existing.AccountID = task.AccountID
 	existing.ParentID = task.ParentID
@@ -353,6 +354,11 @@ func (s *Service) UpdateTask(ctx context.Context, id int64, task *domain.StrmTas
 	existing.ScanMode = task.ScanMode
 	existing.Extensions = task.Extensions
 	existing.OutputFolder = task.OutputFolder
+	// #region buei:strm-task-name-output
+	if nameChanged {
+		existing.OutputFolder = strings.TrimSpace(task.Name)
+	}
+	// #endregion buei:strm-task-name-output
 	existing.GroupDir = task.GroupDir
 	existing.ApiInterval = task.ApiInterval
 	existing.ExcludeDirKeywords = task.ExcludeDirKeywords
