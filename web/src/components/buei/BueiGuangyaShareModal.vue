@@ -37,12 +37,19 @@ import BueiGuangyaShareConfirm, {
   type RenamePreviewRow,
 } from "@/components/buei/BueiGuangyaShareConfirm.vue";
 
-// buei 定制：后台「辅助工具 / 光鸭分享」独立 tab 的工作区。
+// buei 定制：后台「辅助工具 / 云盘分享入库」独立 tab 的工作区。
 
 const router = useRouter();
 const accountsStore = useAccountsStore();
-const guangyaAccounts = computed(() =>
-  accountsStore.accounts.filter((a) => a.driver_type === "guangya" && a.is_active),
+
+// 当前分享所属网盘：由解析结果决定，账号列表据此过滤（分享只能转到同网盘账号）。
+const PROVIDER_NAMES: Record<string, string> = { guangya: "光鸭云盘", quark: "夸克网盘" };
+const shareProvider = ref("guangya");
+const shareProviderName = computed(() => PROVIDER_NAMES[shareProvider.value] ?? "云盘");
+const providerAccounts = computed(() =>
+  accountsStore.accounts.filter(
+    (a) => a.driver_type === shareProvider.value && a.is_active,
+  ),
 );
 
 type FolderCrumb = { id: string; name: string; path: string };
@@ -135,8 +142,9 @@ const renamePrefixTouched = ref(false);
 const renameEpisodeOn = ref(false);
 const renameEpisodeTouched = ref(false);
 const renameReplaceOn = ref(false);
-const renameFind = ref("");
-const renameReplaceWith = ref("");
+// 替换文本支持多条规则，按顺序执行。
+type RenameReplaceRule = { find: string; replaceWith: string };
+const renameReplaceRules = ref<RenameReplaceRule[]>([{ find: "", replaceWith: "" }]);
 const renameStartEpisode = ref(1);
 const transferConfirmOpen = ref(false);
 const pendingTransfer = ref<PendingTransfer | null>(null);
@@ -373,9 +381,14 @@ interface PendingTransfer {
   target: string;
   count: number;
   renames: RenamePreviewRow[];
-  files: { fileId: string; originalName: string; newName: string; isDir: boolean }[];
+  files: { fileId: string; token: string; originalName: string; newName: string; isDir: boolean }[];
   browsePath: GuangyaShareBrowseCrumb[];
-  renameReplace: { enabled: boolean; find: string; replaceWith: string };
+  renameReplace: {
+    enabled: boolean;
+    find: string;
+    replaceWith: string;
+    rules: { find: string; replaceWith: string }[];
+  };
   autoStrm: boolean;
   autoScrape: boolean;
   scrapeTaskId: number;
@@ -766,15 +779,27 @@ const episodeIndexByID = computed(() => {
   return map;
 });
 
+const renameRuleErrors = computed(() =>
+  renameReplaceRules.value.map((rule) => {
+    if (!rule.find) return "";
+    try {
+      new RegExp(rule.find, "g");
+      return "";
+    } catch (error) {
+      return error instanceof Error ? error.message : "正则表达式无效";
+    }
+  }),
+);
+
 const renameReplaceError = computed(() => {
-  if (!renameReplaceOn.value || !renameFind.value) return "";
-  try {
-    new RegExp(renameFind.value, "g");
-    return "";
-  } catch (error) {
-    return error instanceof Error ? error.message : "正则表达式无效";
-  }
+  if (!renameReplaceOn.value) return "";
+  return renameRuleErrors.value.find(Boolean) ?? "";
 });
+
+// 启用替换时需要至少填一条“查找”。
+const renameReplaceReady = computed(
+  () => renameReplaceOn.value && renameReplaceRules.value.some((rule) => !!rule.find),
+);
 
 const renameEpisodeActive = computed(() => renameEpisodeOn.value && isSeries.value);
 
@@ -782,7 +807,7 @@ const renameActive = computed(
   () =>
     (renamePrefixOn.value && !!renamePrefixBase.value) ||
     renameEpisodeActive.value ||
-    (renameReplaceOn.value && !!renameFind.value && !renameReplaceError.value),
+    (renameReplaceReady.value && !renameReplaceError.value),
 );
 
 function renamedNameFor(item: GuangyaShareItem) {
@@ -806,11 +831,14 @@ function renamedNameFor(item: GuangyaShareItem) {
       }
     }
   }
-  if (renameReplaceOn.value && renameFind.value && !renameReplaceError.value) {
-    try {
-      base = base.replace(new RegExp(renameFind.value, "g"), renameReplaceWith.value);
-    } catch {
-      // 正则已在上方校验，这里只兜底。
+  if (renameReplaceOn.value && !renameReplaceError.value) {
+    for (const rule of renameReplaceRules.value) {
+      if (!rule.find) continue;
+      try {
+        base = base.replace(new RegExp(rule.find, "g"), rule.replaceWith);
+      } catch {
+        // 正则已在上方校验，这里只兜底。
+      }
     }
   }
   // 规则可能把名称整段删空，这种情况下保留原文件名更安全。
@@ -843,9 +871,17 @@ const renamePreviewRows = computed<RenamePreviewRow[]>(() =>
 
 function applyRenameReplace(rule?: GuangyaShareRenameReplace | null) {
   if (!rule) return;
-  renameReplaceOn.value = !!rule.enabled && !!rule.find;
-  renameFind.value = rule.find || "";
-  renameReplaceWith.value = rule.replace_with || "";
+  const rawRules =
+    rule.rules?.length
+      ? rule.rules
+      : rule.find
+        ? [{ find: rule.find, replace_with: rule.replace_with }]
+        : [];
+  const rules = rawRules
+    .filter((item) => !!item.find)
+    .map((item) => ({ find: item.find, replaceWith: item.replace_with || "" }));
+  renameReplaceRules.value = rules.length ? rules : [{ find: "", replaceWith: "" }];
+  renameReplaceOn.value = !!rule.enabled && rules.length > 0;
 }
 
 function resetRenameRules() {
@@ -854,9 +890,36 @@ function resetRenameRules() {
   renameEpisodeOn.value = false;
   renameEpisodeTouched.value = false;
   renameReplaceOn.value = false;
-  renameFind.value = "";
-  renameReplaceWith.value = "";
+  renameReplaceRules.value = [{ find: "", replaceWith: "" }];
   renameStartEpisode.value = 1;
+}
+
+// 第一个选中文件的文件名（不含扩展名），方便在“替换文本”里直接取用。
+function firstSelectedFileName(): string {
+  const item = orderedSelectedFiles.value[0] ?? selectedItems.value.find((it) => !it.is_dir);
+  if (!item) return "";
+  return splitFileName(item.name).stem || item.name;
+}
+
+function onRenameReplaceToggle() {
+  if (!renameReplaceOn.value) return;
+  if (!renameReplaceRules.value.length) {
+    renameReplaceRules.value = [{ find: "", replaceWith: "" }];
+  }
+  const first = renameReplaceRules.value[0];
+  if (!first.find) first.find = firstSelectedFileName();
+}
+
+function addRenameReplaceRule() {
+  renameReplaceRules.value.push({ find: firstSelectedFileName(), replaceWith: "" });
+}
+
+function removeRenameReplaceRule(index: number) {
+  if (renameReplaceRules.value.length <= 1) {
+    renameReplaceRules.value = [{ find: "", replaceWith: "" }];
+    return;
+  }
+  renameReplaceRules.value.splice(index, 1);
 }
 
 // 选中的文件缺前缀/缺 SxxEnn 时自动勾选对应规则；用户手动改过之后不再覆盖。
@@ -902,7 +965,7 @@ function destinationBaseFromAPI(
 
 function applyDestinationBase(base: DestinationBase | null) {
   if (!base) return false;
-  const account = guangyaAccounts.value.find((item) => item.id === base.accountId);
+  const account = providerAccounts.value.find((item) => item.id === base.accountId);
   if (!account) return false;
   destination.value = {
     accountId: account.id,
@@ -928,6 +991,10 @@ function applyDestinationForShare(res: GuangyaShareParseResult) {
       )
     : null;
   if (!applyDestinationBase(draftBase) && !applyDestinationBase(lastBase)) {
+    // 切换网盘后旧账号不属于当前网盘，先清空再回落到第一个可用账号。
+    if (!providerAccounts.value.some((item) => item.id === destination.value.accountId)) {
+      destination.value = { accountId: 0, accountName: "", parentId: "", path: "/", dirs: [] };
+    }
     ensureDestination();
   }
   folderTitle.value = toHalfWidthBrackets(draft?.title || res.title || res.items[0]?.name || "").trim();
@@ -986,14 +1053,14 @@ function selectDestination(accountID: number, accountName: string) {
 
 function ensureDestination() {
   if (destination.value.accountId) return;
-  const first = guangyaAccounts.value[0];
+  const first = providerAccounts.value[0];
   if (first) selectDestination(first.id, first.name);
 }
 
 function openPicker() {
   if (transferring.value) return;
-  if (!guangyaAccounts.value.length) {
-    toast.info("请先在「存储管理」添加光鸭云盘账号");
+  if (!providerAccounts.value.length) {
+    toast.info(`请先在「存储管理」添加${shareProviderName.value}账号`);
     return;
   }
   pickerOpen.value = true;
@@ -1095,7 +1162,7 @@ async function parseShare(refreshSaved = true) {
   if (discarding.value) return;
   const input = url.value.trim();
   if (!input) {
-    toast.info("请先粘贴光鸭分享链接");
+    toast.info("请先粘贴云盘分享链接");
     return;
   }
   parseAbort?.abort();
@@ -1117,6 +1184,8 @@ async function parseShare(refreshSaved = true) {
     if (controller.signal.aborted) return;
     result.value = res;
     parsedURL.value = input;
+    // 网盘决定可选的转存账号；必须在恢复目标预设前设置。
+    shareProvider.value = res.provider || "guangya";
     if (!res.need_code) password.value = "";
     folderGeneration += 1;
     folderCache.value = { "": res.items };
@@ -1203,6 +1272,7 @@ async function loadFolder(parentID: string, parentPath: string) {
   try {
     const res = await bueiGuangyaShareApi.list({
       url: parsedURL.value || url.value.trim(),
+      provider: shareProvider.value,
       share_id: result.value.share_id,
       password: password.value.trim(),
       parent_id: parentID,
@@ -1416,15 +1486,20 @@ function submitTransfer() {
   const changedRows = previews.filter((row) => row.newName !== row.oldName);
   const files = orderedSelectedFiles.value.map((item) => ({
     fileId: item.id,
+    token: item.token ?? "",
     originalName: item.name,
     newName: renamedNameFor(item),
     isDir: false,
   }));
   const browsePath = pathStack.value.map((crumb) => ({ id: crumb.id, name: crumb.name, path: crumb.path }));
+  const renameRules = renameReplaceRules.value
+    .filter((rule) => !!rule.find)
+    .map((rule) => ({ find: rule.find, replaceWith: rule.replaceWith }));
   const renameReplace = {
-    enabled: renameReplaceOn.value && !!renameFind.value && !renameReplaceError.value,
-    find: renameFind.value,
-    replaceWith: renameReplaceWith.value,
+    enabled: renameReplaceOn.value && renameRules.length > 0 && !renameReplaceError.value,
+    find: renameRules[0]?.find ?? "",
+    replaceWith: renameRules[0]?.replaceWith ?? "",
+    rules: renameRules,
   };
   pendingTransfer.value = {
     target: `${base.accountName || "未选择账号"} · ${targetPath.value}`,
@@ -1552,6 +1627,7 @@ async function confirmTransfer() {
   try {
     const res = await bueiGuangyaShareApi.transfer({
       url: parsedURL.value || url.value.trim(),
+      provider: shareProvider.value,
       share_id: result.value.share_id,
       password: password.value.trim(),
       file_ids: selectedItems.value.map((item) => item.id),
@@ -1565,6 +1641,7 @@ async function confirmTransfer() {
       is_series: pending.series,
       files: pending.files.map((file) => ({
         file_id: file.fileId,
+        token: file.token,
         original_name: file.originalName,
         new_name: file.newName,
         is_dir: file.isDir,
@@ -1574,6 +1651,10 @@ async function confirmTransfer() {
         enabled: pending.renameReplace.enabled,
         find: pending.renameReplace.find,
         replace_with: pending.renameReplace.replaceWith,
+        rules: pending.renameReplace.rules.map((rule) => ({
+          find: rule.find,
+          replace_with: rule.replaceWith,
+        })),
       },
       auto_strm: pending.autoStrm,
       auto_scrape: pending.autoScrape,
@@ -1682,7 +1763,7 @@ defineExpose({
   submitTransfer,
 });
 
-watch(guangyaAccounts, (accounts) => {
+watch(providerAccounts, (accounts) => {
   if (!destination.value.accountId && accounts.length) {
     selectDestination(accounts[0].id, accounts[0].name);
   }
@@ -1721,7 +1802,7 @@ onBeforeUnmount(() => {
             v-model="url"
             class="gys__input"
             type="text"
-            placeholder="粘贴光鸭分享链接或分享口令，如 https://www.guangyapan.com/s/..."
+            placeholder="粘贴云盘分享链接或分享口令，支持光鸭 / 夸克"
             :disabled="parsing || transferring"
             @input="activeSavedLinkId = null"
             @keydown.enter.prevent="parseShare()"
@@ -1801,7 +1882,8 @@ onBeforeUnmount(() => {
                     <span class="gys__saved-meta">
                       <span class="gys__saved-title">{{ link.title || link.share_id || "未命名分享" }}</span>
                       <span class="gys__saved-sub">
-                        {{ link.owner || "光鸭用户" }}
+                        {{ link.provider_name || "云盘" }}
+                        <template v-if="link.owner"> · {{ link.owner }}</template>
                         <template v-if="link.password"> · 有提取码</template>
                         · {{ formatTimeShort(link.last_used_at) || "刚刚" }}
                       </span>
@@ -1819,7 +1901,7 @@ onBeforeUnmount(() => {
         <div class="gys__main">
           <div v-if="result && !result.need_password" class="gys__sharehead">
             <span class="gys__sharetitle" :title="result.title">{{ result.title || "未命名分享" }}</span>
-            <span class="gys__sharesub">{{ result.owner || "光鸭用户" }}</span>
+            <span class="gys__sharesub">{{ result.owner || result.provider_name || "云盘用户" }}</span>
           </div>
 
           <div v-if="result && !result.need_password" class="gys__crumbs">
@@ -1915,7 +1997,7 @@ onBeforeUnmount(() => {
 
           <div v-else-if="!result" class="gys__empty">
             <SvgIcon name="hand-cloud" :size="44" />
-            <p>粘贴光鸭分享链接开始解析</p>
+            <p>粘贴云盘分享链接开始解析</p>
             <small>支持带提取码的分享口令，解析成功后自动收藏，之后可直接从右侧选择</small>
           </div>
 
@@ -2188,29 +2270,64 @@ onBeforeUnmount(() => {
               </div>
 
               <label class="gys__rule">
-                <input v-model="renameReplaceOn" type="checkbox" :disabled="transferring" />
+                <input
+                  v-model="renameReplaceOn"
+                  type="checkbox"
+                  :disabled="transferring"
+                  @change="onRenameReplaceToggle"
+                />
                 <span class="gys__rule-body">
                   <span class="gys__rule-title">替换文本</span>
-                  <span class="gys__rule-desc">支持正则，替换内容可留空</span>
+                  <span class="gys__rule-desc">支持正则、可多组按顺序替换，替换内容可留空</span>
                 </span>
               </label>
 
-              <div v-if="renameReplaceOn" class="gys__replace">
-                <input
-                  v-model="renameFind"
-                  class="gys__replace-input"
-                  type="text"
-                  placeholder="查找（正则）"
+              <div v-if="renameReplaceOn" class="gys__replace-list">
+                <div
+                  v-for="(rule, index) in renameReplaceRules"
+                  :key="index"
+                  class="gys__replace"
+                >
+                  <div class="gys__replace-head">
+                    <span class="gys__replace-no">{{ index + 1 }}</span>
+                    <span class="gys__replace-title">第 {{ index + 1 }} 组</span>
+                    <button
+                      type="button"
+                      class="gys__replace-del"
+                      :title="renameReplaceRules.length > 1 ? '删除这组' : '清空这组'"
+                      :disabled="transferring"
+                      @click="removeRenameReplaceRule(index)"
+                    >
+                      <SvgIcon name="trash" :size="12" />
+                    </button>
+                  </div>
+                  <div class="gys__replace-row">
+                    <input
+                      v-model="rule.find"
+                      class="gys__replace-input"
+                      type="text"
+                      placeholder="查找（正则）"
+                      :disabled="transferring"
+                    />
+                    <input
+                      v-model="rule.replaceWith"
+                      class="gys__replace-input"
+                      type="text"
+                      placeholder="替换为（可留空）"
+                      :disabled="transferring"
+                    />
+                  </div>
+                  <p v-if="renameRuleErrors[index]" class="gys__rule-error">{{ renameRuleErrors[index] }}</p>
+                </div>
+                <button
+                  type="button"
+                  class="gys__replace-add"
                   :disabled="transferring"
-                />
-                <input
-                  v-model="renameReplaceWith"
-                  class="gys__replace-input"
-                  type="text"
-                  placeholder="替换为（可留空）"
-                  :disabled="transferring"
-                />
-                <p v-if="renameReplaceError" class="gys__rule-error">{{ renameReplaceError }}</p>
+                  @click="addRenameReplaceRule"
+                >
+                  <SvgIcon name="plus" :size="12" />
+                  增加一组替换
+                </button>
               </div>
             </section>
 
@@ -2381,11 +2498,11 @@ onBeforeUnmount(() => {
     :open="pickerOpen"
     nested
     selectable-account
-    :accounts="guangyaAccounts"
+    :accounts="providerAccounts"
     :account-id="pickerAccountId"
     :initial-path="pickerInitialPath"
     allow-create-folder
-    title="选择光鸭转存目录"
+    :title="`选择${shareProviderName}转存目录`"
     confirm-text="转存到此目录"
     @close="pickerOpen = false"
     @resolve="onFolderResolved"
@@ -3568,11 +3685,100 @@ onBeforeUnmount(() => {
   border-color: var(--brand);
 }
 
+.gys__replace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 4px 21px;
+}
+
+/* 每组替换独立成块，用序号和分隔边框区分 */
 .gys__replace {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 2px 0 2px 21px;
+  padding: 7px 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 60%, var(--surface-hover));
+}
+
+.gys__replace-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gys__replace-no {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  color: var(--brand);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.gys__replace-title {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.gys__replace-del {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.gys__replace-del:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+.gys__replace-del:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.gys__replace-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gys__replace-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 26px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.gys__replace-add:hover:not(:disabled) {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.gys__replace-add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .gys__replace-input {

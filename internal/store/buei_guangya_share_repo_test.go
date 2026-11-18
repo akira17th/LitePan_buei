@@ -24,6 +24,7 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 	repo := store.NewGuangyaShareLinkRepo(db)
 	firstTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	saved, err := repo.Upsert(ctx, &domain.GuangyaShareLink{
+		Provider:   "quark",
 		ShareID:    "1969_abc",
 		URL:        "https://www.guangyapan.com/s/1969_abc",
 		Password:   "",
@@ -37,12 +38,15 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 	if saved.ID <= 0 || saved.Title != "测试分享" || !saved.LastUsedAt.Equal(firstTime) {
 		t.Fatalf("unexpected saved link: %+v", saved)
 	}
+	if saved.Provider != "quark" {
+		t.Fatalf("Provider = %q, want quark", saved.Provider)
+	}
 
 	links, err := repo.List(ctx)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(links) != 1 || links[0].ShareID != "1969_abc" {
+	if len(links) != 1 || links[0].ShareID != "1969_abc" || links[0].Provider != "quark" {
 		t.Fatalf("unexpected list: %+v", links)
 	}
 	if links[0].LastDestination != nil {
@@ -50,13 +54,13 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 	}
 
 	dest := &domain.GuangyaShareDestination{
-		AccountID:    2,
-		ParentID:     "dir-1",
-		BasePath:     "/媒体/电视剧",
-		BaseDirs:     []string{"媒体", "电视剧"},
-		Title:        "走马上任 (2026)",
-		Season:       1,
-		IsSeries:     true,
+		AccountID:     2,
+		ParentID:      "dir-1",
+		BasePath:      "/媒体/电视剧",
+		BaseDirs:      []string{"媒体", "电视剧"},
+		Title:         "走马上任 (2026)",
+		Season:        1,
+		IsSeries:      true,
 		AutoStrm:      true,
 		AutoScrape:    true,
 		ScrapeTaskID:  9,
@@ -100,7 +104,14 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 		t.Fatalf("browse path was not persisted: %+v", links)
 	}
 
-	replaceRule := domain.GuangyaShareRenameReplace{Enabled: true, Find: "\\s+", ReplaceWith: " "}
+	replaceRule := domain.GuangyaShareRenameReplace{
+		Enabled: true,
+		Find:    "\\s+",
+		Rules: []domain.GuangyaShareRenameRule{
+			{Find: "\\s+", ReplaceWith: " "},
+			{Find: "2160p", ReplaceWith: ""},
+		},
+	}
 	if err := repo.UpdateRenameReplace(ctx, "1969_abc", replaceRule); err != nil {
 		t.Fatalf("update replace rule: %v", err)
 	}
@@ -110,6 +121,9 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 	}
 	if len(links) != 1 || !links[0].RenameReplace.Enabled || links[0].RenameReplace.Find != "\\s+" {
 		t.Fatalf("replace rule was not persisted: %+v", links)
+	}
+	if rules := links[0].RenameReplace.NormalizeRules(); len(rules) != 2 || rules[1].Find != "2160p" {
+		t.Fatalf("multi replace rules were not persisted: %+v", links[0].RenameReplace)
 	}
 
 	// 同一 share_id 再次收藏应更新而不是新增。
@@ -136,6 +150,23 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 	}
 	if !saved.RenameReplace.Enabled || saved.RenameReplace.ReplaceWith != " " {
 		t.Fatalf("upsert should preserve replace rule: %+v", saved.RenameReplace)
+	}
+
+	// 部分网盘（夸克）的概要接口没有标题，空标题不能覆盖已保存的标题。
+	if _, err := repo.Upsert(ctx, &domain.GuangyaShareLink{
+		ShareID: "1969_abc",
+		URL:     "https://pan.quark.cn/s/1969_abc",
+		Title:   "",
+		Owner:   "",
+	}); err != nil {
+		t.Fatalf("upsert with empty title: %v", err)
+	}
+	links, err = repo.List(ctx)
+	if err != nil {
+		t.Fatalf("list after empty title upsert: %v", err)
+	}
+	if links[0].Title != "新标题" || links[0].Owner != "光鸭用户2" {
+		t.Fatalf("empty title should not overwrite: %+v", links[0])
 	}
 	links, err = repo.List(ctx)
 	if err != nil {

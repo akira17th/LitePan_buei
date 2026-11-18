@@ -9,8 +9,8 @@ import (
 	"litepan/internal/driver"
 )
 
-// buei 定制：光鸭分享的转存能力。实现 driver.GuangyaShareRestorer，供「后台/辅助工具/
-// 光鸭分享」调用；分享解析与公开列表在 internal/buei/guangyashare 中完成。
+// buei 定制：光鸭分享的转存能力。实现 driver.ShareRestorer，供「后台/辅助工具/
+// 云盘分享入库」调用；分享解析与公开列表在 internal/buei/guangyashare 中完成。
 const (
 	pathShareRestore = "/userres/v1/restore_share"
 
@@ -20,8 +20,12 @@ const (
 )
 
 // RestoreShare 提交分享转存任务并等待结果。
-func (d *Driver) RestoreShare(ctx context.Context, req driver.GuangyaShareRestoreRequest) (string, bool, error) {
-	ids := normalizeIDs(req.FileIDs)
+func (d *Driver) RestoreShare(ctx context.Context, req driver.ShareRestoreRequest) (string, bool, error) {
+	ids := make([]string, 0, len(req.Entries))
+	for _, entry := range req.Entries {
+		ids = append(ids, entry.ID)
+	}
+	ids = normalizeIDs(ids)
 	if len(ids) == 0 {
 		return "", false, domain.Errorf(domain.CodeValidation, "请选择要转存的文件")
 	}
@@ -92,4 +96,4 @@ func describeShareRestoreError(err error) error {
 	return err
 }
 
-var _ driver.GuangyaShareRestorer = (*Driver)(nil)
+var _ driver.ShareRestorer = (*Driver)(nil)
