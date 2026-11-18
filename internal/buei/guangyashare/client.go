@@ -29,8 +29,7 @@ const (
 	maxSharePagesPerDir = 100
 )
 
-// 光鸭分享接口的原始响应结构；对外统一转换为 provider.go 里的 shareEntry。
-type guangyaEnvelope struct {
+type apiEnvelope struct {
 	Code int             `json:"code"`
 	Msg  string          `json:"msg"`
 	Data json.RawMessage `json:"data"`
@@ -43,7 +42,7 @@ type shareSummaryData struct {
 	NeedCode bool   `json:"needCode"`
 }
 
-type guangyaEntry struct {
+type shareEntry struct {
 	FileID   string `json:"fileId"`
 	FileName string `json:"fileName"`
 	FileSize int64  `json:"fileSize"`
@@ -53,9 +52,9 @@ type guangyaEntry struct {
 	FileType int    `json:"fileType"`
 }
 
-type guangyaListData struct {
-	List  []guangyaEntry `json:"list"`
-	Total int            `json:"total"`
+type shareListData struct {
+	List  []shareEntry `json:"list"`
+	Total int          `json:"total"`
 }
 
 type shareClient struct {
@@ -106,10 +105,10 @@ func (c *shareClient) shareAccessToken(ctx context.Context, shareID, password st
 }
 
 // listShareFiles 拉取分享内某个目录的全部文件（自动翻页）。
-func (c *shareClient) listShareFiles(ctx context.Context, accessToken, parentID string) ([]guangyaEntry, error) {
-	var all []guangyaEntry
+func (c *shareClient) listShareFiles(ctx context.Context, accessToken, parentID string) ([]shareEntry, error) {
+	var all []shareEntry
 	for page := 0; page < maxSharePagesPerDir; page++ {
-		var data guangyaListData
+		var data shareListData
 		if err := c.post(ctx, pathShareFileList, map[string]any{
 			"accessToken": accessToken,
 			"parentId":    parentID,
@@ -155,7 +154,7 @@ func (c *shareClient) post(ctx context.Context, path string, body any, out any) 
 		return domain.Errorf(domain.CodeDriverError, "光鸭分享 HTTP %d：%s", resp.StatusCode, httpx.Truncate(data, 300))
 	}
 
-	var env guangyaEnvelope
+	var env apiEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		return domain.Errorf(domain.CodeDriverError, "光鸭分享返回格式异常：%v", err)
 	}

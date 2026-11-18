@@ -163,7 +163,7 @@ type fakeTransferDriver struct {
 	restored  bool
 }
 
-func (d *fakeTransferDriver) RestoreShare(context.Context, driver.ShareRestoreRequest) (string, bool, error) {
+func (d *fakeTransferDriver) RestoreShare(context.Context, driver.GuangyaShareRestoreRequest) (string, bool, error) {
 	if !d.restored {
 		d.items = append(d.items,
 			domain.FileItem{ID: "t1", Name: "01.mp4"},
@@ -174,7 +174,7 @@ func (d *fakeTransferDriver) RestoreShare(context.Context, driver.ShareRestoreRe
 	return "task-1", d.completed, nil
 }
 
-var _ driver.ShareRestorer = (*fakeTransferDriver)(nil)
+var _ driver.GuangyaShareRestorer = (*fakeTransferDriver)(nil)
 
 func TestTransferAppliesRenames(t *testing.T) {
 	shareSvc := newTestService(t, fakeShareAPI(t))
@@ -186,10 +186,10 @@ func TestTransferAppliesRenames(t *testing.T) {
 		completed: true,
 	}
 	svc := &Service{
-		providers: shareSvc.providers,
-		exec:      driverexec.New(&fakeRenameProvider{drv: drv}, nil),
-		accounts:  &fakeAccountRepo{account: &domain.Account{ID: 2, DriverType: "guangya", IsActive: true}},
-		log:       slog.Default(),
+		client:   shareSvc.client,
+		exec:     driverexec.New(&fakeRenameProvider{drv: drv}, nil),
+		accounts: &fakeAccountRepo{account: &domain.Account{ID: 2, DriverType: "guangya", IsActive: true}},
+		log:      slog.Default(),
 	}
 	invalidated := ""
 	svc.invalidateDir = func(_ int64, parentID string) { invalidated = parentID }
@@ -217,26 +217,5 @@ func TestTransferAppliesRenames(t *testing.T) {
 	}
 	if invalidated != "root" {
 		t.Fatalf("invalidateDir called with %q", invalidated)
-	}
-}
-
-func TestSaveRenameReplaceNormalizesRules(t *testing.T) {
-	repo := newFakeLinkRepo()
-	repo.links[testShareID] = &domain.GuangyaShareLink{ID: 1, ShareID: testShareID}
-	svc := &Service{links: repo}
-	svc.saveRenameReplace(context.Background(), testShareID, &domain.GuangyaShareRenameReplace{
-		Enabled: true,
-		Rules: []domain.GuangyaShareRenameRule{
-			{Find: "   "},
-			{Find: "2160p", ReplaceWith: ""},
-			{Find: "HDR", ReplaceWith: " "},
-		},
-	})
-	rule := repo.links[testShareID].RenameReplace
-	if len(rule.Rules) != 2 || rule.Rules[0].Find != "2160p" || rule.Rules[1].ReplaceWith != " " {
-		t.Fatalf("unexpected saved rules: %+v", rule)
-	}
-	if rule.Find != "2160p" || rule.ReplaceWith != "" {
-		t.Fatalf("legacy mirror fields not synced: %+v", rule)
 	}
 }

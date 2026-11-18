@@ -83,8 +83,7 @@ type Service struct {
 	startScrape        func(ctx context.Context, strmTaskID int64, remoteDirs []string) error
 	waitScrapeDone     func(ctx context.Context, strmTaskID int64) error
 	refreshEmby        func(ctx context.Context, configID, mode, libraryID string) error
-	// providers 是各网盘公开分享接口的适配层，按 provider 标识索引。
-	providers map[string]shareProvider
+	client             *shareClient
 	// progress 记录进行中的转存阶段，供前端轮询。
 	progress *transferProgressTracker
 
@@ -94,8 +93,6 @@ type Service struct {
 
 // ShareItem 是分享内的一个文件或目录。
 type ShareItem struct {
-	// Token 是分享内文件令牌，夸克转存时需要原样回传；光鸭为空。
-	Token    string    `json:"token,omitempty"`
 	ID       string    `json:"id"`
 	ParentID string    `json:"parent_id"`
 	Name     string    `json:"name"`
@@ -116,9 +113,6 @@ type ParseInput struct {
 
 // ParseResult 是分享解析结果，只包含分享根目录内容，子目录按需通过 List 加载。
 type ParseResult struct {
-	// Provider/ProviderName 是识别出的网盘标识与展示名，前端据此过滤转存账号。
-	Provider         string                                `json:"provider"`
-	ProviderName     string                                `json:"provider_name"`
 	ShareID          string                                `json:"share_id"`
 	Title            string                                `json:"title"`
 	Owner            string                                `json:"owner"`
@@ -135,7 +129,6 @@ type ParseResult struct {
 // ListInput 是列出分享内某个目录的入参。
 type ListInput struct {
 	URL        string
-	Provider   string
 	ShareID    string
 	Password   string
 	ParentID   string
@@ -150,7 +143,6 @@ type ListResult struct {
 // TransferInput 是转存入参。
 type TransferInput struct {
 	URL       string
-	Provider  string
 	ShareID   string
 	Password  string
 	FileIDs   []string
@@ -190,9 +182,7 @@ type TransferInput struct {
 
 // TransferFile 是本次转存的一个文件及其新旧名称。
 type TransferFile struct {
-	FileID string
-	// Token 是分享内文件令牌（夸克必需），由列表接口带回。
-	Token        string
+	FileID       string
 	OriginalName string
 	NewName      string
 	IsDir        bool
@@ -256,7 +246,7 @@ func New(opts Options) *Service {
 		startScrape:        opts.StartScrape,
 		waitScrapeDone:     opts.WaitScrapeDone,
 		refreshEmby:        opts.RefreshEmby,
-		providers:          defaultShareProviders(),
+		client:             newShareClient(),
 		progress:           newTransferProgressTracker(),
 		tokens:             make(map[string]cachedShareToken),
 	}
@@ -300,35 +290,12 @@ func (s *Service) SetStrmGenerator(gen func(ctx context.Context, accountID int64
 	s.strmGen = gen
 }
 
-// defaultShareProviders 构造各网盘公开分享接口的适配层。
-func defaultShareProviders() map[string]shareProvider {
-	return map[string]shareProvider{
-		ProviderGuangya: newGuangyaProvider(),
-		ProviderQuark:   newQuarkProvider(),
-	}
-}
-
-// shareProvider 按标识取适配层；未知网盘返回 NOT_IMPLEMENT。
-func (s *Service) shareProvider(provider string) (shareProvider, error) {
-	key := normalizeProvider(provider)
-	if len(s.providers) > 0 {
-		if p, ok := s.providers[key]; ok {
-			return p, nil
-		}
-	}
-	return nil, domain.Errorf(domain.CodeNotImplement, "暂不支持%s分享", providerDisplayName(key))
-}
-
 // Parse 解析分享链接并列出分享根目录内容。
 func (s *Service) Parse(ctx context.Context, in ParseInput) (*ParseResult, error) {
-	if s == nil || len(s.providers) == 0 {
-		return nil, domain.Errorf(domain.CodeInternal, "云盘分享服务未初始化")
+	if s == nil || s.client == nil {
+		return nil, domain.Errorf(domain.CodeInternal, "光鸭分享服务未初始化")
 	}
 	link, err := ParseShareLink(in.URL)
-	if err != nil {
-		return nil, err
-	}
-	provider, err := s.shareProvider(link.Provider)
 	if err != nil {
 		return nil, err
 	}
@@ -337,49 +304,39 @@ func (s *Service) Parse(ctx context.Context, in ParseInput) (*ParseResult, error
 		password = link.Password
 	}
 
-	summary, err := provider.Summary(ctx, link.ShareID, password)
+	summary, err := s.client.shareSummary(ctx, link.ShareID)
 	if err != nil {
 		return nil, err
 	}
 	result := &ParseResult{
-		Provider:     provider.Key(),
-		ProviderName: provider.DisplayName(),
-		ShareID:      link.ShareID,
-		Title:        strings.TrimSpace(summary.Title),
-		Owner:        strings.TrimSpace(summary.Owner),
-		NeedCode:     summary.NeedCode,
+		ShareID:  link.ShareID,
+		Title:    strings.TrimSpace(summary.Title),
+		Owner:    strings.TrimSpace(summary.NickName),
+		NeedCode: summary.NeedCode,
 	}
 	if summary.NeedCode && password == "" {
 		result.NeedPassword = true
 		return result, nil
 	}
 	if !summary.NeedCode {
-		// 无提取码的分享不携带口令，避免用户误填的口令触发提取码错误。
+		// 无提取码的分享不携带口令，避免用户误填的口令触发 209。
 		password = ""
 	}
-	// 概要请求里顺带换到的令牌（夸克）直接复用，避免重复请求。
-	s.storeProviderToken(provider.Key(), link.ShareID, password, summary.Token)
 
-	items, listTitle, err := s.listItems(ctx, provider, link.ShareID, password, "", "")
+	items, err := s.listItems(ctx, link.ShareID, password, "", "")
 	if err != nil {
 		return nil, err
 	}
 	result.Items = items
-	if result.Title == "" {
-		result.Title = strings.TrimSpace(listTitle)
-	}
-	// 夸克的标题来自目录接口，收藏时要用最终解析出的标题。
-	summary.Title = result.Title
-	summary.Owner = result.Owner
-	if saved := s.saveLink(ctx, provider.Key(), link, password, summary, in.URL); saved != nil {
+	if saved := s.saveLink(ctx, link, password, summary, in.URL); saved != nil {
 		result.LastDestination = saved.LastDestination
 		result.LastBrowsePath = saved.LastBrowsePath
-		if saved.RenameReplace.Enabled || len(saved.RenameReplace.NormalizeRules()) > 0 {
+		if saved.RenameReplace.Enabled || saved.RenameReplace.Find != "" || saved.RenameReplace.ReplaceWith != "" {
 			rule := saved.RenameReplace
 			result.RenameReplace = &rule
 		}
 	}
-	result.LastBase = s.loadLastBase(ctx, provider.Key())
+	result.LastBase = s.loadLastBase(ctx)
 	result.TransferredFiles = s.loadTransferred(ctx, link.ShareID)
 	return result, nil
 }
@@ -448,40 +405,31 @@ func (s *Service) DeleteSavedLink(ctx context.Context, id int64) error {
 
 // List 列出分享内指定目录的直接内容。
 func (s *Service) List(ctx context.Context, in ListInput) (*ListResult, error) {
-	if s == nil || len(s.providers) == 0 {
-		return nil, domain.Errorf(domain.CodeInternal, "云盘分享服务未初始化")
+	if s == nil || s.client == nil {
+		return nil, domain.Errorf(domain.CodeInternal, "光鸭分享服务未初始化")
 	}
-	providerKey, shareID, password, err := resolveShareInput(in.URL, in.Provider, in.ShareID, in.Password)
+	shareID, password, err := resolveShareInput(in.URL, in.ShareID, in.Password)
 	if err != nil {
 		return nil, err
 	}
-	provider, err := s.shareProvider(providerKey)
-	if err != nil {
-		return nil, err
-	}
-	items, _, err := s.listItems(ctx, provider, shareID, password, strings.TrimSpace(in.ParentID), normalizeParentPath(in.ParentPath))
+	items, err := s.listItems(ctx, shareID, password, strings.TrimSpace(in.ParentID), normalizeParentPath(in.ParentPath))
 	if err != nil {
 		return nil, err
 	}
 	return &ListResult{Items: items}, nil
 }
 
-// Transfer 把分享内选中的文件转存到同网盘的账号目录。
+// Transfer 把分享内选中的文件转存到指定光鸭账号目录。
 func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *TransferResult, err error) {
 	if s == nil {
-		return nil, domain.Errorf(domain.CodeInternal, "云盘分享服务未初始化")
+		return nil, domain.Errorf(domain.CodeInternal, "光鸭分享服务未初始化")
 	}
-	providerKey, shareID, password, err := resolveShareInput(in.URL, in.Provider, in.ShareID, in.Password)
+	shareID, password, err := resolveShareInput(in.URL, in.ShareID, in.Password)
 	if err != nil {
 		return nil, err
 	}
-	provider, err := s.shareProvider(providerKey)
-	if err != nil {
-		return nil, err
-	}
-	files := normalizeTransferFiles(in.Files)
-	entries := restoreEntries(normalizeFileIDs(in.FileIDs), files)
-	if len(entries) == 0 {
+	fileIDs := normalizeFileIDs(in.FileIDs)
+	if len(fileIDs) == 0 {
 		return nil, domain.Errorf(domain.CodeValidation, "请选择要转存的文件")
 	}
 	targetPath, err := normalizeTargetPath(in.TargetPath)
@@ -499,9 +447,8 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 	if err != nil {
 		return nil, err
 	}
-	// 分享只能转到同一网盘的账号，避免跨盘转存语义不一致。
-	if account.DriverType != provider.Key() {
-		return nil, domain.Errorf(domain.CodeValidation, "只能转存到%s账号", provider.DisplayName())
+	if account.DriverType != "guangya" {
+		return nil, domain.Errorf(domain.CodeValidation, "只能转存到光鸭云盘账号")
 	}
 	if !account.IsActive {
 		return nil, domain.Errorf(domain.CodeValidation, "目标账号已停用")
@@ -523,7 +470,7 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 		s.progress.finish(progressID, "")
 	}()
 
-	summary, err := provider.Summary(ctx, shareID, password)
+	summary, err := s.client.shareSummary(ctx, shareID)
 	if err != nil {
 		return nil, err
 	}
@@ -531,8 +478,7 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 		// 分享已移除提取码时忽略前端残留的口令。
 		password = ""
 	}
-	s.storeProviderToken(provider.Key(), shareID, password, summary.Token)
-	accessToken, err := s.accessToken(ctx, provider, shareID, password, false)
+	accessToken, err := s.accessToken(ctx, shareID, password, false)
 	if err != nil {
 		return nil, err
 	}
@@ -544,9 +490,9 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 		targetParentID = baseParentID
 	)
 	err = s.exec.Run(ctx, in.AccountID, func(drv driver.Driver) error {
-		restorer, ok := drv.(driver.ShareRestorer)
+		restorer, ok := drv.(driver.GuangyaShareRestorer)
 		if !ok {
-			return domain.Errorf(domain.CodeNotImplement, "当前账号驱动不支持%s分享转存", provider.DisplayName())
+			return domain.Errorf(domain.CodeNotImplement, "当前账号驱动不支持光鸭分享转存")
 		}
 		// 每次尝试都从基础目录重新解析，重试时不会把已创建的层级再套一层。
 		parentID := baseParentID
@@ -559,11 +505,9 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 		}
 		targetParentID = parentID
 		var runErr error
-		taskID, completed, runErr = restorer.RestoreShare(ctx, driver.ShareRestoreRequest{
-			Provider:    provider.Key(),
-			ShareID:     shareID,
+		taskID, completed, runErr = restorer.RestoreShare(ctx, driver.GuangyaShareRestoreRequest{
 			AccessToken: accessToken,
-			Entries:     entries,
+			FileIDs:     fileIDs,
 			ParentID:    parentID,
 		})
 		return runErr
@@ -572,6 +516,7 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 		return nil, err
 	}
 
+	files := normalizeTransferFiles(in.Files)
 	renamePlan := buildRenamePlan(files)
 	result := &TransferResult{TaskID: taskID, Completed: completed}
 	strmDirs := targetDirectorySegments(in.BaseDirs, targetPath)
@@ -628,7 +573,7 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 	}
 	s.saveBrowsePath(ctx, shareID, in.BrowsePath)
 	s.saveRenameReplace(ctx, shareID, in.RenameReplace)
-	s.saveDestination(ctx, provider.Key(), shareID, &domain.GuangyaShareDestination{
+	s.saveDestination(ctx, shareID, &domain.GuangyaShareDestination{
 		AccountID:     in.AccountID,
 		ParentID:      strings.TrimSpace(in.ParentID),
 		BasePath:      normalizeDestinationBasePath(in.BasePath),
@@ -646,7 +591,7 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 	})
 
 	if !completed {
-		s.log.Info("云盘分享转存任务等待超时，任务可能仍在执行", "provider", provider.Key(), "account_id", in.AccountID, "task_id", taskID, "count", len(entries))
+		s.log.Info("光鸭分享转存任务等待超时，任务可能仍在执行", "account_id", in.AccountID, "task_id", taskID, "count", len(fileIDs))
 	}
 	if result.StrmGenerated > 0 {
 		s.log.Info("光鸭分享转存后自动生成 STRM", "account_id", in.AccountID, "parent_id", targetParentID, "dirs", strmDirs, "count", result.StrmGenerated)
@@ -821,7 +766,6 @@ func normalizeTransferFiles(raw []TransferFile) []TransferFile {
 		}
 		files = append(files, TransferFile{
 			FileID:       fileID,
-			Token:        strings.TrimSpace(file.Token),
 			OriginalName: original,
 			NewName:      newName,
 			IsDir:        file.IsDir,
@@ -859,7 +803,7 @@ func (s *Service) loadTransferred(ctx context.Context, shareID string) []*domain
 	}
 	files, err := s.transfers.ListByShare(ctx, shareID)
 	if err != nil {
-		s.logger().Warn("读取云盘分享转存历史失败", "share_id", shareID, "error", err)
+		s.logger().Warn("读取光鸭分享转存历史失败", "share_id", shareID, "error", err)
 		return nil
 	}
 	return files
@@ -1218,61 +1162,44 @@ func ensureTargetFolder(ctx context.Context, drv driver.Driver, parentID string,
 	return parentID, nil
 }
 
-func (s *Service) saveLink(ctx context.Context, provider string, link LinkInfo, password string, summary *shareSummary, rawURL string) *domain.GuangyaShareLink {
+func (s *Service) saveLink(ctx context.Context, link LinkInfo, password string, summary *shareSummaryData, rawURL string) *domain.GuangyaShareLink {
 	if s.links == nil {
 		return nil
 	}
 	now := time.Now().UTC()
 	saved, err := s.links.Upsert(ctx, &domain.GuangyaShareLink{
-		Provider:   provider,
 		ShareID:    link.ShareID,
 		URL:        strings.TrimSpace(rawURL),
 		Password:   password,
 		Title:      strings.TrimSpace(summary.Title),
-		Owner:      strings.TrimSpace(summary.Owner),
+		Owner:      strings.TrimSpace(summary.NickName),
 		CreatedAt:  now,
 		UpdatedAt:  now,
 		LastUsedAt: now,
 	})
 	if err != nil {
-		s.log.Warn("保存云盘分享收藏失败", "provider", provider, "share_id", link.ShareID, "error", err)
+		s.log.Warn("保存光鸭分享收藏失败", "share_id", link.ShareID, "error", err)
 		return nil
 	}
 	return saved
 }
 
-// lastBaseConfigKeyFor 返回某个网盘保存「上次转存目录」的配置键。
-// 光鸭沿用早期只支持光鸭时的键，保证已有预设不丢失。
-func lastBaseConfigKeyFor(provider string) string {
-	if normalizeProvider(provider) == ProviderGuangya {
-		return lastBaseConfigKey
-	}
-	return lastBaseConfigKey + "_" + normalizeProvider(provider)
-}
-
 // loadLastBase 读取上次成功转存使用的基础目录；数据库不可用时不影响解析。
-func (s *Service) loadLastBase(ctx context.Context, provider string) *domain.GuangyaShareDestinationBase {
+func (s *Service) loadLastBase(ctx context.Context) *domain.GuangyaShareDestinationBase {
 	if s == nil || s.configs == nil {
 		return nil
 	}
-	raw, ok, err := s.configs.Get(ctx, lastBaseConfigKeyFor(provider))
+	raw, ok, err := s.configs.Get(ctx, lastBaseConfigKey)
 	if err != nil {
-		s.log.Warn("读取云盘分享上次转存目录失败", "error", err)
+		s.log.Warn("读取光鸭分享上次转存目录失败", "error", err)
 		return nil
 	}
-	if (!ok || strings.TrimSpace(raw) == "") && normalizeProvider(provider) == ProviderGuangya {
-		// 兼容历史数据：早期所有网盘共用一个键。
-		raw, ok, err = s.configs.Get(ctx, lastBaseConfigKey)
-		if err != nil || !ok {
-			return nil
-		}
-	}
-	if strings.TrimSpace(raw) == "" {
+	if !ok || strings.TrimSpace(raw) == "" {
 		return nil
 	}
 	var base domain.GuangyaShareDestinationBase
 	if err := json.Unmarshal([]byte(raw), &base); err != nil {
-		s.log.Warn("解析云盘分享上次转存目录失败", "error", err)
+		s.log.Warn("解析光鸭分享上次转存目录失败", "error", err)
 		return nil
 	}
 	if base.AccountID <= 0 {
@@ -1289,15 +1216,8 @@ func (s *Service) saveRenameReplace(ctx context.Context, shareID string, rule *d
 	if s == nil || s.links == nil || rule == nil {
 		return
 	}
-	// 只保留填了“查找”的规则，并镜像第一条到旧字段。
-	rules := rule.NormalizeRules()
-	normalized := domain.GuangyaShareRenameReplace{Enabled: rule.Enabled, Rules: rules}
-	if len(rules) > 0 {
-		normalized.Find = rules[0].Find
-		normalized.ReplaceWith = rules[0].ReplaceWith
-	}
-	if err := s.links.UpdateRenameReplace(ctx, shareID, normalized); err != nil {
-		s.logger().Warn("保存云盘分享替换规则失败", "share_id", shareID, "error", err)
+	if err := s.links.UpdateRenameReplace(ctx, shareID, *rule); err != nil {
+		s.logger().Warn("保存光鸭分享替换规则失败", "share_id", shareID, "error", err)
 	}
 }
 
@@ -1306,11 +1226,11 @@ func (s *Service) saveBrowsePath(ctx context.Context, shareID string, crumbs []d
 		return
 	}
 	if err := s.links.UpdateBrowsePath(ctx, shareID, crumbs); err != nil {
-		s.logger().Warn("保存云盘分享浏览目录失败", "share_id", shareID, "error", err)
+		s.logger().Warn("保存光鸭分享浏览目录失败", "share_id", shareID, "error", err)
 	}
 }
 
-func (s *Service) saveDestination(ctx context.Context, provider, shareID string, dest *domain.GuangyaShareDestination) {
+func (s *Service) saveDestination(ctx context.Context, shareID string, dest *domain.GuangyaShareDestination) {
 	if dest == nil {
 		return
 	}
@@ -1332,7 +1252,7 @@ func (s *Service) saveDestination(ctx context.Context, provider, shareID string,
 	}
 	if s.links != nil {
 		if err := s.links.UpdateDestination(ctx, shareID, dest); err != nil {
-			s.log.Warn("保存云盘分享转存位置失败", "share_id", shareID, "error", err)
+			s.log.Warn("保存光鸭分享转存位置失败", "share_id", shareID, "error", err)
 		}
 	}
 	if s.configs == nil {
@@ -1345,66 +1265,55 @@ func (s *Service) saveDestination(ctx context.Context, provider, shareID string,
 		Dirs:      append([]string(nil), dest.BaseDirs...),
 	})
 	if err != nil {
-		s.log.Warn("序列化云盘分享转存目录失败", "error", err)
+		s.log.Warn("序列化光鸭分享转存目录失败", "error", err)
 		return
 	}
-	if err := s.configs.Set(ctx, lastBaseConfigKeyFor(provider), string(data)); err != nil {
-		s.log.Warn("保存云盘分享上次转存目录失败", "error", err)
+	if err := s.configs.Set(ctx, lastBaseConfigKey, string(data)); err != nil {
+		s.log.Warn("保存光鸭分享上次转存目录失败", "error", err)
 	}
 }
 
-// listItems 列出分享内某个目录的直接内容，并带回列表接口顺带返回的分享标题。
-func (s *Service) listItems(ctx context.Context, provider shareProvider, shareID, password, parentID, parentPath string) ([]ShareItem, string, error) {
-	token, err := s.accessToken(ctx, provider, shareID, password, false)
+func (s *Service) listItems(ctx context.Context, shareID, password, parentID, parentPath string) ([]ShareItem, error) {
+	token, err := s.accessToken(ctx, shareID, password, false)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	list, err := provider.List(ctx, token, shareID, parentID)
+	entries, err := s.client.listShareFiles(ctx, token, parentID)
 	if err != nil {
-		// 访问令牌可能过期：光鸭返回“访问令牌”，夸克返回“提取码错误”。
-		if !isShareAccessTokenExpired(err) && !isQuarkPasscodeError(err) {
-			return nil, "", err
+		if !isShareAccessTokenExpired(err) {
+			return nil, err
 		}
-		token, err = s.accessToken(ctx, provider, shareID, password, true)
+		token, err = s.accessToken(ctx, shareID, password, true)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
-		list, err = provider.List(ctx, token, shareID, parentID)
+		entries, err = s.client.listShareFiles(ctx, token, parentID)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 	}
 
 	depth := strings.Count(parentPath, "/")
-	items := make([]ShareItem, 0, len(list.Items))
-	for _, entry := range list.Items {
+	items := make([]ShareItem, 0, len(entries))
+	for _, entry := range entries {
 		items = append(items, toShareItem(entry, parentID, parentPath, depth))
 	}
-	return items, list.Title, nil
+	return items, nil
 }
 
-func (s *Service) accessToken(ctx context.Context, provider shareProvider, shareID, password string, force bool) (string, error) {
-	key := shareTokenCacheKey(provider.Key(), shareID, password)
+func (s *Service) accessToken(ctx context.Context, shareID, password string, force bool) (string, error) {
+	key := shareTokenCacheKey(shareID, password)
 	if !force {
 		if token, ok := s.cachedToken(key); ok {
 			return token, nil
 		}
 	}
-	token, err := provider.AccessToken(ctx, shareID, password)
+	token, err := s.client.shareAccessToken(ctx, shareID, password)
 	if err != nil {
 		return "", err
 	}
 	s.storeToken(key, token)
 	return token, nil
-}
-
-// storeProviderToken 缓存概要请求里顺带换到的令牌；空令牌直接忽略。
-func (s *Service) storeProviderToken(provider, shareID, password, token string) {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return
-	}
-	s.storeToken(shareTokenCacheKey(provider, shareID, password), token)
 }
 
 func (s *Service) cachedToken(key string) (string, bool) {
@@ -1438,8 +1347,8 @@ func (s *Service) storeToken(key, token string) {
 	s.tokens[key] = cachedShareToken{token: token, expires: time.Now().Add(shareTokenCacheTTL)}
 }
 
-func shareTokenCacheKey(provider, shareID, password string) string {
-	sum := sha256.Sum256([]byte(normalizeProvider(provider) + "\x00" + shareID + "\x00" + password))
+func shareTokenCacheKey(shareID, password string) string {
+	sum := sha256.Sum256([]byte(shareID + "\x00" + password))
 	return fmt.Sprintf("%x", sum)
 }
 
@@ -1447,19 +1356,15 @@ func isShareAccessTokenExpired(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "访问令牌")
 }
 
-// resolveShareInput 统一解析请求里的分享参数，返回网盘标识、分享 ID 与提取码。
-func resolveShareInput(rawURL, provider, shareID, password string) (string, string, string, error) {
+func resolveShareInput(rawURL, shareID, password string) (string, string, error) {
 	rawURL = strings.TrimSpace(rawURL)
-	provider = strings.TrimSpace(provider)
 	shareID = strings.TrimSpace(shareID)
 	password = strings.TrimSpace(password)
 	if rawURL != "" {
-		link, err := parseShareLink(rawURL, provider)
+		link, err := ParseShareLink(rawURL)
 		if err != nil {
-			return "", "", "", err
+			return "", "", err
 		}
-		// 链接里的网盘域名优先于前端传来的值。
-		provider = link.Provider
 		if shareID == "" {
 			shareID = link.ShareID
 		}
@@ -1468,9 +1373,9 @@ func resolveShareInput(rawURL, provider, shareID, password string) (string, stri
 		}
 	}
 	if shareID == "" {
-		return "", "", "", domain.Errorf(domain.CodeValidation, "分享 ID 为空，请重新解析分享链接")
+		return "", "", domain.Errorf(domain.CodeValidation, "分享 ID 为空，请重新解析分享链接")
 	}
-	return normalizeProvider(provider), shareID, password, nil
+	return shareID, password, nil
 }
 
 func normalizeParentPath(path string) string {
@@ -1482,56 +1387,34 @@ func normalizeParentPath(path string) string {
 }
 
 func toShareItem(entry shareEntry, parentID, parentPath string, depth int) ShareItem {
-	name := strings.TrimSpace(entry.Name)
+	name := strings.TrimSpace(entry.FileName)
 	if name == "" {
-		name = entry.ID
+		name = entry.FileID
 	}
 	itemPath := "/" + name
 	if parentPath != "" {
 		itemPath = strings.TrimRight(parentPath, "/") + "/" + name
 	}
-	isDir := entry.IsDir
+	modTime := time.Time{}
+	if entry.UTime > 0 {
+		modTime = time.Unix(entry.UTime, 0)
+	} else if entry.CTime > 0 {
+		modTime = time.Unix(entry.CTime, 0)
+	}
+	isDir := entry.ResType == 2
 	return ShareItem{
-		Token: entry.Token,
-		ID:    entry.ID,
+		ID: entry.FileID,
 		// 分享列表接口不保证返回 parentId，列表请求的父目录才是可靠来源。
 		ParentID: parentID,
 		Name:     name,
 		IsDir:    isDir,
-		Size:     entry.Size,
-		ModTime:  entry.ModTime,
+		Size:     entry.FileSize,
+		ModTime:  modTime,
 		FileType: entry.FileType,
 		Kind:     classifyKind(name, entry.FileType, isDir),
 		Path:     itemPath,
 		Depth:    depth,
 	}
-}
-
-// restoreEntries 组装驱动转存需要的条目。
-// 夸克要求逐文件回传分享内 token，因此优先使用前端带回的文件清单；
-// 只有 file_ids（旧调用方）时退化为仅 ID 的条目（光鸭可用）。
-func restoreEntries(fileIDs []string, files []TransferFile) []driver.ShareRestoreEntry {
-	entries := make([]driver.ShareRestoreEntry, 0, len(files)+len(fileIDs))
-	seen := make(map[string]struct{}, len(files)+len(fileIDs))
-	for _, file := range files {
-		id := strings.TrimSpace(file.FileID)
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		entries = append(entries, driver.ShareRestoreEntry{ID: id, Token: strings.TrimSpace(file.Token)})
-	}
-	for _, id := range fileIDs {
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		entries = append(entries, driver.ShareRestoreEntry{ID: id})
-	}
-	return entries
 }
 
 func normalizeFileIDs(fileIDs []string) []string {

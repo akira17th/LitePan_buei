@@ -9,8 +9,6 @@ import (
 )
 
 type bueiGuangyaShareItemDTO struct {
-	// Token 是分享内文件令牌（夸克转存必需），原样回传给转存接口。
-	Token    string `json:"token,omitempty"`
 	ID       string `json:"id"`
 	ParentID string `json:"parent_id"`
 	Name     string `json:"name"`
@@ -65,29 +63,13 @@ type bueiGuangyaShareTransferredDTO struct {
 	UpdatedAt      string `json:"updated_at"`
 }
 
-type bueiGuangyaShareRenameRuleDTO struct {
+type bueiGuangyaShareRenameReplaceDTO struct {
+	Enabled     bool   `json:"enabled"`
 	Find        string `json:"find"`
 	ReplaceWith string `json:"replace_with"`
 }
 
-type bueiGuangyaShareRenameReplaceDTO struct {
-	Enabled     bool                            `json:"enabled"`
-	Find        string                          `json:"find"`
-	ReplaceWith string                          `json:"replace_with"`
-	Rules       []bueiGuangyaShareRenameRuleDTO `json:"rules,omitempty"`
-}
-
-func bueiGuangyaShareRenameRulesToDTO(rules []domain.GuangyaShareRenameRule) []bueiGuangyaShareRenameRuleDTO {
-	dtos := make([]bueiGuangyaShareRenameRuleDTO, 0, len(rules))
-	for _, rule := range rules {
-		dtos = append(dtos, bueiGuangyaShareRenameRuleDTO{Find: rule.Find, ReplaceWith: rule.ReplaceWith})
-	}
-	return dtos
-}
-
 type bueiGuangyaShareParseDTO struct {
-	Provider         string                              `json:"provider"`
-	ProviderName     string                              `json:"provider_name"`
 	ShareID          string                              `json:"share_id"`
 	Title            string                              `json:"title"`
 	Owner            string                              `json:"owner"`
@@ -109,7 +91,6 @@ func bueiGuangyaShareRenameReplaceToDTO(rule *domain.GuangyaShareRenameReplace) 
 		Enabled:     rule.Enabled,
 		Find:        rule.Find,
 		ReplaceWith: rule.ReplaceWith,
-		Rules:       bueiGuangyaShareRenameRulesToDTO(rule.NormalizeRules()),
 	}
 }
 
@@ -178,7 +159,6 @@ func bueiGuangyaShareItemsToDTO(items []guangyashare.ShareItem) []bueiGuangyaSha
 	dtos := make([]bueiGuangyaShareItemDTO, 0, len(items))
 	for _, item := range items {
 		dtos = append(dtos, bueiGuangyaShareItemDTO{
-			Token:    item.Token,
 			ID:       item.ID,
 			ParentID: item.ParentID,
 			Name:     item.Name,
@@ -215,8 +195,6 @@ func (h *Handler) bueiGuangyaShareParse(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeOK(w, bueiGuangyaShareParseDTO{
-		Provider:         res.Provider,
-		ProviderName:     res.ProviderName,
 		ShareID:          res.ShareID,
 		Title:            res.Title,
 		Owner:            res.Owner,
@@ -237,7 +215,6 @@ func (h *Handler) bueiGuangyaShareList(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		URL        string `json:"url"`
-		Provider   string `json:"provider"`
 		ShareID    string `json:"share_id"`
 		Password   string `json:"password"`
 		ParentID   string `json:"parent_id"`
@@ -249,7 +226,6 @@ func (h *Handler) bueiGuangyaShareList(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := h.buei.GuangyaShare.List(r.Context(), guangyashare.ListInput{
 		URL:        in.URL,
-		Provider:   in.Provider,
 		ShareID:    in.ShareID,
 		Password:   in.Password,
 		ParentID:   in.ParentID,
@@ -270,7 +246,6 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 	}
 	var in struct {
 		URL           string   `json:"url"`
-		Provider      string   `json:"provider"`
 		ShareID       string   `json:"share_id"`
 		Password      string   `json:"password"`
 		FileIDs       []string `json:"file_ids"`
@@ -292,7 +267,6 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 		ProgressID    string   `json:"progress_id"`
 		Files         []struct {
 			FileID       string `json:"file_id"`
-			Token        string `json:"token"`
 			OriginalName string `json:"original_name"`
 			NewName      string `json:"new_name"`
 			IsDir        bool   `json:"is_dir"`
@@ -306,10 +280,6 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 			Enabled     bool   `json:"enabled"`
 			Find        string `json:"find"`
 			ReplaceWith string `json:"replace_with"`
-			Rules       []struct {
-				Find        string `json:"find"`
-				ReplaceWith string `json:"replace_with"`
-			} `json:"rules"`
 		} `json:"rename_replace"`
 	}
 	if err := decodeJSON(r, &in); err != nil {
@@ -318,15 +288,10 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 	}
 	var renameReplace *domain.GuangyaShareRenameReplace
 	if in.RenameReplace != nil {
-		rules := make([]domain.GuangyaShareRenameRule, 0, len(in.RenameReplace.Rules))
-		for _, rule := range in.RenameReplace.Rules {
-			rules = append(rules, domain.GuangyaShareRenameRule{Find: rule.Find, ReplaceWith: rule.ReplaceWith})
-		}
 		renameReplace = &domain.GuangyaShareRenameReplace{
 			Enabled:     in.RenameReplace.Enabled,
 			Find:        in.RenameReplace.Find,
 			ReplaceWith: in.RenameReplace.ReplaceWith,
-			Rules:       rules,
 		}
 	}
 	browsePath := make([]domain.GuangyaShareBrowseCrumb, 0, len(in.BrowsePath))
@@ -337,7 +302,6 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 	for _, file := range in.Files {
 		files = append(files, guangyashare.TransferFile{
 			FileID:       file.FileID,
-			Token:        file.Token,
 			OriginalName: file.OriginalName,
 			NewName:      file.NewName,
 			IsDir:        file.IsDir,
@@ -345,7 +309,6 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 	}
 	res, err := h.buei.GuangyaShare.Transfer(r.Context(), guangyashare.TransferInput{
 		URL:           in.URL,
-		Provider:      in.Provider,
 		ShareID:       in.ShareID,
 		Password:      in.Password,
 		FileIDs:       in.FileIDs,
@@ -409,32 +372,28 @@ func (h *Handler) bueiGuangyaShareProgress(w http.ResponseWriter, r *http.Reques
 }
 
 type bueiGuangyaShareSavedLinkDTO struct {
-	ID           int64  `json:"id"`
-	Provider     string `json:"provider"`
-	ProviderName string `json:"provider_name"`
-	ShareID      string `json:"share_id"`
-	URL          string `json:"url"`
-	Password     string `json:"password"`
-	Title        string `json:"title"`
-	Owner        string `json:"owner"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
-	LastUsedAt   string `json:"last_used_at"`
+	ID         int64  `json:"id"`
+	ShareID    string `json:"share_id"`
+	URL        string `json:"url"`
+	Password   string `json:"password"`
+	Title      string `json:"title"`
+	Owner      string `json:"owner"`
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
+	LastUsedAt string `json:"last_used_at"`
 }
 
 func bueiGuangyaShareSavedLinkToDTO(link *domain.GuangyaShareLink) bueiGuangyaShareSavedLinkDTO {
 	return bueiGuangyaShareSavedLinkDTO{
-		ID:           link.ID,
-		Provider:     guangyashare.NormalizeProvider(link.Provider),
-		ProviderName: guangyashare.ProviderName(link.Provider),
-		ShareID:      link.ShareID,
-		URL:          link.URL,
-		Password:     link.Password,
-		Title:        link.Title,
-		Owner:        link.Owner,
-		CreatedAt:    FormatAPITime(link.CreatedAt),
-		UpdatedAt:    FormatAPITime(link.UpdatedAt),
-		LastUsedAt:   FormatAPITime(link.LastUsedAt),
+		ID:         link.ID,
+		ShareID:    link.ShareID,
+		URL:        link.URL,
+		Password:   link.Password,
+		Title:      link.Title,
+		Owner:      link.Owner,
+		CreatedAt:  FormatAPITime(link.CreatedAt),
+		UpdatedAt:  FormatAPITime(link.UpdatedAt),
+		LastUsedAt: FormatAPITime(link.LastUsedAt),
 	}
 }
 

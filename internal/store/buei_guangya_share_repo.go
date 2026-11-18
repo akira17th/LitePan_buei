@@ -11,17 +11,17 @@ import (
 	"litepan/internal/domain"
 )
 
-// 云盘分享收藏（buei 定制）：独立仓储，不修改上游 Store 结构体。
+// 光鸭分享收藏（buei 定制）：独立仓储，不修改上游 Store 结构体。
 type guangyaShareLinkRepo struct{ db *DB }
 
-// NewGuangyaShareLinkRepo 构造云盘分享收藏仓储。
+// NewGuangyaShareLinkRepo 构造光鸭分享收藏仓储。
 func NewGuangyaShareLinkRepo(db *DB) domain.GuangyaShareLinkRepository {
 	return &guangyaShareLinkRepo{db: db}
 }
 
-const guangyaShareLinkColumns = `id, provider, share_id, url, password, title, owner, created_at, updated_at, last_used_at,
+const guangyaShareLinkColumns = `id, share_id, url, password, title, owner, created_at, updated_at, last_used_at,
 	last_account_id, last_parent_id, last_base_path, last_base_dirs, last_title, last_season, last_is_series,
-	last_browse_path, rename_replace_enabled, rename_replace_find, rename_replace_with, rename_replace_rules, auto_strm,
+	last_browse_path, rename_replace_enabled, rename_replace_find, rename_replace_with, auto_strm,
 	auto_scrape, auto_scrape_task_id, auto_emby, emby_config_id, emby_mode, emby_library_id`
 
 func (r *guangyaShareLinkRepo) List(ctx context.Context) ([]*domain.GuangyaShareLink, error) {
@@ -71,18 +71,16 @@ func (r *guangyaShareLinkRepo) Upsert(ctx context.Context, link *domain.GuangyaS
 
 	if _, err := r.db.write.ExecContext(ctx,
 		`INSERT INTO buei_guangya_share_links
-		   (share_id, provider, url, password, title, owner, created_at, updated_at, last_used_at)
-		 VALUES (?,?,?,?,?,?,?,?,?)
+		   (share_id, url, password, title, owner, created_at, updated_at, last_used_at)
+		 VALUES (?,?,?,?,?,?,?,?)
 		 ON CONFLICT(share_id) DO UPDATE SET
-		   provider=excluded.provider,
 		   url=excluded.url,
 		   password=excluded.password,
-		   -- 部分网盘的列表接口不返回标题/分享者，避免用空值覆盖已有信息
-		   title=CASE WHEN excluded.title='' THEN title ELSE excluded.title END,
-		   owner=CASE WHEN excluded.owner='' THEN owner ELSE excluded.owner END,
+		   title=excluded.title,
+		   owner=excluded.owner,
 		   updated_at=excluded.updated_at,
 		   last_used_at=excluded.last_used_at`,
-		link.ShareID, normalizeShareProvider(link.Provider), link.URL, link.Password, link.Title, link.Owner,
+		link.ShareID, link.URL, link.Password, link.Title, link.Owner,
 		tsValue(createdAt), tsValue(updatedAt), tsValue(lastUsedAt),
 	); err != nil {
 		return nil, wrapDB(err)
@@ -205,21 +203,11 @@ func (r *guangyaShareLinkRepo) UpdateRenameReplace(ctx context.Context, shareID 
 	if shareID == "" {
 		return domain.Errorf(domain.CodeValidation, "分享 ID 不能为空")
 	}
-	rules := rule.NormalizeRules()
-	first := domain.GuangyaShareRenameRule{}
-	if len(rules) > 0 {
-		first = rules[0]
-	}
-	rulesJSON, err := json.Marshal(rules)
-	if err != nil {
-		return domain.Wrap(domain.CodeInternal, err)
-	}
 	result, err := r.db.write.ExecContext(ctx,
 		`UPDATE buei_guangya_share_links
-		 SET rename_replace_enabled=?, rename_replace_find=?, rename_replace_with=?,
-		     rename_replace_rules=?, updated_at=?
+		 SET rename_replace_enabled=?, rename_replace_find=?, rename_replace_with=?, updated_at=?
 		 WHERE share_id=?`,
-		boolToInt(rule.Enabled), first.Find, first.ReplaceWith, string(rulesJSON), tsValue(time.Now().UTC()), shareID,
+		boolToInt(rule.Enabled), rule.Find, rule.ReplaceWith, tsValue(time.Now().UTC()), shareID,
 	)
 	if err != nil {
 		return wrapDB(err)
@@ -287,7 +275,6 @@ func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShare
 		replaceEnabled int
 		replaceFind    string
 		replaceWith    string
-		replaceRules   string
 		autoStrm       int
 		autoScrape     int
 		scrapeTaskID   int64
@@ -297,11 +284,11 @@ func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShare
 		embyLibraryID  string
 	)
 	if err := scanner.Scan(
-		&link.ID, &link.Provider, &link.ShareID, &link.URL, &link.Password, &link.Title, &link.Owner,
+		&link.ID, &link.ShareID, &link.URL, &link.Password, &link.Title, &link.Owner,
 		&createdAt, &updatedAt, &lastUsed,
 		&lastAccountID, &lastParentID, &lastBasePath, &lastBaseDirs,
 		&lastTitle, &lastSeason, &lastIsSeries, &lastBrowsePath,
-		&replaceEnabled, &replaceFind, &replaceWith, &replaceRules, &autoStrm, &autoScrape, &scrapeTaskID,
+		&replaceEnabled, &replaceFind, &replaceWith, &autoStrm, &autoScrape, &scrapeTaskID,
 		&autoEmby, &embyConfigID, &embyMode, &embyLibraryID,
 	); err != nil {
 		return nil, err
@@ -338,19 +325,5 @@ func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShare
 		Find:        replaceFind,
 		ReplaceWith: replaceWith,
 	}
-	if strings.TrimSpace(replaceRules) != "" && strings.TrimSpace(replaceRules) != "[]" {
-		var rules []domain.GuangyaShareRenameRule
-		if err := json.Unmarshal([]byte(replaceRules), &rules); err == nil {
-			link.RenameReplace.Rules = rules
-		}
-	}
 	return &link, nil
-}
-
-// normalizeShareProvider 把空值归一到光鸭，兼容只支持光鸭时的历史记录。
-func normalizeShareProvider(raw string) string {
-	if strings.EqualFold(strings.TrimSpace(raw), "quark") {
-		return "quark"
-	}
-	return "guangya"
 }

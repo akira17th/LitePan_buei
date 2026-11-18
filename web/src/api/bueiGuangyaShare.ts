@@ -1,6 +1,6 @@
 import { http } from "./client";
 
-// buei 定制：后台「辅助工具 / 云盘分享入库」。
+// buei 定制：后台「辅助工具 / 光鸭分享」。
 
 export type GuangyaShareKind =
   | "folder"
@@ -13,8 +13,6 @@ export type GuangyaShareKind =
   | "other";
 
 export interface GuangyaShareItem {
-  /** 分享内文件令牌，夸克转存时必须回传。 */
-  token?: string;
   id: string;
   parent_id: string;
   name: string;
@@ -44,18 +42,10 @@ export interface GuangyaShareDestination {
   emby_library_id?: string;
 }
 
-export interface GuangyaShareRenameRule {
-  find: string;
-  replace_with: string;
-}
-
 export interface GuangyaShareRenameReplace {
   enabled: boolean;
-  /** 第一条规则的镜像，兼容旧版本。 */
   find: string;
   replace_with: string;
-  /** 按顺序执行的替换规则。 */
-  rules?: GuangyaShareRenameRule[];
 }
 
 export interface GuangyaShareBrowseCrumb {
@@ -82,9 +72,6 @@ export interface GuangyaShareDestinationBase {
 }
 
 export interface GuangyaShareParseResult {
-  /** 识别出的网盘标识，与目标账号 driver_type 一致（guangya / quark）。 */
-  provider: string;
-  provider_name: string;
   share_id: string;
   title: string;
   owner: string;
@@ -100,8 +87,6 @@ export interface GuangyaShareParseResult {
 
 export interface GuangyaShareSavedLink {
   id: number;
-  provider: string;
-  provider_name: string;
   share_id: string;
   url: string;
   password: string;
@@ -114,7 +99,6 @@ export interface GuangyaShareSavedLink {
 
 export interface GuangyaShareListPayload {
   url: string;
-  provider: string;
   share_id: string;
   password: string;
   parent_id: string;
@@ -123,7 +107,6 @@ export interface GuangyaShareListPayload {
 
 export interface GuangyaShareTransferFile {
   file_id: string;
-  token?: string;
   original_name: string;
   new_name: string;
   is_dir: boolean;
@@ -131,7 +114,6 @@ export interface GuangyaShareTransferFile {
 
 export interface GuangyaShareTransferPayload {
   url: string;
-  provider: string;
   share_id: string;
   password: string;
   file_ids: string[];

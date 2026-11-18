@@ -5,7 +5,7 @@ import AppModal from "@/components/base/AppModal.vue";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
 import type { GuangyaShareTransferPhase } from "@/api/bueiGuangyaShare";
 
-// buei 定制：云盘分享入库的转存确认弹窗，附带重命名预览。
+// buei 定制：光鸭分享收藏的转存确认弹窗，附带重命名预览。
 
 export interface ScrapeProgressView {
   running: boolean;

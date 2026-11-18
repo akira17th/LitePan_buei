@@ -23,12 +23,10 @@ func newTestService(t *testing.T, handler http.Handler) *Service {
 	t.Cleanup(srv.Close)
 	return &Service{
 		log: nil,
-		providers: map[string]shareProvider{
-			ProviderGuangya: &guangyaProvider{client: &shareClient{
-				http:    srv.Client(),
-				baseURL: srv.URL,
-				did:     "test-device",
-			}},
+		client: &shareClient{
+			http:    srv.Client(),
+			baseURL: srv.URL,
+			did:     "test-device",
 		},
 	}
 }
@@ -261,7 +259,6 @@ func (r *fakeLinkRepo) Upsert(_ context.Context, link *domain.GuangyaShareLink) 
 		existing = &domain.GuangyaShareLink{ID: r.nextID, ShareID: link.ShareID, CreatedAt: link.CreatedAt}
 		r.links[link.ShareID] = existing
 	}
-	existing.Provider = link.Provider
 	existing.URL = link.URL
 	existing.Password = link.Password
 	existing.Title = link.Title
@@ -381,14 +378,7 @@ func TestServiceParseReturnsSavedDestinationAndLastBase(t *testing.T) {
 			{ID: "", Name: "全部文件", Path: ""},
 			{ID: "d1", Name: "剧集", Path: "/剧集"},
 		},
-		RenameReplace: domain.GuangyaShareRenameReplace{
-			Enabled: true,
-			Find:    "\\s+",
-			Rules: []domain.GuangyaShareRenameRule{
-				{Find: "\\s+", ReplaceWith: " "},
-				{Find: "2160p", ReplaceWith: ""},
-			},
-		},
+		RenameReplace: domain.GuangyaShareRenameReplace{Enabled: true, Find: "\\s+", ReplaceWith: " "},
 	}
 	svc.links = repo
 	configs := newFakeConfigRepo()
@@ -420,9 +410,6 @@ func TestServiceParseReturnsSavedDestinationAndLastBase(t *testing.T) {
 	}
 	if res.RenameReplace == nil || !res.RenameReplace.Enabled || res.RenameReplace.Find != "\\s+" {
 		t.Fatalf("unexpected rename replace rule: %+v", res.RenameReplace)
-	}
-	if rules := res.RenameReplace.NormalizeRules(); len(rules) != 2 || rules[1].ReplaceWith != "" {
-		t.Fatalf("multi rename rules not returned: %+v", res.RenameReplace)
 	}
 }
 
@@ -568,7 +555,7 @@ func TestServiceSaveDestination(t *testing.T) {
 		EmbyMode:      " library ",
 		EmbyLibraryID: " lib-1 ",
 	}
-	svc.saveDestination(context.Background(), ProviderGuangya, testShareID, dest)
+	svc.saveDestination(context.Background(), testShareID, dest)
 
 	saved := repo.links[testShareID].LastDestination
 	if saved == nil || saved.ParentID != "dir-2" || saved.Title != "测试电影 (2026)" || saved.Season != 3 || saved.IsSeries || !saved.AutoStrm ||

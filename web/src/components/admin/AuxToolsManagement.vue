@@ -35,7 +35,7 @@ const GUANGYA_TAB = "guangya";
 // #endregion buei:guangya-share
 const tabs = [
   // #region buei:guangya-share
-  { key: GUANGYA_TAB, label: "云盘分享入库" },
+  { key: GUANGYA_TAB, label: "光鸭分享" },
   // #endregion buei:guangya-share
   { key: SCRAPE_TAB, label: "STRM 刮削" },
   { key: ENHANCED_TAB, label: "增强工具" },
@@ -63,7 +63,7 @@ function revertDrawerSettings() {
 const { confirmDiscardChanges } = useSettingsPageDirty(settingsPageDirty, revertDrawerSettings);
 
 const route = useRoute();
-// buei:guangya-share —— 无 tab 参数时默认进入云盘分享入库
+// buei:guangya-share —— 无 tab 参数时默认进入光鸭分享
 const initialTab = String(route.query.tab ?? "") === PROXY_TAB ? ENHANCED_TAB : GUANGYA_TAB;
 const { activeTab, setActiveTab } = useSectionTabRoute(
   initialTab,
