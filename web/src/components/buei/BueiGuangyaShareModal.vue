@@ -135,8 +135,9 @@ const renamePrefixTouched = ref(false);
 const renameEpisodeOn = ref(false);
 const renameEpisodeTouched = ref(false);
 const renameReplaceOn = ref(false);
-const renameFind = ref("");
-const renameReplaceWith = ref("");
+// 替换文本支持多条规则，按顺序执行。
+type RenameReplaceRule = { find: string; replaceWith: string };
+const renameReplaceRules = ref<RenameReplaceRule[]>([{ find: "", replaceWith: "" }]);
 const renameStartEpisode = ref(1);
 const transferConfirmOpen = ref(false);
 const pendingTransfer = ref<PendingTransfer | null>(null);
@@ -375,7 +376,12 @@ interface PendingTransfer {
   renames: RenamePreviewRow[];
   files: { fileId: string; originalName: string; newName: string; isDir: boolean }[];
   browsePath: GuangyaShareBrowseCrumb[];
-  renameReplace: { enabled: boolean; find: string; replaceWith: string };
+  renameReplace: {
+    enabled: boolean;
+    find: string;
+    replaceWith: string;
+    rules: { find: string; replaceWith: string }[];
+  };
   autoStrm: boolean;
   autoScrape: boolean;
   scrapeTaskId: number;
@@ -766,15 +772,27 @@ const episodeIndexByID = computed(() => {
   return map;
 });
 
+const renameRuleErrors = computed(() =>
+  renameReplaceRules.value.map((rule) => {
+    if (!rule.find) return "";
+    try {
+      new RegExp(rule.find, "g");
+      return "";
+    } catch (error) {
+      return error instanceof Error ? error.message : "正则表达式无效";
+    }
+  }),
+);
+
 const renameReplaceError = computed(() => {
-  if (!renameReplaceOn.value || !renameFind.value) return "";
-  try {
-    new RegExp(renameFind.value, "g");
-    return "";
-  } catch (error) {
-    return error instanceof Error ? error.message : "正则表达式无效";
-  }
+  if (!renameReplaceOn.value) return "";
+  return renameRuleErrors.value.find(Boolean) ?? "";
 });
+
+// 启用替换时需要至少填一条“查找”。
+const renameReplaceReady = computed(
+  () => renameReplaceOn.value && renameReplaceRules.value.some((rule) => !!rule.find),
+);
 
 const renameEpisodeActive = computed(() => renameEpisodeOn.value && isSeries.value);
 
@@ -782,7 +800,7 @@ const renameActive = computed(
   () =>
     (renamePrefixOn.value && !!renamePrefixBase.value) ||
     renameEpisodeActive.value ||
-    (renameReplaceOn.value && !!renameFind.value && !renameReplaceError.value),
+    (renameReplaceReady.value && !renameReplaceError.value),
 );
 
 function renamedNameFor(item: GuangyaShareItem) {
@@ -806,11 +824,14 @@ function renamedNameFor(item: GuangyaShareItem) {
       }
     }
   }
-  if (renameReplaceOn.value && renameFind.value && !renameReplaceError.value) {
-    try {
-      base = base.replace(new RegExp(renameFind.value, "g"), renameReplaceWith.value);
-    } catch {
-      // 正则已在上方校验，这里只兜底。
+  if (renameReplaceOn.value && !renameReplaceError.value) {
+    for (const rule of renameReplaceRules.value) {
+      if (!rule.find) continue;
+      try {
+        base = base.replace(new RegExp(rule.find, "g"), rule.replaceWith);
+      } catch {
+        // 正则已在上方校验，这里只兜底。
+      }
     }
   }
   // 规则可能把名称整段删空，这种情况下保留原文件名更安全。
@@ -843,9 +864,17 @@ const renamePreviewRows = computed<RenamePreviewRow[]>(() =>
 
 function applyRenameReplace(rule?: GuangyaShareRenameReplace | null) {
   if (!rule) return;
-  renameReplaceOn.value = !!rule.enabled && !!rule.find;
-  renameFind.value = rule.find || "";
-  renameReplaceWith.value = rule.replace_with || "";
+  const rawRules =
+    rule.rules?.length
+      ? rule.rules
+      : rule.find
+        ? [{ find: rule.find, replace_with: rule.replace_with }]
+        : [];
+  const rules = rawRules
+    .filter((item) => !!item.find)
+    .map((item) => ({ find: item.find, replaceWith: item.replace_with || "" }));
+  renameReplaceRules.value = rules.length ? rules : [{ find: "", replaceWith: "" }];
+  renameReplaceOn.value = !!rule.enabled && rules.length > 0;
 }
 
 function resetRenameRules() {
@@ -854,9 +883,36 @@ function resetRenameRules() {
   renameEpisodeOn.value = false;
   renameEpisodeTouched.value = false;
   renameReplaceOn.value = false;
-  renameFind.value = "";
-  renameReplaceWith.value = "";
+  renameReplaceRules.value = [{ find: "", replaceWith: "" }];
   renameStartEpisode.value = 1;
+}
+
+// 第一个选中文件的文件名（不含扩展名），方便在“替换文本”里直接取用。
+function firstSelectedFileName(): string {
+  const item = orderedSelectedFiles.value[0] ?? selectedItems.value.find((it) => !it.is_dir);
+  if (!item) return "";
+  return splitFileName(item.name).stem || item.name;
+}
+
+function onRenameReplaceToggle() {
+  if (!renameReplaceOn.value) return;
+  if (!renameReplaceRules.value.length) {
+    renameReplaceRules.value = [{ find: "", replaceWith: "" }];
+  }
+  const first = renameReplaceRules.value[0];
+  if (!first.find) first.find = firstSelectedFileName();
+}
+
+function addRenameReplaceRule() {
+  renameReplaceRules.value.push({ find: firstSelectedFileName(), replaceWith: "" });
+}
+
+function removeRenameReplaceRule(index: number) {
+  if (renameReplaceRules.value.length <= 1) {
+    renameReplaceRules.value = [{ find: "", replaceWith: "" }];
+    return;
+  }
+  renameReplaceRules.value.splice(index, 1);
 }
 
 // 选中的文件缺前缀/缺 SxxEnn 时自动勾选对应规则；用户手动改过之后不再覆盖。
@@ -1421,10 +1477,14 @@ function submitTransfer() {
     isDir: false,
   }));
   const browsePath = pathStack.value.map((crumb) => ({ id: crumb.id, name: crumb.name, path: crumb.path }));
+  const renameRules = renameReplaceRules.value
+    .filter((rule) => !!rule.find)
+    .map((rule) => ({ find: rule.find, replaceWith: rule.replaceWith }));
   const renameReplace = {
-    enabled: renameReplaceOn.value && !!renameFind.value && !renameReplaceError.value,
-    find: renameFind.value,
-    replaceWith: renameReplaceWith.value,
+    enabled: renameReplaceOn.value && renameRules.length > 0 && !renameReplaceError.value,
+    find: renameRules[0]?.find ?? "",
+    replaceWith: renameRules[0]?.replaceWith ?? "",
+    rules: renameRules,
   };
   pendingTransfer.value = {
     target: `${base.accountName || "未选择账号"} · ${targetPath.value}`,
@@ -1574,6 +1634,10 @@ async function confirmTransfer() {
         enabled: pending.renameReplace.enabled,
         find: pending.renameReplace.find,
         replace_with: pending.renameReplace.replaceWith,
+        rules: pending.renameReplace.rules.map((rule) => ({
+          find: rule.find,
+          replace_with: rule.replaceWith,
+        })),
       },
       auto_strm: pending.autoStrm,
       auto_scrape: pending.autoScrape,
@@ -2188,29 +2252,64 @@ onBeforeUnmount(() => {
               </div>
 
               <label class="gys__rule">
-                <input v-model="renameReplaceOn" type="checkbox" :disabled="transferring" />
+                <input
+                  v-model="renameReplaceOn"
+                  type="checkbox"
+                  :disabled="transferring"
+                  @change="onRenameReplaceToggle"
+                />
                 <span class="gys__rule-body">
                   <span class="gys__rule-title">替换文本</span>
-                  <span class="gys__rule-desc">支持正则，替换内容可留空</span>
+                  <span class="gys__rule-desc">支持正则、可多组按顺序替换，替换内容可留空</span>
                 </span>
               </label>
 
-              <div v-if="renameReplaceOn" class="gys__replace">
-                <input
-                  v-model="renameFind"
-                  class="gys__replace-input"
-                  type="text"
-                  placeholder="查找（正则）"
+              <div v-if="renameReplaceOn" class="gys__replace-list">
+                <div
+                  v-for="(rule, index) in renameReplaceRules"
+                  :key="index"
+                  class="gys__replace"
+                >
+                  <div class="gys__replace-head">
+                    <span class="gys__replace-no">{{ index + 1 }}</span>
+                    <span class="gys__replace-title">第 {{ index + 1 }} 组</span>
+                    <button
+                      type="button"
+                      class="gys__replace-del"
+                      :title="renameReplaceRules.length > 1 ? '删除这组' : '清空这组'"
+                      :disabled="transferring"
+                      @click="removeRenameReplaceRule(index)"
+                    >
+                      <SvgIcon name="trash" :size="12" />
+                    </button>
+                  </div>
+                  <div class="gys__replace-row">
+                    <input
+                      v-model="rule.find"
+                      class="gys__replace-input"
+                      type="text"
+                      placeholder="查找（正则）"
+                      :disabled="transferring"
+                    />
+                    <input
+                      v-model="rule.replaceWith"
+                      class="gys__replace-input"
+                      type="text"
+                      placeholder="替换为（可留空）"
+                      :disabled="transferring"
+                    />
+                  </div>
+                  <p v-if="renameRuleErrors[index]" class="gys__rule-error">{{ renameRuleErrors[index] }}</p>
+                </div>
+                <button
+                  type="button"
+                  class="gys__replace-add"
                   :disabled="transferring"
-                />
-                <input
-                  v-model="renameReplaceWith"
-                  class="gys__replace-input"
-                  type="text"
-                  placeholder="替换为（可留空）"
-                  :disabled="transferring"
-                />
-                <p v-if="renameReplaceError" class="gys__rule-error">{{ renameReplaceError }}</p>
+                  @click="addRenameReplaceRule"
+                >
+                  <SvgIcon name="plus" :size="12" />
+                  增加一组替换
+                </button>
               </div>
             </section>
 
@@ -3568,11 +3667,100 @@ onBeforeUnmount(() => {
   border-color: var(--brand);
 }
 
+.gys__replace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 4px 21px;
+}
+
+/* 每组替换独立成块，用序号和边框区分 */
 .gys__replace {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 2px 0 2px 21px;
+  padding: 7px 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 60%, var(--surface-hover));
+}
+
+.gys__replace-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gys__replace-no {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  color: var(--brand);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.gys__replace-title {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.gys__replace-del {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.gys__replace-del:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+.gys__replace-del:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.gys__replace-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gys__replace-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 26px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.gys__replace-add:hover:not(:disabled) {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.gys__replace-add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .gys__replace-input {

@@ -50,13 +50,13 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 	}
 
 	dest := &domain.GuangyaShareDestination{
-		AccountID:    2,
-		ParentID:     "dir-1",
-		BasePath:     "/媒体/电视剧",
-		BaseDirs:     []string{"媒体", "电视剧"},
-		Title:        "走马上任 (2026)",
-		Season:       1,
-		IsSeries:     true,
+		AccountID:     2,
+		ParentID:      "dir-1",
+		BasePath:      "/媒体/电视剧",
+		BaseDirs:      []string{"媒体", "电视剧"},
+		Title:         "走马上任 (2026)",
+		Season:        1,
+		IsSeries:      true,
 		AutoStrm:      true,
 		AutoScrape:    true,
 		ScrapeTaskID:  9,
@@ -100,7 +100,14 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 		t.Fatalf("browse path was not persisted: %+v", links)
 	}
 
-	replaceRule := domain.GuangyaShareRenameReplace{Enabled: true, Find: "\\s+", ReplaceWith: " "}
+	replaceRule := domain.GuangyaShareRenameReplace{
+		Enabled: true,
+		Find:    "\\s+",
+		Rules: []domain.GuangyaShareRenameRule{
+			{Find: "\\s+", ReplaceWith: " "},
+			{Find: "2160p", ReplaceWith: ""},
+		},
+	}
 	if err := repo.UpdateRenameReplace(ctx, "1969_abc", replaceRule); err != nil {
 		t.Fatalf("update replace rule: %v", err)
 	}
@@ -110,6 +117,9 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 	}
 	if len(links) != 1 || !links[0].RenameReplace.Enabled || links[0].RenameReplace.Find != "\\s+" {
 		t.Fatalf("replace rule was not persisted: %+v", links)
+	}
+	if rules := links[0].RenameReplace.NormalizeRules(); len(rules) != 2 || rules[1].Find != "2160p" {
+		t.Fatalf("multi replace rules were not persisted: %+v", links[0].RenameReplace)
 	}
 
 	// 同一 share_id 再次收藏应更新而不是新增。

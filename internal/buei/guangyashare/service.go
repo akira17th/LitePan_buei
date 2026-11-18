@@ -331,7 +331,7 @@ func (s *Service) Parse(ctx context.Context, in ParseInput) (*ParseResult, error
 	if saved := s.saveLink(ctx, link, password, summary, in.URL); saved != nil {
 		result.LastDestination = saved.LastDestination
 		result.LastBrowsePath = saved.LastBrowsePath
-		if saved.RenameReplace.Enabled || saved.RenameReplace.Find != "" || saved.RenameReplace.ReplaceWith != "" {
+		if saved.RenameReplace.Enabled || len(saved.RenameReplace.NormalizeRules()) > 0 {
 			rule := saved.RenameReplace
 			result.RenameReplace = &rule
 		}
@@ -1216,7 +1216,14 @@ func (s *Service) saveRenameReplace(ctx context.Context, shareID string, rule *d
 	if s == nil || s.links == nil || rule == nil {
 		return
 	}
-	if err := s.links.UpdateRenameReplace(ctx, shareID, *rule); err != nil {
+	// 只保留填了“查找”的规则，并镜像第一条到旧字段。
+	rules := rule.NormalizeRules()
+	normalized := domain.GuangyaShareRenameReplace{Enabled: rule.Enabled, Rules: rules}
+	if len(rules) > 0 {
+		normalized.Find = rules[0].Find
+		normalized.ReplaceWith = rules[0].ReplaceWith
+	}
+	if err := s.links.UpdateRenameReplace(ctx, shareID, normalized); err != nil {
 		s.logger().Warn("保存光鸭分享替换规则失败", "share_id", shareID, "error", err)
 	}
 }

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -36,11 +37,35 @@ type GuangyaShareDestination struct {
 	EmbyLibraryID string `json:"emby_library_id"`
 }
 
-// GuangyaShareRenameReplace 是保存的“替换文本”重命名规则。
-type GuangyaShareRenameReplace struct {
-	Enabled     bool   `json:"enabled"`
+// GuangyaShareRenameRule 是一条“替换文本”规则。
+type GuangyaShareRenameRule struct {
 	Find        string `json:"find"`
 	ReplaceWith string `json:"replace_with"`
+}
+
+// GuangyaShareRenameReplace 是保存的“替换文本”重命名规则。
+// Rules 支持按顺序执行多条替换；Find/ReplaceWith 保留为第一条规则的镜像，
+// 兼容早期只有一个输入框的版本。
+type GuangyaShareRenameReplace struct {
+	Enabled     bool                     `json:"enabled"`
+	Find        string                   `json:"find"`
+	ReplaceWith string                   `json:"replace_with"`
+	Rules       []GuangyaShareRenameRule `json:"rules,omitempty"`
+}
+
+// NormalizeRules 返回有效的规则列表：优先 Rules，否则回退到单条 Find/ReplaceWith。
+func (r GuangyaShareRenameReplace) NormalizeRules() []GuangyaShareRenameRule {
+	out := make([]GuangyaShareRenameRule, 0, len(r.Rules)+1)
+	for _, rule := range r.Rules {
+		if strings.TrimSpace(rule.Find) == "" {
+			continue
+		}
+		out = append(out, rule)
+	}
+	if len(out) == 0 && strings.TrimSpace(r.Find) != "" {
+		out = append(out, GuangyaShareRenameRule{Find: r.Find, ReplaceWith: r.ReplaceWith})
+	}
+	return out
 }
 
 // GuangyaShareBrowseCrumb 是分享内浏览路径的一级目录。

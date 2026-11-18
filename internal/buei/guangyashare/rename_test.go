@@ -219,3 +219,24 @@ func TestTransferAppliesRenames(t *testing.T) {
 		t.Fatalf("invalidateDir called with %q", invalidated)
 	}
 }
+
+func TestSaveRenameReplaceNormalizesRules(t *testing.T) {
+	repo := newFakeLinkRepo()
+	repo.links[testShareID] = &domain.GuangyaShareLink{ID: 1, ShareID: testShareID}
+	svc := &Service{links: repo}
+	svc.saveRenameReplace(context.Background(), testShareID, &domain.GuangyaShareRenameReplace{
+		Enabled: true,
+		Rules: []domain.GuangyaShareRenameRule{
+			{Find: "   "},
+			{Find: "2160p", ReplaceWith: ""},
+			{Find: "HDR", ReplaceWith: " "},
+		},
+	})
+	rule := repo.links[testShareID].RenameReplace
+	if len(rule.Rules) != 2 || rule.Rules[0].Find != "2160p" || rule.Rules[1].ReplaceWith != " " {
+		t.Fatalf("unexpected saved rules: %+v", rule)
+	}
+	if rule.Find != "2160p" || rule.ReplaceWith != "" {
+		t.Fatalf("legacy mirror fields not synced: %+v", rule)
+	}
+}

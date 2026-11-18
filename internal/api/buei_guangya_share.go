@@ -63,10 +63,24 @@ type bueiGuangyaShareTransferredDTO struct {
 	UpdatedAt      string `json:"updated_at"`
 }
 
-type bueiGuangyaShareRenameReplaceDTO struct {
-	Enabled     bool   `json:"enabled"`
+type bueiGuangyaShareRenameRuleDTO struct {
 	Find        string `json:"find"`
 	ReplaceWith string `json:"replace_with"`
+}
+
+type bueiGuangyaShareRenameReplaceDTO struct {
+	Enabled     bool                            `json:"enabled"`
+	Find        string                          `json:"find"`
+	ReplaceWith string                          `json:"replace_with"`
+	Rules       []bueiGuangyaShareRenameRuleDTO `json:"rules,omitempty"`
+}
+
+func bueiGuangyaShareRenameRulesToDTO(rules []domain.GuangyaShareRenameRule) []bueiGuangyaShareRenameRuleDTO {
+	dtos := make([]bueiGuangyaShareRenameRuleDTO, 0, len(rules))
+	for _, rule := range rules {
+		dtos = append(dtos, bueiGuangyaShareRenameRuleDTO{Find: rule.Find, ReplaceWith: rule.ReplaceWith})
+	}
+	return dtos
 }
 
 type bueiGuangyaShareParseDTO struct {
@@ -91,6 +105,7 @@ func bueiGuangyaShareRenameReplaceToDTO(rule *domain.GuangyaShareRenameReplace) 
 		Enabled:     rule.Enabled,
 		Find:        rule.Find,
 		ReplaceWith: rule.ReplaceWith,
+		Rules:       bueiGuangyaShareRenameRulesToDTO(rule.NormalizeRules()),
 	}
 }
 
@@ -280,6 +295,10 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 			Enabled     bool   `json:"enabled"`
 			Find        string `json:"find"`
 			ReplaceWith string `json:"replace_with"`
+			Rules       []struct {
+				Find        string `json:"find"`
+				ReplaceWith string `json:"replace_with"`
+			} `json:"rules"`
 		} `json:"rename_replace"`
 	}
 	if err := decodeJSON(r, &in); err != nil {
@@ -288,10 +307,15 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 	}
 	var renameReplace *domain.GuangyaShareRenameReplace
 	if in.RenameReplace != nil {
+		rules := make([]domain.GuangyaShareRenameRule, 0, len(in.RenameReplace.Rules))
+		for _, rule := range in.RenameReplace.Rules {
+			rules = append(rules, domain.GuangyaShareRenameRule{Find: rule.Find, ReplaceWith: rule.ReplaceWith})
+		}
 		renameReplace = &domain.GuangyaShareRenameReplace{
 			Enabled:     in.RenameReplace.Enabled,
 			Find:        in.RenameReplace.Find,
 			ReplaceWith: in.RenameReplace.ReplaceWith,
+			Rules:       rules,
 		}
 	}
 	browsePath := make([]domain.GuangyaShareBrowseCrumb, 0, len(in.BrowsePath))

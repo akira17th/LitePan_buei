@@ -378,7 +378,14 @@ func TestServiceParseReturnsSavedDestinationAndLastBase(t *testing.T) {
 			{ID: "", Name: "全部文件", Path: ""},
 			{ID: "d1", Name: "剧集", Path: "/剧集"},
 		},
-		RenameReplace: domain.GuangyaShareRenameReplace{Enabled: true, Find: "\\s+", ReplaceWith: " "},
+		RenameReplace: domain.GuangyaShareRenameReplace{
+			Enabled: true,
+			Find:    "\\s+",
+			Rules: []domain.GuangyaShareRenameRule{
+				{Find: "\\s+", ReplaceWith: " "},
+				{Find: "2160p", ReplaceWith: ""},
+			},
+		},
 	}
 	svc.links = repo
 	configs := newFakeConfigRepo()
@@ -410,6 +417,9 @@ func TestServiceParseReturnsSavedDestinationAndLastBase(t *testing.T) {
 	}
 	if res.RenameReplace == nil || !res.RenameReplace.Enabled || res.RenameReplace.Find != "\\s+" {
 		t.Fatalf("unexpected rename replace rule: %+v", res.RenameReplace)
+	}
+	if rules := res.RenameReplace.NormalizeRules(); len(rules) != 2 || rules[1].ReplaceWith != "" {
+		t.Fatalf("multi rename rules not returned: %+v", res.RenameReplace)
 	}
 }
 

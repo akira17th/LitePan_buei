@@ -42,10 +42,18 @@ export interface GuangyaShareDestination {
   emby_library_id?: string;
 }
 
-export interface GuangyaShareRenameReplace {
-  enabled: boolean;
+export interface GuangyaShareRenameRule {
   find: string;
   replace_with: string;
+}
+
+export interface GuangyaShareRenameReplace {
+  enabled: boolean;
+  /** 第一条规则的镜像，兼容旧版本。 */
+  find: string;
+  replace_with: string;
+  /** 按顺序执行的替换规则。 */
+  rules?: GuangyaShareRenameRule[];
 }
 
 export interface GuangyaShareBrowseCrumb {
