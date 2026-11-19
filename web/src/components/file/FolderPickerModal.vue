@@ -54,6 +54,9 @@ const emit = defineEmits<{
     accountId: number;
     accountName: string;
     parentId: string;
+    // #region buei:quark-ingest
+    parentDirId?: string;
+    // #endregion buei:quark-ingest
     path: string;
     dirs?: string[];
     selections?: FolderSelection[];
@@ -220,6 +223,9 @@ async function loadFavorites(accountId: number | null) {
 function onResolve(folder: {
   accountId: number;
   parentId: string;
+  // #region buei:quark-ingest
+  parentDirId?: string;
+  // #endregion buei:quark-ingest
   path: string;
   dirs?: string[];
   selections?: FolderSelection[];

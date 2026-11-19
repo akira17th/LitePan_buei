@@ -202,6 +202,12 @@ func wireServices(cfg config.Config, logs *logx.Manager, st *storeBundle, core *
 	// #region buei:guangya share emby refresh
 	bueiSvc.guangyaShare.SetEmbyRefresher(bueiEmbyRefresher(embyProxySvc))
 	// #endregion buei:guangya share emby refresh
+	// #region buei:quark ingest linked actions
+	bueiSvc.quarkIngest.SetFiles(fileSvc)
+	bueiSvc.quarkIngest.SetStrmGenerator(bueiStrmDirectoryGenerator(core.exec, strmSvc))
+	bueiSvc.quarkIngest.SetScrapeRunner(rebuildScrape, startScrape, waitScrape)
+	bueiSvc.quarkIngest.SetEmbyRefresher(bueiEmbyRefresher(embyProxySvc))
+	// #endregion buei:quark ingest linked actions
 	fnosProxySvc := fnosproxy.New(fnosproxy.Options{
 		Settings:       st.settings,
 		Playback:       playbackSvc,

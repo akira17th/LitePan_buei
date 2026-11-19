@@ -77,6 +77,8 @@
 | 本地运行 / 镜像构建说明 | `readme_run.md` |
 | README 定制说明 | `README.md` |
 | 光鸭分享（辅助工具独立 tab；收藏链接 / 解析 / 类型勾选 / 目标路径预设（数据库） / 浏览目录记忆 / Shift 连选 / 自动重命名（前缀 / SxxEnn / 多组替换文本）/ 转存历史 / 丢弃标记 / 转存 / 转存后联动动作（生成 STRM / 刮削元数据（只刮本次作品） / Emby 刷库（预设持久化））） | `internal/buei/guangyashare/`、`internal/store/buei_guangya_share_repo.go`、`drivers/Guangya/buei_share.go`、`internal/api/buei_guangya_share.go`、`web/src/components/buei/`（含 `AppModal` 的 `wide` / `inline` 支持） |
+| 夸克入库（后台「辅助工具 / 夸克入库」独立 tab，位于光鸭分享之后；左侧收藏链接 + 「来自：分享」文件夹；打开收藏文件夹勾选文件批量入库；表格可直接删除勾选文件；支持「平铺目录」递归移动子文件夹文件并删除文件夹、重名自动加序号；删除收藏时一并删除对应收藏文件夹；目标文件夹名默认取收藏文件夹名并同步改名；保存位置 / 重命名 / 联动动作；预设持久化） | `internal/buei/quarkingest/`、`internal/domain/buei_quark_ingest.go`、`internal/store/buei_quark_ingest_repo.go`、`internal/api/buei_quark_ingest.go`、`web/src/api/bueiQuarkIngest.ts`、`web/src/components/buei/BueiQuarkIngestPanel.vue`、`web/src/components/buei/BueiQuarkIngestSettings.vue`、`web/src/utils/bueiQuarkShare.ts` |
+| 夸克入库收藏文件夹直接父目录 | `web/src/components/file/FolderSelector.vue`、`FolderPickerModal.vue`（`buei:quark-ingest` 标记，返回 `parentDirId`） |
 | `.tools/` 忽略 | `.gitignore` |
 | 删除一条上游注释（无功能影响） | `drivers/all.go` |
 
@@ -358,7 +360,7 @@ HTTP
 - 迁移文件在 `internal/store/migrations/NNNN_name.sql`，按版本号顺序执行，记录在 `schema_migrations`。
 - 迁移 SQL 按分号拆分执行，**字符串字面量里不要出现分号**。
 - 已执行的迁移绝不能修改或改编号；只能新增后续迁移。
-- 当前最新迁移为 `0034_buei_guangya_share_rename_rules.sql`；buei 新迁移从 `0035` 起。
+- 当前最新迁移为 `0035_buei_quark_ingest_favorites.sql`；buei 新迁移从 `0036` 起。
 - 说明：`0033_buei_guangya_share_provider.sql`（夸克分享 provider）已随功能回撤删除，但部分已有数据库仍记录该版本；恢复夸克功能时沿用原文件即可，新迁移不要复用 0033。
 
 ### 4.8 全局设置

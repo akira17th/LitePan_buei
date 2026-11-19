@@ -85,6 +85,10 @@ const emit = defineEmits<{
   resolve: [payload: {
     accountId: number;
     parentId: string;
+    // #region buei:quark-ingest
+    // 当前选中文件夹的直接父目录，用于收藏文件夹改名等场景。
+    parentDirId?: string;
+    // #endregion buei:quark-ingest
     path: string;
     dirs: string[];
     selections?: FolderSelection[];
@@ -608,12 +612,20 @@ function selectCurrent() {
   const payload: {
     accountId: number;
     parentId: string;
+    // #region buei:quark-ingest
+    parentDirId?: string;
+    // #endregion buei:quark-ingest
     path: string;
     dirs: string[];
     selections?: FolderSelection[];
   } = {
     accountId: props.accountId,
     parentId: currentParentId.value,
+    // #region buei:quark-ingest
+    parentDirId: breadcrumb.value.length > 1
+      ? breadcrumb.value[breadcrumb.value.length - 2]?.id ?? ""
+      : "",
+    // #endregion buei:quark-ingest
     path: currentPath.value,
     dirs: currentDirNames.value,
   };

@@ -2,6 +2,7 @@ package app
 
 import (
 	"litepan/internal/buei/guangyashare"
+	"litepan/internal/buei/quarkingest"
 	"litepan/internal/cache"
 	"litepan/internal/logx"
 	"litepan/internal/store"
@@ -10,6 +11,7 @@ import (
 // bueiServices 汇总 buei 定制服务，避免上游 servicesBundle 导入具体功能包。
 type bueiServices struct {
 	guangyaShare *guangyashare.Service
+	quarkIngest  *quarkingest.Service
 }
 
 func wireBueiServices(st *storeBundle, core *coreBundle, logs *logx.Manager) *bueiServices {
@@ -24,6 +26,12 @@ func wireBueiServices(st *storeBundle, core *coreBundle, logs *logx.Manager) *bu
 			InvalidateDir: func(accountID int64, parentID string) {
 				cache.InvalidateDirKeys(core.cache, accountID, parentID)
 			},
+		}),
+		quarkIngest: quarkingest.New(quarkingest.Options{
+			Accounts:  st.store.Accounts,
+			Configs:   st.store.Configs,
+			Favorites: store.NewQuarkIngestFavoriteRepo(st.db),
+			Log:       logs.For(logx.ModuleSystem),
 		}),
 	}
 }

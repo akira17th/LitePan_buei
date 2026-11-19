@@ -14,4 +14,14 @@ func (h *Handler) registerBueiRoutes(r chi.Router) {
 		r.Get("/saved", h.bueiGuangyaShareSavedList)
 		r.Delete("/saved/{id}", h.bueiGuangyaShareSavedDelete)
 	})
+	r.Route("/tools/quark-ingest", func(r chi.Router) {
+		r.Get("/preset", h.bueiQuarkIngestPreset)
+		r.Get("/favorites", h.bueiQuarkIngestFavorites)
+		r.Post("/favorites", h.bueiQuarkIngestFavoriteCreate)
+		r.Put("/favorites/{id}", h.bueiQuarkIngestFavoriteUpdate)
+		r.Delete("/favorites/{id}", h.bueiQuarkIngestFavoriteDelete)
+		r.Post("/flatten", h.bueiQuarkIngestFlatten)
+		r.Post("/transfer", h.bueiQuarkIngestTransfer)
+		r.Get("/progress", h.bueiQuarkIngestProgress)
+	})
 }

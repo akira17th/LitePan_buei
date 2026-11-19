@@ -3,7 +3,6 @@ import { computed } from "vue";
 import AppButton from "@/components/base/AppButton.vue";
 import AppModal from "@/components/base/AppModal.vue";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
-import type { GuangyaShareTransferPhase } from "@/api/bueiGuangyaShare";
 
 // buei 定制：光鸭分享收藏的转存确认弹窗，附带重命名预览。
 
@@ -21,37 +20,43 @@ export interface RenamePreviewRow {
   path: string;
 }
 
-const props = defineProps<{
-  open: boolean;
-  target: string;
-  count: number;
-  renames: RenamePreviewRow[];
-  unchangedCount: number;
-  loading?: boolean;
-  phase?: GuangyaShareTransferPhase;
-  autoStrm?: boolean;
-  done?: boolean;
-  renamed?: number;
-  renameSkipped?: number;
-  strmGenerated?: number;
-  strmMatched?: boolean;
-  strmError?: string;
-  autoScrape?: boolean;
-  scrapeTaskId?: number;
-  scrapeStarted?: boolean;
-  scrapeError?: string;
-  scrapeProgress?: ScrapeProgressView | null;
-  refreshEmby?: boolean;
-  embyRefreshed?: boolean;
-  embyScheduled?: boolean;
-  embyError?: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    open: boolean;
+    target: string;
+    count: number;
+    renames: RenamePreviewRow[];
+    unchangedCount: number;
+    loading?: boolean;
+    phase?: string;
+    autoStrm?: boolean;
+    done?: boolean;
+    renamed?: number;
+    renameSkipped?: number;
+    strmGenerated?: number;
+    strmMatched?: boolean;
+    strmError?: string;
+    autoScrape?: boolean;
+    scrapeTaskId?: number;
+    scrapeStarted?: boolean;
+    scrapeError?: string;
+    scrapeProgress?: ScrapeProgressView | null;
+    refreshEmby?: boolean;
+    embyRefreshed?: boolean;
+    embyScheduled?: boolean;
+    embyError?: string;
+    /** 动作名称：光鸭分享使用「转存」，夸克入库使用「入库」。 */
+    actionLabel?: string;
+    hint?: string;
+  }>(),
+  { actionLabel: "转存", hint: "" },
+);
 
 const emit = defineEmits<{ confirm: []; cancel: []; stay: []; open: [] }>();
 
 type StepState = "pending" | "active" | "done" | "skipped";
 
-const PHASE_ORDER: GuangyaShareTransferPhase[] = ["transfer", "rename", "strm", "scrape", "emby"];
+const PHASE_ORDER: string[] = ["transfer", "rename", "strm", "scrape", "emby"];
 
 // 主流程走完后，刮削与刷库仍在后台运行，不能直接把所有步骤标成完成。
 const phaseIndex = computed(() => {
@@ -69,8 +74,8 @@ const asyncRunning = computed(() => {
 });
 
 const dialogTitle = computed(() => {
-  if (!props.done) return "确认转存";
-  return asyncRunning.value ? "转存完成，联动处理中" : "转存完成";
+  if (!props.done) return `确认${props.actionLabel}`;
+  return asyncRunning.value ? `${props.actionLabel}完成，联动处理中` : `${props.actionLabel}完成`;
 });
 
 function stepState(key: string, index: number, skipped: boolean): StepState {
@@ -102,7 +107,7 @@ function stepDetail(key: string) {
   if (!props.done) return "";
   switch (key) {
     case "transfer":
-      return `${props.count} 项已保存`;
+      return `${props.count} 项已${props.actionLabel}`;
     case "rename":
       if (!props.renames.length) return "未启用";
       if (props.renameSkipped) return `已重命名 ${props.renamed || 0} 项，${props.renameSkipped} 项失败`;
@@ -141,7 +146,7 @@ function stepDetail(key: string) {
 // 转存 → 重命名 → 生成 STRM；没有改名/未开启自动 STRM 时显示为跳过。
 const steps = computed(() => {
   const defs = [
-    { key: "transfer", label: "转存", skipped: false },
+    { key: "transfer", label: props.actionLabel, skipped: false },
     { key: "rename", label: "重命名", skipped: !props.renames.length },
     { key: "strm", label: "生成 STRM", skipped: props.autoStrm === false },
     {
@@ -174,7 +179,7 @@ const phaseText = computed(() => {
     case "failed":
       return "处理失败";
     default:
-      return "转存中…";
+      return `${props.actionLabel}中…`;
   }
 });
 </script>
@@ -192,9 +197,10 @@ const phaseText = computed(() => {
         已将 <b>{{ count }}</b> 项内容保存到「{{ target }}」。
       </p>
       <p v-else class="gysc__summary">
-        将 <b>{{ count }}</b> 项内容转存到「{{ target }}」。
-        目标文件夹不存在时会自动创建；文件夹会连同其中的文件一起转存。
+        将 <b>{{ count }}</b> 项内容{{ actionLabel }}到「{{ target }}」。
+        目标文件夹不存在时会自动创建；文件夹会连同其中的文件一起{{ actionLabel }}。
       </p>
+      <p v-if="hint && !done" class="gysc__hint">{{ hint }}</p>
 
       <div v-if="loading || done" class="gysc__steps">
         <div
@@ -260,7 +266,7 @@ const phaseText = computed(() => {
       <template v-else>
         <AppButton variant="cancel" :disabled="loading" @click="emit('cancel')">再检查一下</AppButton>
         <AppButton variant="primary" :disabled="loading" @click="emit('confirm')">
-          {{ loading ? phaseText : "开始转存" }}
+          {{ loading ? phaseText : `开始${actionLabel}` }}
         </AppButton>
       </template>
     </template>
@@ -293,6 +299,16 @@ const phaseText = computed(() => {
 
 .gysc__summary.is-done b {
   color: var(--brand);
+}
+
+.gysc__hint {
+  margin: -4px 0 12px;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 /* 转存阶段进度条：每个步骤的结果显示在自身下方 */

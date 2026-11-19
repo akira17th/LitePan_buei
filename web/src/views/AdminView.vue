@@ -66,7 +66,7 @@ const PAGE_TABS: Record<string, { defaultTab: string; tabs: Record<string, strin
     // buei:guangya-share —— 辅助工具默认进入光鸭分享
     defaultTab: "guangya",
     // buei:guangya-share —— 光鸭分享从增强工具拆成独立 tab
-    tabs: { scrape: "STRM 刮削", enhanced: "增强工具", guangya: "光鸭分享", backup: "备份管理" },
+    tabs: { scrape: "STRM 刮削", enhanced: "增强工具", guangya: "光鸭分享", quark: "夸克入库", backup: "备份管理" },
   },
   share: { defaultTab: "webdav", tabs: { webdav: "WebDAV", fuse: "本地挂载" } },
   "cross-transfer": { defaultTab: "plain", tabs: { plain: "跨盘普传", rapid: "跨盘秒传" } },
