@@ -1,6 +1,6 @@
 export type ShareLinkProvider = "guangya" | "quark";
 
-// buei 定制：影视入库的 + 收藏弹窗根据链接自动识别网盘。
+// buei 定制：影视入库的 + 收藏弹窗只自动识别光鸭；其他链接按手动选择的云盘保存。
 export function detectShareLinkProvider(input: string): ShareLinkProvider | null {
   const text = String(input ?? "").trim().toLowerCase();
   if (!text) return null;

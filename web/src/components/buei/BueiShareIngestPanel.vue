@@ -91,6 +91,9 @@ type DestinationBase = {
 };
 
 const QUICK_FILE_KINDS = new Set<GuangyaShareKind>(["video", "image", "subtitle", "document"]);
+const FAVORITE_PROVIDER_OPTIONS: { value: Provider; label: string }[] = [
+  { value: "quark", label: "夸克" },
+];
 
 const url = ref("");
 const crumbListRef = ref<HTMLElement | null>(null);
@@ -120,6 +123,7 @@ const favoriteDialogOpen = ref(false);
 const favoriteEditing = ref<UnifiedFavorite | null>(null);
 const favoriteLink = ref("");
 const favoritePassword = ref("");
+const favoriteProviderManual = ref<Provider>("quark");
 const favoriteSaving = ref(false);
 const favoriteError = ref("");
 const favoriteQuarkAccountId = ref<number | null>(null);
@@ -240,9 +244,15 @@ const unifiedFavorites = computed<UnifiedFavorite[]>(() => {
 
 const favoritesLoading = computed(() => savedLoading.value || quarkFavoritesLoading.value);
 const favoritesError = computed(() => savedError.value || quarkFavoritesError.value);
-const favoriteProvider = computed<Provider | null>(
-  () => favoriteEditing.value?.provider ?? detectShareLinkProvider(favoriteLink.value),
+const favoriteDetectedProvider = computed(() => detectShareLinkProvider(favoriteLink.value));
+// 添加收藏时只识别光鸭；其余链接一律归入手动选择的云盘，不校验域名。
+const showFavoriteProviderSelect = computed(
+  () => !favoriteEditing.value && favoriteDetectedProvider.value !== "guangya",
 );
+const favoriteProvider = computed<Provider>(() => {
+  if (favoriteEditing.value) return favoriteEditing.value.provider;
+  return favoriteDetectedProvider.value === "guangya" ? "guangya" : favoriteProviderManual.value;
+});
 const favoriteQuarkAccountOptions = computed(() =>
   quarkAccounts.value.map((account) => ({ value: account.id, label: account.name })),
 );
@@ -1556,6 +1566,7 @@ function resetFavoriteDialog() {
   favoriteEditing.value = null;
   favoriteLink.value = "";
   favoritePassword.value = "";
+  favoriteProviderManual.value = "quark";
   favoriteError.value = "";
   favoriteQuarkAccountId.value = quarkAccounts.value[0]?.id ?? null;
   favoriteQuarkInbox.value = null;
@@ -1623,11 +1634,15 @@ async function ensureFavoriteQuarkInbox() {
     favoriteQuarkInboxError.value = "请先选择夸克账号";
     return;
   }
-  if (favoriteQuarkInbox.value && favoriteQuarkInboxAccountId.value === accountId) {
-    // 已加载过同一账号的「来自：分享」，直接复用。
+  if (
+    favoriteQuarkInboxAccountId.value === accountId &&
+    (favoriteQuarkInbox.value || favoriteQuarkInboxLoading.value)
+  ) {
+    // 已加载或正在加载同一账号的「来自：分享」，直接复用。
     return;
   }
   const seq = ++favoriteInboxSeq;
+  favoriteQuarkInboxAccountId.value = accountId;
   favoriteQuarkInboxLoading.value = true;
   favoriteQuarkInboxError.value = "";
   try {
@@ -1653,9 +1668,19 @@ async function ensureFavoriteQuarkInbox() {
 
 function onFavoriteLinkInput(event?: Event) {
   favoriteError.value = "";
+  if (favoriteEditing.value) return;
   const target = event?.target as HTMLInputElement | null;
   const value = target?.value ?? favoriteLink.value;
-  if (detectShareLinkProvider(value) === "quark") void ensureFavoriteQuarkInbox();
+  if (value.trim() && detectShareLinkProvider(value) !== "guangya") void ensureFavoriteQuarkInbox();
+}
+
+function onFavoriteProviderChange(value: string | number | boolean) {
+  if (value !== "quark") return;
+  favoriteProviderManual.value = "quark";
+  favoriteError.value = "";
+  if (!favoriteEditing.value && favoriteDetectedProvider.value !== "guangya") {
+    void ensureFavoriteQuarkInbox();
+  }
 }
 
 function onFavoriteQuarkAccountChange(value: string | number | boolean) {
@@ -1700,15 +1725,11 @@ async function submitFavorite() {
     favoriteError.value = "请填写分享链接";
     return;
   }
-  const detected = favoriteProvider.value;
-  if (!detected) {
-    favoriteError.value = "无法识别链接，请粘贴光鸭或夸克分享链接";
-    return;
-  }
+  const targetProvider = favoriteProvider.value;
   favoriteSaving.value = true;
   favoriteError.value = "";
   try {
-    if (detected === "guangya") {
+    if (targetProvider === "guangya") {
       const editingFavorite = favoriteEditing.value;
       const res = editingFavorite
         ? await bueiGuangyaShareApi.updateSaved(editingFavorite.id, {
@@ -3490,24 +3511,27 @@ onBeforeUnmount(() => {
         <input
           v-model="favoriteLink"
           type="text"
-          placeholder="粘贴光鸭或夸克分享链接"
+          placeholder="粘贴光鸭或其他云盘分享链接"
           :disabled="favoriteSaving"
           @input="onFavoriteLinkInput"
         />
       </label>
 
-      <div v-if="favoriteProvider" class="gys__editor-provider">
-        <span class="gys__provider" :class="`is-${favoriteProvider}`">
-          {{ favoriteProvider === "quark" ? "夸克" : "光鸭" }}
-        </span>
-        <span v-if="favoriteProvider === 'guangya'">
-          {{ favoriteEditing ? "保存后自动重新解析" : "自动解析并收藏，提取码可选" }}
-        </span>
-        <span v-else>选择夸克「来自：分享」中的文件夹</span>
+      <label v-if="showFavoriteProviderSelect" class="gys__editor-field">
+        <span>云盘</span>
+        <AppSelect
+          :model-value="favoriteProviderManual"
+          :options="FAVORITE_PROVIDER_OPTIONS"
+          :disabled="favoriteSaving"
+          @update:model-value="onFavoriteProviderChange"
+        />
+        <small>不校验域名，可填写任意链接。</small>
+      </label>
+
+      <div v-if="favoriteProvider === 'guangya'" class="gys__editor-provider">
+        <span class="gys__provider">光鸭</span>
+        <span>{{ favoriteEditing ? "保存后自动重新解析" : "自动解析并收藏，提取码可选" }}</span>
       </div>
-      <p v-else-if="favoriteLink.trim()" class="gys__editor-hint">
-        无法识别链接，请粘贴光鸭或夸克分享链接
-      </p>
 
       <label v-if="favoriteProvider === 'guangya'" class="gys__editor-field">
         <span>提取码</span>
@@ -3559,7 +3583,7 @@ onBeforeUnmount(() => {
       <AppButton
         variant="primary"
         :loading="favoriteSaving"
-        :disabled="!favoriteProvider || (favoriteProvider === 'quark' && !favoriteQuarkFolderId)"
+        :disabled="favoriteProvider === 'quark' && !favoriteQuarkFolderId"
         @click="submitFavorite"
       >
         {{
