@@ -51,6 +51,23 @@ func TestMatchTaskForCurrentDirectoryUsesDirSegments(t *testing.T) {
 	}
 }
 
+// 多个任务源目录完全相同时，固定选择 ID 更新的任务，避免新旧任务之间随机串用输出目录。
+func TestMatchTaskForCurrentDirectoryPrefersNewestOnTie(t *testing.T) {
+	tasks := []*domain.StrmTask{
+		{ID: 2, Path: "/测试1", OutputFolder: "干扰任务1", GroupDir: "测试222"},
+		{ID: 4, Path: "/测试1", OutputFolder: "光鸭测试"},
+	}
+	dirs := []string{"测试1", "现在就出发 (2023)", "Season 04"}
+	task, rel := matchTaskForCurrentDirectory(tasks, "/"+joinForTest(dirs), dirs)
+	if task == nil || task.ID != 4 {
+		t.Fatalf("同路径任务应选择最新任务 4，实际 %+v", task)
+	}
+	want := []string{"现在就出发 (2023)", "Season 04"}
+	if len(rel) != len(want) || rel[0] != want[0] || rel[1] != want[1] {
+		t.Fatalf("相对目录=%v，期望 %v", rel, want)
+	}
+}
+
 // 任务根自己就是「名字带斜杠的目录」时，相对目录必须为空（不能把任务根再算一遍）。
 func TestMatchTaskForCurrentDirectoryTaskRootWithSlashName(t *testing.T) {
 	tasks := []*domain.StrmTask{{ID: 9, Path: "/库/abc/def/ghi", OutputFolder: "任务"}}

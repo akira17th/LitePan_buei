@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -123,6 +124,43 @@ func TestServiceParse(t *testing.T) {
 	}
 }
 
+func TestServiceAllowsDuplicateLinks(t *testing.T) {
+	svc := newTestService(t, fakeShareAPI(t))
+	repo := newFakeLinkRepo()
+	svc.links = repo
+
+	first, err := svc.Parse(context.Background(), ParseInput{
+		URL:      "https://www.guangyapan.com/s/" + testShareID,
+		Password: testPassword,
+	})
+	if err != nil {
+		t.Fatalf("first Parse() error = %v", err)
+	}
+	second, err := svc.Parse(context.Background(), ParseInput{
+		URL:      "https://www.guangyapan.com/s/" + testShareID,
+		Password: testPassword,
+	})
+	if err != nil {
+		t.Fatalf("second Parse() error = %v", err)
+	}
+	if first.SavedLinkID <= 0 || second.SavedLinkID <= 0 || first.SavedLinkID == second.SavedLinkID {
+		t.Fatalf("duplicate parses should create distinct links: first=%d second=%d", first.SavedLinkID, second.SavedLinkID)
+	}
+	saved, err := svc.SavedLinks(context.Background())
+	if err != nil || len(saved) != 2 {
+		t.Fatalf("duplicate links not saved: %+v, %v", saved, err)
+	}
+
+	// 修改其中一条为另一条相同的分享，不应再触发重复校验。
+	if _, err := svc.UpdateSavedLink(context.Background(), UpdateSavedInput{
+		ID:       second.SavedLinkID,
+		URL:      "https://www.guangyapan.com/s/" + testShareID,
+		Password: testPassword,
+	}); err != nil {
+		t.Fatalf("UpdateSavedLink() should allow duplicate share, got %v", err)
+	}
+}
+
 func TestServiceListFolder(t *testing.T) {
 	svc := newTestService(t, fakeShareAPI(t))
 	res, err := svc.List(context.Background(), ListInput{
@@ -236,12 +274,12 @@ func TestNormalizeFileIDs(t *testing.T) {
 }
 
 type fakeLinkRepo struct {
-	links  map[string]*domain.GuangyaShareLink
+	links  map[int64]*domain.GuangyaShareLink
 	nextID int64
 }
 
 func newFakeLinkRepo() *fakeLinkRepo {
-	return &fakeLinkRepo{links: make(map[string]*domain.GuangyaShareLink)}
+	return &fakeLinkRepo{links: make(map[int64]*domain.GuangyaShareLink)}
 }
 
 func (r *fakeLinkRepo) List(context.Context) ([]*domain.GuangyaShareLink, error) {
@@ -250,43 +288,42 @@ func (r *fakeLinkRepo) List(context.Context) ([]*domain.GuangyaShareLink, error)
 		copy := *link
 		out = append(out, &copy)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
-func (r *fakeLinkRepo) Upsert(_ context.Context, link *domain.GuangyaShareLink) (*domain.GuangyaShareLink, error) {
-	existing := r.links[link.ShareID]
-	if existing == nil {
-		r.nextID++
-		existing = &domain.GuangyaShareLink{ID: r.nextID, ShareID: link.ShareID, CreatedAt: link.CreatedAt}
-		r.links[link.ShareID] = existing
-	}
-	existing.URL = link.URL
-	existing.Password = link.Password
-	existing.Title = link.Title
-	existing.Owner = link.Owner
-	existing.UpdatedAt = link.UpdatedAt
-	existing.LastUsedAt = link.LastUsedAt
-	copy := *existing
-	return &copy, nil
-}
-
-func (r *fakeLinkRepo) UpdateIdentity(_ context.Context, id int64, shareID, url, password, title, owner string, clearBrowsePath bool) (*domain.GuangyaShareLink, error) {
-	var oldShareID string
-	var link *domain.GuangyaShareLink
-	for key, item := range r.links {
-		if item.ID == id {
-			oldShareID = key
-			link = item
-			break
-		}
-	}
+func (r *fakeLinkRepo) Get(_ context.Context, id int64) (*domain.GuangyaShareLink, error) {
+	link := r.links[id]
 	if link == nil {
 		return nil, domain.Errf(domain.CodeNotFound)
 	}
-	if _, exists := r.links[shareID]; exists && shareID != oldShareID {
-		return nil, domain.Errorf(domain.CodeValidation, "新链接已在收藏中")
+	copy := *link
+	return &copy, nil
+}
+
+func (r *fakeLinkRepo) Create(_ context.Context, link *domain.GuangyaShareLink) (*domain.GuangyaShareLink, error) {
+	r.nextID++
+	copy := *link
+	copy.ID = r.nextID
+	r.links[copy.ID] = &copy
+	result := copy
+	return &result, nil
+}
+
+func (r *fakeLinkRepo) Touch(_ context.Context, id int64) error {
+	link := r.links[id]
+	if link == nil {
+		return domain.Errf(domain.CodeNotFound)
 	}
-	delete(r.links, oldShareID)
+	link.LastUsedAt = time.Now().UTC()
+	return nil
+}
+
+func (r *fakeLinkRepo) UpdateIdentity(_ context.Context, id int64, shareID, url, password, title, owner string, clearBrowsePath bool) (*domain.GuangyaShareLink, error) {
+	link := r.links[id]
+	if link == nil {
+		return nil, domain.Errf(domain.CodeNotFound)
+	}
 	link.ShareID = shareID
 	link.URL = url
 	link.Password = password
@@ -297,13 +334,12 @@ func (r *fakeLinkRepo) UpdateIdentity(_ context.Context, id int64, shareID, url,
 	if clearBrowsePath {
 		link.LastBrowsePath = nil
 	}
-	r.links[shareID] = link
 	copy := *link
 	return &copy, nil
 }
 
-func (r *fakeLinkRepo) UpdateDestination(_ context.Context, shareID string, dest *domain.GuangyaShareDestination) error {
-	link := r.links[shareID]
+func (r *fakeLinkRepo) UpdateDestination(_ context.Context, id int64, dest *domain.GuangyaShareDestination) error {
+	link := r.links[id]
 	if link == nil {
 		return domain.Errf(domain.CodeNotFound)
 	}
@@ -316,8 +352,8 @@ func (r *fakeLinkRepo) UpdateDestination(_ context.Context, shareID string, dest
 	return nil
 }
 
-func (r *fakeLinkRepo) UpdateBrowsePath(_ context.Context, shareID string, crumbs []domain.GuangyaShareBrowseCrumb) error {
-	link := r.links[shareID]
+func (r *fakeLinkRepo) UpdateBrowsePath(_ context.Context, id int64, crumbs []domain.GuangyaShareBrowseCrumb) error {
+	link := r.links[id]
 	if link == nil {
 		return domain.Errf(domain.CodeNotFound)
 	}
@@ -325,8 +361,8 @@ func (r *fakeLinkRepo) UpdateBrowsePath(_ context.Context, shareID string, crumb
 	return nil
 }
 
-func (r *fakeLinkRepo) UpdateRenameReplace(_ context.Context, shareID string, rule domain.GuangyaShareRenameReplace) error {
-	link := r.links[shareID]
+func (r *fakeLinkRepo) UpdateRenameReplace(_ context.Context, id int64, rule domain.GuangyaShareRenameReplace) error {
+	link := r.links[id]
 	if link == nil {
 		return domain.Errf(domain.CodeNotFound)
 	}
@@ -334,35 +370,33 @@ func (r *fakeLinkRepo) UpdateRenameReplace(_ context.Context, shareID string, ru
 	return nil
 }
 
-func (r *fakeLinkRepo) Delete(_ context.Context, id int64) (string, error) {
-	for shareID, link := range r.links {
-		if link.ID == id {
-			delete(r.links, shareID)
-			return shareID, nil
-		}
+func (r *fakeLinkRepo) Delete(_ context.Context, id int64) error {
+	if r.links[id] == nil {
+		return domain.Errf(domain.CodeNotFound)
 	}
-	return "", domain.Errf(domain.CodeNotFound)
-}
-
-type fakeTransferredRepo struct {
-	files map[string][]*domain.GuangyaShareTransferredFile
-}
-
-func newFakeTransferredRepo() *fakeTransferredRepo {
-	return &fakeTransferredRepo{files: make(map[string][]*domain.GuangyaShareTransferredFile)}
-}
-
-func (r *fakeTransferredRepo) ListByShare(_ context.Context, shareID string) ([]*domain.GuangyaShareTransferredFile, error) {
-	return append([]*domain.GuangyaShareTransferredFile(nil), r.files[shareID]...), nil
-}
-
-func (r *fakeTransferredRepo) UpsertMany(_ context.Context, shareID string, files []*domain.GuangyaShareTransferredFile) error {
-	r.files[shareID] = append([]*domain.GuangyaShareTransferredFile(nil), files...)
+	delete(r.links, id)
 	return nil
 }
 
-func (r *fakeTransferredRepo) DeleteByShare(_ context.Context, shareID string) error {
-	delete(r.files, shareID)
+type fakeTransferredRepo struct {
+	files map[int64][]*domain.GuangyaShareTransferredFile
+}
+
+func newFakeTransferredRepo() *fakeTransferredRepo {
+	return &fakeTransferredRepo{files: make(map[int64][]*domain.GuangyaShareTransferredFile)}
+}
+
+func (r *fakeTransferredRepo) ListByLink(_ context.Context, linkID int64) ([]*domain.GuangyaShareTransferredFile, error) {
+	return append([]*domain.GuangyaShareTransferredFile(nil), r.files[linkID]...), nil
+}
+
+func (r *fakeTransferredRepo) UpsertMany(_ context.Context, linkID int64, files []*domain.GuangyaShareTransferredFile) error {
+	r.files[linkID] = append([]*domain.GuangyaShareTransferredFile(nil), files...)
+	return nil
+}
+
+func (r *fakeTransferredRepo) DeleteByLink(_ context.Context, linkID int64) error {
+	delete(r.files, linkID)
 	return nil
 }
 
@@ -395,7 +429,7 @@ func (r *fakeConfigRepo) All(context.Context) (map[string]string, error) {
 func TestServiceParseReturnsSavedDestinationAndLastBase(t *testing.T) {
 	svc := newTestService(t, fakeShareAPI(t))
 	repo := newFakeLinkRepo()
-	repo.links[testShareID] = &domain.GuangyaShareLink{
+	repo.links[1] = &domain.GuangyaShareLink{
 		ID:      1,
 		ShareID: testShareID,
 		LastDestination: &domain.GuangyaShareDestination{
@@ -434,6 +468,7 @@ func TestServiceParseReturnsSavedDestinationAndLastBase(t *testing.T) {
 	res, err := svc.Parse(context.Background(), ParseInput{
 		URL:      "https://www.guangyapan.com/s/" + testShareID,
 		Password: testPassword,
+		SavedID:  1,
 	})
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
@@ -579,7 +614,7 @@ func TestServiceEmbyActions(t *testing.T) {
 func TestServiceSaveDestination(t *testing.T) {
 	svc := newTestService(t, fakeShareAPI(t))
 	repo := newFakeLinkRepo()
-	repo.links[testShareID] = &domain.GuangyaShareLink{ID: 1, ShareID: testShareID}
+	repo.links[1] = &domain.GuangyaShareLink{ID: 1, ShareID: testShareID}
 	svc.links = repo
 	configs := newFakeConfigRepo()
 	svc.configs = configs
@@ -598,9 +633,9 @@ func TestServiceSaveDestination(t *testing.T) {
 		EmbyMode:      " library ",
 		EmbyLibraryID: " lib-1 ",
 	}
-	svc.saveDestination(context.Background(), testShareID, dest)
+	svc.saveDestination(context.Background(), 1, dest)
 
-	saved := repo.links[testShareID].LastDestination
+	saved := repo.links[1].LastDestination
 	if saved == nil || saved.ParentID != "dir-2" || saved.Title != "测试电影 (2026)" || saved.Season != 3 || saved.IsSeries || !saved.AutoStrm ||
 		!saved.RefreshEmby || saved.EmbyConfigID != "emby-1" || saved.EmbyMode != "library" ||
 		saved.EmbyLibraryID != "lib-1" || len(saved.BaseDirs) != 2 || saved.BaseDirs[1] != "电影" {
@@ -626,7 +661,7 @@ func TestServiceDiscard(t *testing.T) {
 	svc.transfers = transfers
 
 	count, err := svc.Discard(context.Background(), DiscardInput{
-		ShareID: testShareID,
+		SavedID: 1,
 		Files: []TransferFile{
 			{FileID: "f1", OriginalName: "01.mp4"},
 			{FileID: "f2", OriginalName: "02.mp4", NewName: "ignored.mp4"},
@@ -638,7 +673,7 @@ func TestServiceDiscard(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("Discard() count = %d, want 2", count)
 	}
-	files := transfers.files[testShareID]
+	files := transfers.files[1]
 	if len(files) != 2 {
 		t.Fatalf("unexpected discarded files: %+v", files)
 	}
@@ -694,7 +729,7 @@ func TestUpdateSavedLinkPreservesSettings(t *testing.T) {
 		Rules:   []domain.GuangyaShareRenameRule{{Find: "old", ReplaceWith: "new"}},
 	}
 	repo := newFakeLinkRepo()
-	repo.links[testShareID] = &domain.GuangyaShareLink{
+	repo.links[1] = &domain.GuangyaShareLink{
 		ID: 1, ShareID: testShareID, URL: "https://www.guangyapan.com/s/" + testShareID,
 		Title: "旧分享", Owner: "旧用户",
 		LastDestination: oldDestination,
@@ -703,7 +738,7 @@ func TestUpdateSavedLinkPreservesSettings(t *testing.T) {
 	}
 	svc.links = repo
 	transfers := newFakeTransferredRepo()
-	transfers.files[testShareID] = []*domain.GuangyaShareTransferredFile{{FileID: "old-f1"}}
+	transfers.files[1] = []*domain.GuangyaShareTransferredFile{{FileID: "old-f1"}}
 	svc.transfers = transfers
 
 	res, err := svc.UpdateSavedLink(context.Background(), UpdateSavedInput{
@@ -726,7 +761,7 @@ func TestUpdateSavedLinkPreservesSettings(t *testing.T) {
 	if len(res.LastBrowsePath) != 0 {
 		t.Fatalf("browse path should be cleared, got %+v", res.LastBrowsePath)
 	}
-	saved := repo.links[newShareID]
+	saved := repo.links[1]
 	if saved == nil || saved.ID != 1 || saved.Title != "新测试分享" || saved.URL == "" {
 		t.Fatalf("saved link identity not updated: %+v", saved)
 	}
@@ -739,18 +774,18 @@ func TestUpdateSavedLinkPreservesSettings(t *testing.T) {
 	if len(saved.LastBrowsePath) != 0 {
 		t.Fatalf("saved browse path should be cleared, got %+v", saved.LastBrowsePath)
 	}
-	if len(transfers.files[testShareID]) != 0 {
-		t.Fatalf("old transferred history should be cleared, got %+v", transfers.files[testShareID])
+	if len(transfers.files[1]) != 0 {
+		t.Fatalf("old transferred history should be cleared, got %+v", transfers.files[1])
 	}
 }
 
 func TestServiceTransferredHistory(t *testing.T) {
 	svc := newTestService(t, fakeShareAPI(t))
 	repo := newFakeLinkRepo()
-	repo.links[testShareID] = &domain.GuangyaShareLink{ID: 1, ShareID: testShareID}
+	repo.links[1] = &domain.GuangyaShareLink{ID: 1, ShareID: testShareID}
 	svc.links = repo
 	transfers := newFakeTransferredRepo()
-	transfers.files[testShareID] = []*domain.GuangyaShareTransferredFile{
+	transfers.files[1] = []*domain.GuangyaShareTransferredFile{
 		{FileID: "f1", OriginalName: "01.mp4", NewName: "剧名-S01E01-01.mp4", AccountID: 2},
 	}
 	svc.transfers = transfers
@@ -758,6 +793,7 @@ func TestServiceTransferredHistory(t *testing.T) {
 	res, err := svc.Parse(context.Background(), ParseInput{
 		URL:      "https://www.guangyapan.com/s/" + testShareID,
 		Password: testPassword,
+		SavedID:  1,
 	})
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
@@ -769,8 +805,8 @@ func TestServiceTransferredHistory(t *testing.T) {
 	if err := svc.DeleteSavedLink(context.Background(), 1); err != nil {
 		t.Fatalf("DeleteSavedLink() error = %v", err)
 	}
-	if len(transfers.files[testShareID]) != 0 {
-		t.Fatalf("transferred history should be deleted with link, got %+v", transfers.files[testShareID])
+	if len(transfers.files[1]) != 0 {
+		t.Fatalf("transferred history should be deleted with link, got %+v", transfers.files[1])
 	}
 }
 

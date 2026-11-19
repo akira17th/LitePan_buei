@@ -48,11 +48,29 @@ func (r *guangyaShareLinkRepo) List(ctx context.Context) ([]*domain.GuangyaShare
 	return links, nil
 }
 
-func (r *guangyaShareLinkRepo) Upsert(ctx context.Context, link *domain.GuangyaShareLink) (*domain.GuangyaShareLink, error) {
+func (r *guangyaShareLinkRepo) Get(ctx context.Context, id int64) (*domain.GuangyaShareLink, error) {
+	if id <= 0 {
+		return nil, domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
+	}
+	row := r.db.read.QueryRowContext(ctx,
+		`SELECT `+guangyaShareLinkColumns+`
+		 FROM buei_guangya_share_links WHERE id=?`, id)
+	saved, err := scanGuangyaShareLink(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.Errf(domain.CodeNotFound)
+	}
+	if err != nil {
+		return nil, wrapDB(err)
+	}
+	return saved, nil
+}
+
+func (r *guangyaShareLinkRepo) Create(ctx context.Context, link *domain.GuangyaShareLink) (*domain.GuangyaShareLink, error) {
 	if link == nil {
 		return nil, domain.Errorf(domain.CodeValidation, "收藏记录不能为空")
 	}
-	if link.ShareID == "" {
+	shareID := strings.TrimSpace(link.ShareID)
+	if shareID == "" {
 		return nil, domain.Errorf(domain.CodeValidation, "分享 ID 不能为空")
 	}
 	now := time.Now().UTC()
@@ -68,36 +86,43 @@ func (r *guangyaShareLinkRepo) Upsert(ctx context.Context, link *domain.GuangyaS
 	if lastUsedAt.IsZero() {
 		lastUsedAt = now
 	}
-
-	if _, err := r.db.write.ExecContext(ctx,
+	result, err := r.db.write.ExecContext(ctx,
 		`INSERT INTO buei_guangya_share_links
 		   (share_id, url, password, title, owner, created_at, updated_at, last_used_at)
-		 VALUES (?,?,?,?,?,?,?,?)
-		 ON CONFLICT(share_id) DO UPDATE SET
-		   url=excluded.url,
-		   password=excluded.password,
-		   title=excluded.title,
-		   owner=excluded.owner,
-		   updated_at=excluded.updated_at,
-		   last_used_at=excluded.last_used_at`,
-		link.ShareID, link.URL, link.Password, link.Title, link.Owner,
-		tsValue(createdAt), tsValue(updatedAt), tsValue(lastUsedAt),
-	); err != nil {
-		return nil, wrapDB(err)
-	}
-
-	// 用写连接回读，确保同一事务/连接可见。
-	row := r.db.write.QueryRowContext(ctx,
-		`SELECT `+guangyaShareLinkColumns+`
-		 FROM buei_guangya_share_links WHERE share_id=?`, link.ShareID)
-	saved, err := scanGuangyaShareLink(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, domain.Errf(domain.CodeNotFound)
-	}
+		 VALUES (?,?,?,?,?,?,?,?)`,
+		shareID, strings.TrimSpace(link.URL), link.Password, strings.TrimSpace(link.Title),
+		strings.TrimSpace(link.Owner), tsValue(createdAt), tsValue(updatedAt), tsValue(lastUsedAt),
+	)
 	if err != nil {
 		return nil, wrapDB(err)
 	}
-	return saved, nil
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, wrapDB(err)
+	}
+	return r.Get(ctx, id)
+}
+
+func (r *guangyaShareLinkRepo) Touch(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
+	}
+	now := tsValue(time.Now().UTC())
+	result, err := r.db.write.ExecContext(ctx,
+		`UPDATE buei_guangya_share_links SET last_used_at=?, updated_at=? WHERE id=?`,
+		now, now, id,
+	)
+	if err != nil {
+		return wrapDB(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return wrapDB(err)
+	}
+	if affected == 0 {
+		return domain.Errf(domain.CodeNotFound)
+	}
+	return nil
 }
 
 func (r *guangyaShareLinkRepo) UpdateIdentity(ctx context.Context, id int64, shareID, url, password, title, owner string, clearBrowsePath bool) (*domain.GuangyaShareLink, error) {
@@ -120,16 +145,9 @@ func (r *guangyaShareLinkRepo) UpdateIdentity(ctx context.Context, id int64, sha
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var oldShareID string
-	if err := tx.QueryRowContext(ctx, `SELECT share_id FROM buei_guangya_share_links WHERE id=?`, id).Scan(&oldShareID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, domain.Errf(domain.CodeNotFound)
-		}
-		return nil, wrapDB(err)
-	}
-	// 分享 ID 变化时，先删除旧分享的转存/丢弃记录，避免外键阻止父记录更换 share_id。
-	if oldShareID != shareID {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM buei_guangya_share_transferred_files WHERE share_id=?`, oldShareID); err != nil {
+	// 分享 ID 变化时清理该收藏旧的转存/丢弃记录，避免历史与新分享错配。
+	if clearBrowsePath {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM buei_guangya_share_transferred_files WHERE link_id=?`, id); err != nil {
 			return nil, wrapDB(err)
 		}
 	}
@@ -167,10 +185,9 @@ func (r *guangyaShareLinkRepo) UpdateIdentity(ctx context.Context, id int64, sha
 	return saved, nil
 }
 
-func (r *guangyaShareLinkRepo) UpdateDestination(ctx context.Context, shareID string, dest *domain.GuangyaShareDestination) error {
-	shareID = strings.TrimSpace(shareID)
-	if shareID == "" {
-		return domain.Errorf(domain.CodeValidation, "分享 ID 不能为空")
+func (r *guangyaShareLinkRepo) UpdateDestination(ctx context.Context, id int64, dest *domain.GuangyaShareDestination) error {
+	if id <= 0 {
+		return domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
 	}
 	var (
 		accountID    int64
@@ -218,10 +235,10 @@ func (r *guangyaShareLinkRepo) UpdateDestination(ctx context.Context, shareID st
 		 SET last_account_id=?, last_parent_id=?, last_base_path=?, last_base_dirs=?, last_title=?,
 		     last_season=?, last_is_series=?, auto_strm=?, auto_scrape=?, auto_scrape_task_id=?,
 		     auto_emby=?, emby_config_id=?, emby_mode=?, emby_library_id=?, updated_at=?
-		 WHERE share_id=?`,
+		 WHERE id=?`,
 		accountID, parentID, basePath, string(baseDirs), title, season, isSeries, autoStrm,
 		autoScrape, scrapeTaskID, refreshEmby, embyConfigID, embyMode, embyLibrary,
-		tsValue(time.Now().UTC()), shareID,
+		tsValue(time.Now().UTC()), id,
 	)
 	if err != nil {
 		return wrapDB(err)
@@ -236,10 +253,9 @@ func (r *guangyaShareLinkRepo) UpdateDestination(ctx context.Context, shareID st
 	return nil
 }
 
-func (r *guangyaShareLinkRepo) UpdateBrowsePath(ctx context.Context, shareID string, crumbs []domain.GuangyaShareBrowseCrumb) error {
-	shareID = strings.TrimSpace(shareID)
-	if shareID == "" {
-		return domain.Errorf(domain.CodeValidation, "分享 ID 不能为空")
+func (r *guangyaShareLinkRepo) UpdateBrowsePath(ctx context.Context, id int64, crumbs []domain.GuangyaShareBrowseCrumb) error {
+	if id <= 0 {
+		return domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
 	}
 	if crumbs == nil {
 		crumbs = []domain.GuangyaShareBrowseCrumb{}
@@ -249,8 +265,8 @@ func (r *guangyaShareLinkRepo) UpdateBrowsePath(ctx context.Context, shareID str
 		return wrapDB(err)
 	}
 	result, err := r.db.write.ExecContext(ctx,
-		`UPDATE buei_guangya_share_links SET last_browse_path=?, updated_at=? WHERE share_id=?`,
-		string(data), tsValue(time.Now().UTC()), shareID,
+		`UPDATE buei_guangya_share_links SET last_browse_path=?, updated_at=? WHERE id=?`,
+		string(data), tsValue(time.Now().UTC()), id,
 	)
 	if err != nil {
 		return wrapDB(err)
@@ -265,10 +281,9 @@ func (r *guangyaShareLinkRepo) UpdateBrowsePath(ctx context.Context, shareID str
 	return nil
 }
 
-func (r *guangyaShareLinkRepo) UpdateRenameReplace(ctx context.Context, shareID string, rule domain.GuangyaShareRenameReplace) error {
-	shareID = strings.TrimSpace(shareID)
-	if shareID == "" {
-		return domain.Errorf(domain.CodeValidation, "分享 ID 不能为空")
+func (r *guangyaShareLinkRepo) UpdateRenameReplace(ctx context.Context, id int64, rule domain.GuangyaShareRenameReplace) error {
+	if id <= 0 {
+		return domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
 	}
 	rules := rule.NormalizeRules()
 	first := domain.GuangyaShareRenameRule{}
@@ -283,8 +298,8 @@ func (r *guangyaShareLinkRepo) UpdateRenameReplace(ctx context.Context, shareID 
 		`UPDATE buei_guangya_share_links
 		 SET rename_replace_enabled=?, rename_replace_find=?, rename_replace_with=?,
 		     rename_replace_rules=?, updated_at=?
-		 WHERE share_id=?`,
-		boolToInt(rule.Enabled), first.Find, first.ReplaceWith, string(rulesJSON), tsValue(time.Now().UTC()), shareID,
+		 WHERE id=?`,
+		boolToInt(rule.Enabled), first.Find, first.ReplaceWith, string(rulesJSON), tsValue(time.Now().UTC()), id,
 	)
 	if err != nil {
 		return wrapDB(err)
@@ -299,29 +314,22 @@ func (r *guangyaShareLinkRepo) UpdateRenameReplace(ctx context.Context, shareID 
 	return nil
 }
 
-func (r *guangyaShareLinkRepo) Delete(ctx context.Context, id int64) (string, error) {
-	tx, err := r.db.write.BeginTx(ctx, nil)
+func (r *guangyaShareLinkRepo) Delete(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
+	}
+	result, err := r.db.write.ExecContext(ctx, `DELETE FROM buei_guangya_share_links WHERE id=?`, id)
 	if err != nil {
-		return "", wrapDB(err)
+		return wrapDB(err)
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	var shareID string
-	if err := tx.QueryRowContext(ctx,
-		`SELECT share_id FROM buei_guangya_share_links WHERE id=?`, id,
-	).Scan(&shareID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", domain.Errf(domain.CodeNotFound)
-		}
-		return "", wrapDB(err)
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return wrapDB(err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM buei_guangya_share_links WHERE id=?`, id); err != nil {
-		return "", wrapDB(err)
+	if affected == 0 {
+		return domain.Errf(domain.CodeNotFound)
 	}
-	if err := tx.Commit(); err != nil {
-		return "", wrapDB(err)
-	}
-	return shareID, nil
+	return nil
 }
 
 type guangyaShareLinkScanner interface {

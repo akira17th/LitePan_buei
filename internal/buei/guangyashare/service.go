@@ -109,6 +109,8 @@ type ShareItem struct {
 type ParseInput struct {
 	URL      string
 	Password string
+	// SavedID 大于 0 时表示打开已有收藏；为 0 时新建一条收藏，允许链接重复。
+	SavedID int64
 }
 
 // UpdateSavedInput 是编辑光鸭收藏链接的入参。
@@ -120,6 +122,7 @@ type UpdateSavedInput struct {
 
 // ParseResult 是分享解析结果，只包含分享根目录内容，子目录按需通过 List 加载。
 type ParseResult struct {
+	SavedLinkID      int64                                 `json:"saved_link_id"`
 	ShareID          string                                `json:"share_id"`
 	Title            string                                `json:"title"`
 	Owner            string                                `json:"owner"`
@@ -149,9 +152,11 @@ type ListResult struct {
 
 // TransferInput 是转存入参。
 type TransferInput struct {
-	URL       string
-	ShareID   string
-	Password  string
+	URL      string
+	ShareID  string
+	Password string
+	// SavedID 是收藏记录 ID，用于保存该收藏独立的转存历史与预设。
+	SavedID   int64
 	FileIDs   []string
 	AccountID int64
 	ParentID  string
@@ -203,7 +208,7 @@ type RenamePair struct {
 
 // DiscardInput 是手动丢弃文件的入参。
 type DiscardInput struct {
-	ShareID string
+	SavedID int64
 	Files   []TransferFile
 }
 
@@ -311,6 +316,17 @@ func (s *Service) Parse(ctx context.Context, in ParseInput) (*ParseResult, error
 		password = link.Password
 	}
 
+	var saved *domain.GuangyaShareLink
+	if in.SavedID > 0 {
+		if s.links == nil {
+			return nil, domain.Errorf(domain.CodeNotImplement, "收藏功能未启用")
+		}
+		saved, err = s.links.Get(ctx, in.SavedID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	summary, err := s.client.shareSummary(ctx, link.ShareID)
 	if err != nil {
 		return nil, err
@@ -320,6 +336,9 @@ func (s *Service) Parse(ctx context.Context, in ParseInput) (*ParseResult, error
 		Title:    strings.TrimSpace(summary.Title),
 		Owner:    strings.TrimSpace(summary.NickName),
 		NeedCode: summary.NeedCode,
+	}
+	if saved != nil {
+		result.SavedLinkID = saved.ID
 	}
 	if summary.NeedCode && password == "" {
 		result.NeedPassword = true
@@ -335,16 +354,23 @@ func (s *Service) Parse(ctx context.Context, in ParseInput) (*ParseResult, error
 		return nil, err
 	}
 	result.Items = items
-	if saved := s.saveLink(ctx, link, password, summary, in.URL); saved != nil {
+	if saved == nil {
+		// 每次从「添加收藏」入口解析都新建记录，同一分享允许多次收藏。
+		saved = s.saveLink(ctx, link, password, summary, in.URL)
+	} else if err := s.links.Touch(ctx, saved.ID); err != nil {
+		s.logger().Warn("更新光鸭收藏最近使用时间失败", "link_id", saved.ID, "error", err)
+	}
+	if saved != nil {
+		result.SavedLinkID = saved.ID
 		result.LastDestination = saved.LastDestination
 		result.LastBrowsePath = saved.LastBrowsePath
 		if saved.RenameReplace.Enabled || len(saved.RenameReplace.NormalizeRules()) > 0 {
 			rule := saved.RenameReplace
 			result.RenameReplace = &rule
 		}
+		result.TransferredFiles = s.loadTransferred(ctx, saved.ID)
 	}
 	result.LastBase = s.loadLastBase(ctx)
-	result.TransferredFiles = s.loadTransferred(ctx, link.ShareID)
 	return result, nil
 }
 
@@ -359,19 +385,9 @@ func (s *Service) UpdateSavedLink(ctx context.Context, in UpdateSavedInput) (*Pa
 	if in.ID <= 0 {
 		return nil, domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
 	}
-	links, err := s.links.List(ctx)
+	old, err := s.links.Get(ctx, in.ID)
 	if err != nil {
 		return nil, err
-	}
-	var old *domain.GuangyaShareLink
-	for _, item := range links {
-		if item.ID == in.ID {
-			old = item
-			break
-		}
-	}
-	if old == nil {
-		return nil, domain.Errf(domain.CodeNotFound)
 	}
 
 	link, err := ParseShareLink(in.URL)
@@ -387,10 +403,11 @@ func (s *Service) UpdateSavedLink(ctx context.Context, in UpdateSavedInput) (*Pa
 		return nil, err
 	}
 	result := &ParseResult{
-		ShareID:  link.ShareID,
-		Title:    strings.TrimSpace(summary.Title),
-		Owner:    strings.TrimSpace(summary.NickName),
-		NeedCode: summary.NeedCode,
+		SavedLinkID: old.ID,
+		ShareID:     link.ShareID,
+		Title:       strings.TrimSpace(summary.Title),
+		Owner:       strings.TrimSpace(summary.NickName),
+		NeedCode:    summary.NeedCode,
 	}
 	if summary.NeedCode && password == "" {
 		result.NeedPassword = true
@@ -398,11 +415,6 @@ func (s *Service) UpdateSavedLink(ctx context.Context, in UpdateSavedInput) (*Pa
 	}
 	if !summary.NeedCode {
 		password = ""
-	}
-	for _, item := range links {
-		if item.ID != old.ID && item.ShareID == link.ShareID {
-			return nil, domain.Errorf(domain.CodeValidation, "新链接已在收藏中，请先删除重复收藏")
-		}
 	}
 	items, err := s.listItems(ctx, link.ShareID, password, "", "")
 	if err != nil {
@@ -423,8 +435,8 @@ func (s *Service) UpdateSavedLink(ctx context.Context, in UpdateSavedInput) (*Pa
 		return nil, err
 	}
 	if clearBrowsePath && s.transfers != nil {
-		if err := s.transfers.DeleteByShare(ctx, old.ShareID); err != nil {
-			s.logger().Warn("清理光鸭旧分享文件对应关系失败", "share_id", old.ShareID, "error", err)
+		if err := s.transfers.DeleteByLink(ctx, old.ID); err != nil {
+			s.logger().Warn("清理光鸭收藏旧分享文件对应关系失败", "link_id", old.ID, "error", err)
 		}
 	}
 	result.Items = items
@@ -437,11 +449,11 @@ func (s *Service) UpdateSavedLink(ctx context.Context, in UpdateSavedInput) (*Pa
 		result.RenameReplace = &rule
 	}
 	result.LastBase = s.loadLastBase(ctx)
-	result.TransferredFiles = s.loadTransferred(ctx, link.ShareID)
+	result.TransferredFiles = s.loadTransferred(ctx, updated.ID)
 	return result, nil
 }
 
-// SavedLinks 返回已收藏的分享链接，按最近使用时间倒序。
+// SavedLinks 返回已收藏的分享链接，按收藏 ID 固定顺序。
 func (s *Service) SavedLinks(ctx context.Context) ([]*domain.GuangyaShareLink, error) {
 	if s == nil || s.links == nil {
 		return []*domain.GuangyaShareLink{}, nil
@@ -455,9 +467,8 @@ func (s *Service) Discard(ctx context.Context, in DiscardInput) (int, error) {
 	if s == nil || s.transfers == nil {
 		return 0, domain.Errorf(domain.CodeNotImplement, "转存历史未启用")
 	}
-	shareID := strings.TrimSpace(in.ShareID)
-	if shareID == "" {
-		return 0, domain.Errorf(domain.CodeValidation, "分享 ID 不能为空")
+	if in.SavedID <= 0 {
+		return 0, domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
 	}
 	files := normalizeTransferFiles(in.Files)
 	if len(files) == 0 {
@@ -480,7 +491,7 @@ func (s *Service) Discard(ctx context.Context, in DiscardInput) (int, error) {
 	if len(records) == 0 {
 		return 0, domain.Errorf(domain.CodeValidation, "请先勾选要丢弃的文件")
 	}
-	if err := s.transfers.UpsertMany(ctx, shareID, records); err != nil {
+	if err := s.transfers.UpsertMany(ctx, in.SavedID, records); err != nil {
 		return 0, err
 	}
 	return len(records), nil
@@ -490,14 +501,13 @@ func (s *Service) DeleteSavedLink(ctx context.Context, id int64) error {
 	if s == nil || s.links == nil {
 		return domain.Errorf(domain.CodeNotImplement, "收藏功能未启用")
 	}
-	shareID, err := s.links.Delete(ctx, id)
-	if err != nil {
+	if err := s.links.Delete(ctx, id); err != nil {
 		return err
 	}
 	// 外键级联之外再显式清理一次，避免旧库未启用 foreign_keys 时残留历史。
 	if s.transfers != nil {
-		if err := s.transfers.DeleteByShare(ctx, shareID); err != nil {
-			s.logger().Warn("清理光鸭分享转存历史失败", "share_id", shareID, "error", err)
+		if err := s.transfers.DeleteByLink(ctx, id); err != nil {
+			s.logger().Warn("清理光鸭收藏转存历史失败", "link_id", id, "error", err)
 		}
 	}
 	return nil
@@ -528,6 +538,10 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 	if err != nil {
 		return nil, err
 	}
+	if in.SavedID <= 0 {
+		return nil, domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
+	}
+	linkID := in.SavedID
 	fileIDs := normalizeFileIDs(in.FileIDs)
 	if len(fileIDs) == 0 {
 		return nil, domain.Errorf(domain.CodeValidation, "请选择要转存的文件")
@@ -625,7 +639,7 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 			s.progress.setPhase(progressID, GuangyaSharePhaseRename)
 			result.Renamed, result.RenameSkipped = s.renameAfterRestore(ctx, in.AccountID, targetParentID, renamePlan)
 		}
-		s.saveTransferred(ctx, shareID, in.AccountID, targetParentID, files)
+		s.saveTransferred(ctx, linkID, in.AccountID, targetParentID, files)
 		if in.AutoStrm {
 			s.progress.setPhase(progressID, GuangyaSharePhaseStrm)
 			result.StrmGenerated, result.StrmMatched, result.StrmError = s.generateStrm(ctx, in.AccountID, targetParentID, strmDirs)
@@ -660,7 +674,7 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 		if scrapeEnabled(in) {
 			actions.scrapeTaskID = in.ScrapeTaskID
 		}
-		s.scheduleAfterRestore(shareID, in.AccountID, targetParentID, renamePlan, files, actions)
+		s.scheduleAfterRestore(linkID, in.AccountID, targetParentID, renamePlan, files, actions)
 		result.RenameScheduled = true
 		result.StrmScheduled = in.AutoStrm
 		result.EmbyScheduled = actions.emby.enabled
@@ -671,9 +685,9 @@ func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *Transfer
 	if len(targetPath) > 0 {
 		storedTitle = targetPath[0]
 	}
-	s.saveBrowsePath(ctx, shareID, in.BrowsePath)
-	s.saveRenameReplace(ctx, shareID, in.RenameReplace)
-	s.saveDestination(ctx, shareID, &domain.GuangyaShareDestination{
+	s.saveBrowsePath(ctx, linkID, in.BrowsePath)
+	s.saveRenameReplace(ctx, linkID, in.RenameReplace)
+	s.saveDestination(ctx, linkID, &domain.GuangyaShareDestination{
 		AccountID:     in.AccountID,
 		ParentID:      strings.TrimSpace(in.ParentID),
 		BasePath:      normalizeDestinationBasePath(in.BasePath),
@@ -897,20 +911,20 @@ func buildRenamePlan(files []TransferFile) []RenamePair {
 	return plan
 }
 
-func (s *Service) loadTransferred(ctx context.Context, shareID string) []*domain.GuangyaShareTransferredFile {
-	if s == nil || s.transfers == nil || strings.TrimSpace(shareID) == "" {
+func (s *Service) loadTransferred(ctx context.Context, linkID int64) []*domain.GuangyaShareTransferredFile {
+	if s == nil || s.transfers == nil || linkID <= 0 {
 		return nil
 	}
-	files, err := s.transfers.ListByShare(ctx, shareID)
+	files, err := s.transfers.ListByLink(ctx, linkID)
 	if err != nil {
-		s.logger().Warn("读取光鸭分享转存历史失败", "share_id", shareID, "error", err)
+		s.logger().Warn("读取光鸭收藏转存历史失败", "link_id", linkID, "error", err)
 		return nil
 	}
 	return files
 }
 
-func (s *Service) saveTransferred(ctx context.Context, shareID string, accountID int64, targetParentID string, files []TransferFile) {
-	if s == nil || s.transfers == nil || len(files) == 0 {
+func (s *Service) saveTransferred(ctx context.Context, linkID int64, accountID int64, targetParentID string, files []TransferFile) {
+	if s == nil || s.transfers == nil || linkID <= 0 || len(files) == 0 {
 		return
 	}
 	now := time.Now().UTC()
@@ -932,8 +946,8 @@ func (s *Service) saveTransferred(ctx context.Context, shareID string, accountID
 	if len(records) == 0 {
 		return
 	}
-	if err := s.transfers.UpsertMany(ctx, shareID, records); err != nil {
-		s.logger().Warn("保存光鸭分享转存历史失败", "share_id", shareID, "count", len(records), "error", err)
+	if err := s.transfers.UpsertMany(ctx, linkID, records); err != nil {
+		s.logger().Warn("保存光鸭收藏转存历史失败", "link_id", linkID, "count", len(records), "error", err)
 	}
 }
 
@@ -997,7 +1011,7 @@ func (s *Service) renameAfterRestore(ctx context.Context, accountID int64, paren
 }
 
 // scheduleAfterRestore 在转存任务等待超时后继续跟进，完成后补做重命名与 STRM 生成。
-func (s *Service) scheduleAfterRestore(shareID string, accountID int64, parentID string, plan []RenamePair, files []TransferFile, actions postTransferActions) {
+func (s *Service) scheduleAfterRestore(linkID int64, accountID int64, parentID string, plan []RenamePair, files []TransferFile, actions postTransferActions) {
 	log := s.logger()
 	// 后台等待的名单包含文件夹：只转存文件夹时也要等它们出现，避免过早生成 STRM。
 	waitPlan := plan
@@ -1035,7 +1049,7 @@ func (s *Service) scheduleAfterRestore(shareID string, accountID int64, parentID
 					s.invalidateDir(accountID, parentID)
 				}
 			}
-			s.saveTransferred(ctx, shareID, accountID, parentID, files)
+			s.saveTransferred(ctx, linkID, accountID, parentID, files)
 			// 后台补生成 STRM：使用独立超时，避免和重命名等待共享同一个 deadline。
 			if actions.autoStrm {
 				// 顶层条目出现后再留一点缓冲，让其余内容落盘。
@@ -1267,7 +1281,7 @@ func (s *Service) saveLink(ctx context.Context, link LinkInfo, password string, 
 		return nil
 	}
 	now := time.Now().UTC()
-	saved, err := s.links.Upsert(ctx, &domain.GuangyaShareLink{
+	saved, err := s.links.Create(ctx, &domain.GuangyaShareLink{
 		ShareID:    link.ShareID,
 		URL:        strings.TrimSpace(rawURL),
 		Password:   password,
@@ -1278,7 +1292,7 @@ func (s *Service) saveLink(ctx context.Context, link LinkInfo, password string, 
 		LastUsedAt: now,
 	})
 	if err != nil {
-		s.log.Warn("保存光鸭分享收藏失败", "share_id", link.ShareID, "error", err)
+		s.logger().Warn("保存光鸭分享收藏失败", "share_id", link.ShareID, "error", err)
 		return nil
 	}
 	return saved
@@ -1312,8 +1326,8 @@ func (s *Service) loadLastBase(ctx context.Context) *domain.GuangyaShareDestinat
 }
 
 // saveDestination 把分享的目标预设和最近基础目录写入数据库。
-func (s *Service) saveRenameReplace(ctx context.Context, shareID string, rule *domain.GuangyaShareRenameReplace) {
-	if s == nil || s.links == nil || rule == nil {
+func (s *Service) saveRenameReplace(ctx context.Context, linkID int64, rule *domain.GuangyaShareRenameReplace) {
+	if s == nil || s.links == nil || linkID <= 0 || rule == nil {
 		return
 	}
 	// 只保留填了“查找”的规则，并镜像第一条到旧字段。
@@ -1323,21 +1337,21 @@ func (s *Service) saveRenameReplace(ctx context.Context, shareID string, rule *d
 		normalized.Find = rules[0].Find
 		normalized.ReplaceWith = rules[0].ReplaceWith
 	}
-	if err := s.links.UpdateRenameReplace(ctx, shareID, normalized); err != nil {
-		s.logger().Warn("保存光鸭分享替换规则失败", "share_id", shareID, "error", err)
+	if err := s.links.UpdateRenameReplace(ctx, linkID, normalized); err != nil {
+		s.logger().Warn("保存光鸭收藏替换规则失败", "link_id", linkID, "error", err)
 	}
 }
 
-func (s *Service) saveBrowsePath(ctx context.Context, shareID string, crumbs []domain.GuangyaShareBrowseCrumb) {
-	if s == nil || s.links == nil || len(crumbs) == 0 {
+func (s *Service) saveBrowsePath(ctx context.Context, linkID int64, crumbs []domain.GuangyaShareBrowseCrumb) {
+	if s == nil || s.links == nil || linkID <= 0 || len(crumbs) == 0 {
 		return
 	}
-	if err := s.links.UpdateBrowsePath(ctx, shareID, crumbs); err != nil {
-		s.logger().Warn("保存光鸭分享浏览目录失败", "share_id", shareID, "error", err)
+	if err := s.links.UpdateBrowsePath(ctx, linkID, crumbs); err != nil {
+		s.logger().Warn("保存光鸭收藏浏览目录失败", "link_id", linkID, "error", err)
 	}
 }
 
-func (s *Service) saveDestination(ctx context.Context, shareID string, dest *domain.GuangyaShareDestination) {
+func (s *Service) saveDestination(ctx context.Context, linkID int64, dest *domain.GuangyaShareDestination) {
 	if dest == nil {
 		return
 	}
@@ -1357,9 +1371,9 @@ func (s *Service) saveDestination(ctx context.Context, shareID string, dest *dom
 		EmbyMode:      normalizeEmbyMode(dest.EmbyMode),
 		EmbyLibraryID: strings.TrimSpace(dest.EmbyLibraryID),
 	}
-	if s.links != nil {
-		if err := s.links.UpdateDestination(ctx, shareID, dest); err != nil {
-			s.log.Warn("保存光鸭分享转存位置失败", "share_id", shareID, "error", err)
+	if s.links != nil && linkID > 0 {
+		if err := s.links.UpdateDestination(ctx, linkID, dest); err != nil {
+			s.log.Warn("保存光鸭收藏转存位置失败", "link_id", linkID, "error", err)
 		}
 	}
 	if s.configs == nil {

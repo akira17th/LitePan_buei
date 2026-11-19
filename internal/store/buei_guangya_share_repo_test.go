@@ -10,7 +10,8 @@ import (
 	"litepan/internal/store"
 )
 
-func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
+func newGuangyaShareTestDB(t *testing.T) *store.DB {
+	t.Helper()
 	ctx := context.Background()
 	db, err := store.Open(ctx, store.Options{Memory: true})
 	if err != nil {
@@ -20,22 +21,30 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 	if err := db.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	return db
+}
 
+func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
+	ctx := context.Background()
+	db := newGuangyaShareTestDB(t)
 	repo := store.NewGuangyaShareLinkRepo(db)
+
 	firstTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	saved, err := repo.Upsert(ctx, &domain.GuangyaShareLink{
+	saved, err := repo.Create(ctx, &domain.GuangyaShareLink{
 		ShareID:    "1969_abc",
 		URL:        "https://www.guangyapan.com/s/1969_abc",
-		Password:   "",
 		Title:      "测试分享",
 		Owner:      "光鸭用户",
 		LastUsedAt: firstTime,
 	})
 	if err != nil {
-		t.Fatalf("upsert: %v", err)
+		t.Fatalf("create: %v", err)
 	}
 	if saved.ID <= 0 || saved.Title != "测试分享" || !saved.LastUsedAt.Equal(firstTime) {
 		t.Fatalf("unexpected saved link: %+v", saved)
+	}
+	if got, err := repo.Get(ctx, saved.ID); err != nil || got.ShareID != "1969_abc" {
+		t.Fatalf("get: %+v, %v", got, err)
 	}
 
 	links, err := repo.List(ctx)
@@ -65,17 +74,14 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 		EmbyMode:      "library",
 		EmbyLibraryID: "lib-1",
 	}
-	if err := repo.UpdateDestination(ctx, "1969_abc", dest); err != nil {
+	if err := repo.UpdateDestination(ctx, saved.ID, dest); err != nil {
 		t.Fatalf("update destination: %v", err)
 	}
-	links, err = repo.List(ctx)
-	if err != nil {
-		t.Fatalf("list after destination: %v", err)
+	got, err := repo.Get(ctx, saved.ID)
+	if err != nil || got.LastDestination == nil {
+		t.Fatalf("destination was not persisted: %+v, %v", got, err)
 	}
-	if len(links) != 1 || links[0].LastDestination == nil {
-		t.Fatalf("destination was not persisted: %+v", links)
-	}
-	gotDest := links[0].LastDestination
+	gotDest := got.LastDestination
 	if gotDest.AccountID != 2 || gotDest.ParentID != "dir-1" || gotDest.BasePath != "/媒体/电视剧" ||
 		gotDest.Title != "走马上任 (2026)" || gotDest.Season != 1 || !gotDest.IsSeries || !gotDest.AutoStrm ||
 		!gotDest.AutoScrape || gotDest.ScrapeTaskID != 9 ||
@@ -89,15 +95,12 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 		{ID: "", Name: "全部文件", Path: ""},
 		{ID: "d1", Name: "剧集", Path: "/剧集"},
 	}
-	if err := repo.UpdateBrowsePath(ctx, "1969_abc", browsePath); err != nil {
+	if err := repo.UpdateBrowsePath(ctx, saved.ID, browsePath); err != nil {
 		t.Fatalf("update browse path: %v", err)
 	}
-	links, err = repo.List(ctx)
-	if err != nil {
-		t.Fatalf("list after browse path: %v", err)
-	}
-	if len(links) != 1 || len(links[0].LastBrowsePath) != 2 || links[0].LastBrowsePath[1].Name != "剧集" {
-		t.Fatalf("browse path was not persisted: %+v", links)
+	got, err = repo.Get(ctx, saved.ID)
+	if err != nil || len(got.LastBrowsePath) != 2 || got.LastBrowsePath[1].Name != "剧集" {
+		t.Fatalf("browse path was not persisted: %+v, %v", got, err)
 	}
 
 	replaceRule := domain.GuangyaShareRenameReplace{
@@ -108,68 +111,40 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 			{Find: "2160p", ReplaceWith: ""},
 		},
 	}
-	if err := repo.UpdateRenameReplace(ctx, "1969_abc", replaceRule); err != nil {
+	if err := repo.UpdateRenameReplace(ctx, saved.ID, replaceRule); err != nil {
 		t.Fatalf("update replace rule: %v", err)
 	}
-	links, err = repo.List(ctx)
-	if err != nil {
-		t.Fatalf("list after replace rule: %v", err)
+	got, err = repo.Get(ctx, saved.ID)
+	if err != nil || !got.RenameReplace.Enabled || got.RenameReplace.Find != "\\s+" {
+		t.Fatalf("replace rule was not persisted: %+v, %v", got, err)
 	}
-	if len(links) != 1 || !links[0].RenameReplace.Enabled || links[0].RenameReplace.Find != "\\s+" {
-		t.Fatalf("replace rule was not persisted: %+v", links)
-	}
-	if rules := links[0].RenameReplace.NormalizeRules(); len(rules) != 2 || rules[1].Find != "2160p" {
-		t.Fatalf("multi replace rules were not persisted: %+v", links[0].RenameReplace)
+	if rules := got.RenameReplace.NormalizeRules(); len(rules) != 2 || rules[1].Find != "2160p" {
+		t.Fatalf("multi replace rules were not persisted: %+v", got.RenameReplace)
 	}
 
-	// 同一 share_id 再次收藏应更新而不是新增。
-	secondTime := firstTime.Add(time.Hour)
-	saved, err = repo.Upsert(ctx, &domain.GuangyaShareLink{
-		ShareID:    "1969_abc",
-		URL:        "https://www.guangyapan.com/s/1969_abc?code=abcd",
-		Password:   "abcd",
-		Title:      "新标题",
-		Owner:      "光鸭用户2",
-		LastUsedAt: secondTime,
-	})
+	if err := repo.Touch(ctx, saved.ID); err != nil {
+		t.Fatalf("touch: %v", err)
+	}
+	got, err = repo.Get(ctx, saved.ID)
 	if err != nil {
-		t.Fatalf("upsert update: %v", err)
+		t.Fatalf("get after touch: %v", err)
 	}
-	if saved.Title != "新标题" || saved.Password != "abcd" || !saved.LastUsedAt.Equal(secondTime) {
-		t.Fatalf("unexpected updated link: %+v", saved)
-	}
-	if saved.LastDestination == nil || saved.LastDestination.Title != "走马上任 (2026)" {
-		t.Fatalf("upsert should preserve destination: %+v", saved.LastDestination)
-	}
-	if len(saved.LastBrowsePath) != 2 || saved.LastBrowsePath[1].ID != "d1" {
-		t.Fatalf("upsert should preserve browse path: %+v", saved.LastBrowsePath)
-	}
-	if !saved.RenameReplace.Enabled || saved.RenameReplace.ReplaceWith != " " {
-		t.Fatalf("upsert should preserve replace rule: %+v", saved.RenameReplace)
-	}
-	links, err = repo.List(ctx)
-	if err != nil {
-		t.Fatalf("list after update: %v", err)
-	}
-	if len(links) != 1 {
-		t.Fatalf("expected one link after upsert, got %d", len(links))
+	if !got.LastUsedAt.After(firstTime) {
+		t.Fatalf("last used not updated: %+v", got.LastUsedAt)
 	}
 
-	shareID, err := repo.Delete(ctx, saved.ID)
-	if err != nil {
+	if err := repo.Delete(ctx, saved.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if shareID != "1969_abc" {
-		t.Fatalf("delete share id = %q", shareID)
+	if _, err := repo.Get(ctx, saved.ID); err == nil {
+		t.Fatal("expected error getting deleted link")
+	} else {
+		var appErr *domain.AppError
+		if !errors.As(err, &appErr) || appErr.Code != domain.CodeNotFound {
+			t.Fatalf("unexpected get error: %v", err)
+		}
 	}
-	links, err = repo.List(ctx)
-	if err != nil {
-		t.Fatalf("list after delete: %v", err)
-	}
-	if len(links) != 0 {
-		t.Fatalf("expected empty list after delete, got %+v", links)
-	}
-	if _, err := repo.Delete(ctx, saved.ID); err == nil {
+	if err := repo.Delete(ctx, saved.ID); err == nil {
 		t.Fatal("expected error deleting missing link")
 	} else {
 		var appErr *domain.AppError
@@ -178,7 +153,7 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 		}
 	}
 
-	if err := repo.UpdateDestination(ctx, "missing", dest); err == nil {
+	if err := repo.UpdateDestination(ctx, 99999, dest); err == nil {
 		t.Fatal("expected error updating destination for missing link")
 	} else {
 		var appErr *domain.AppError
@@ -188,41 +163,95 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 	}
 }
 
+func TestGuangyaShareLinkRepoAllowsDuplicateShareID(t *testing.T) {
+	ctx := context.Background()
+	db := newGuangyaShareTestDB(t)
+	repo := store.NewGuangyaShareLinkRepo(db)
+	transfers := store.NewGuangyaShareTransferredRepo(db)
+
+	first, err := repo.Create(ctx, &domain.GuangyaShareLink{
+		ShareID: "1969_dup", URL: "https://example.com/first", Title: "第一条",
+	})
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	second, err := repo.Create(ctx, &domain.GuangyaShareLink{
+		ShareID: "1969_dup", URL: "https://example.com/second", Title: "第二条",
+	})
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("duplicate share should create distinct links: %+v %+v", first, second)
+	}
+	links, err := repo.List(ctx)
+	if err != nil || len(links) != 2 {
+		t.Fatalf("duplicate links not persisted: %+v, %v", links, err)
+	}
+
+	dest := &domain.GuangyaShareDestination{AccountID: 2, ParentID: "first-dir", Title: "第一条目标", IsSeries: true}
+	if err := repo.UpdateDestination(ctx, first.ID, dest); err != nil {
+		t.Fatalf("update first destination: %v", err)
+	}
+	firstGot, _ := repo.Get(ctx, first.ID)
+	secondGot, _ := repo.Get(ctx, second.ID)
+	if firstGot.LastDestination == nil || firstGot.LastDestination.Title != "第一条目标" {
+		t.Fatalf("first destination missing: %+v", firstGot.LastDestination)
+	}
+	if secondGot.LastDestination != nil {
+		t.Fatalf("second destination should stay empty: %+v", secondGot.LastDestination)
+	}
+
+	if err := transfers.UpsertMany(ctx, first.ID, []*domain.GuangyaShareTransferredFile{{FileID: "f1", OriginalName: "01.mp4"}}); err != nil {
+		t.Fatalf("insert first transfer: %v", err)
+	}
+	firstFiles, _ := transfers.ListByLink(ctx, first.ID)
+	secondFiles, _ := transfers.ListByLink(ctx, second.ID)
+	if len(firstFiles) != 1 || len(secondFiles) != 0 {
+		t.Fatalf("transfer history leaked between duplicates: first=%+v second=%+v", firstFiles, secondFiles)
+	}
+
+	if err := repo.Delete(ctx, first.ID); err != nil {
+		t.Fatalf("delete first: %v", err)
+	}
+	links, _ = repo.List(ctx)
+	if len(links) != 1 || links[0].ID != second.ID {
+		t.Fatalf("unexpected links after deleting first: %+v", links)
+	}
+	firstFiles, _ = transfers.ListByLink(ctx, first.ID)
+	if len(firstFiles) != 0 {
+		t.Fatalf("first transfer history should be deleted: %+v", firstFiles)
+	}
+}
+
 func TestGuangyaShareLinkRepoUpdateIdentity(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(ctx, store.Options{Memory: true})
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	db := newGuangyaShareTestDB(t)
 	repo := store.NewGuangyaShareLinkRepo(db)
-	saved, err := repo.Upsert(ctx, &domain.GuangyaShareLink{
+	saved, err := repo.Create(ctx, &domain.GuangyaShareLink{
 		ShareID: "1969_old", URL: "https://www.guangyapan.com/s/1969_old",
 		Title: "旧标题", Owner: "旧用户",
 	})
 	if err != nil {
-		t.Fatalf("upsert: %v", err)
+		t.Fatalf("create: %v", err)
 	}
 	dest := &domain.GuangyaShareDestination{
 		AccountID: 2, ParentID: "dir-1", BasePath: "/媒体", Title: "剧名 (2026)",
 		Season: 1, IsSeries: true, AutoStrm: true, AutoScrape: true, RefreshEmby: true,
 		EmbyConfigID: "emby-1", EmbyMode: "library", EmbyLibraryID: "lib-1",
 	}
-	if err := repo.UpdateDestination(ctx, saved.ShareID, dest); err != nil {
+	if err := repo.UpdateDestination(ctx, saved.ID, dest); err != nil {
 		t.Fatalf("update destination: %v", err)
 	}
 	rule := domain.GuangyaShareRenameReplace{Enabled: true, Find: "old", ReplaceWith: "new"}
-	if err := repo.UpdateRenameReplace(ctx, saved.ShareID, rule); err != nil {
+	if err := repo.UpdateRenameReplace(ctx, saved.ID, rule); err != nil {
 		t.Fatalf("update rename: %v", err)
 	}
-	if err := repo.UpdateBrowsePath(ctx, saved.ShareID, []domain.GuangyaShareBrowseCrumb{{ID: "d1", Name: "目录", Path: "/目录"}}); err != nil {
+	if err := repo.UpdateBrowsePath(ctx, saved.ID, []domain.GuangyaShareBrowseCrumb{{ID: "d1", Name: "目录", Path: "/目录"}}); err != nil {
 		t.Fatalf("update browse path: %v", err)
 	}
 	transfers := store.NewGuangyaShareTransferredRepo(db)
-	if err := transfers.UpsertMany(ctx, saved.ShareID, []*domain.GuangyaShareTransferredFile{{FileID: "f1", OriginalName: "01.mp4"}}); err != nil {
+	if err := transfers.UpsertMany(ctx, saved.ID, []*domain.GuangyaShareTransferredFile{{FileID: "f1", OriginalName: "01.mp4"}}); err != nil {
 		t.Fatalf("insert transferred file: %v", err)
 	}
 
@@ -245,7 +274,7 @@ func TestGuangyaShareLinkRepoUpdateIdentity(t *testing.T) {
 	if updated.CreatedAt.IsZero() || updated.UpdatedAt.IsZero() || updated.LastUsedAt.IsZero() {
 		t.Fatalf("timestamps missing: %+v", updated)
 	}
-	oldFiles, err := transfers.ListByShare(ctx, "1969_old")
+	oldFiles, err := transfers.ListByLink(ctx, saved.ID)
 	if err != nil {
 		t.Fatalf("list old transferred files: %v", err)
 	}
@@ -256,32 +285,24 @@ func TestGuangyaShareLinkRepoUpdateIdentity(t *testing.T) {
 
 func TestGuangyaShareTransferredRepo(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(ctx, store.Options{Memory: true})
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
+	db := newGuangyaShareTestDB(t)
 	links := store.NewGuangyaShareLinkRepo(db)
 	transfers := store.NewGuangyaShareTransferredRepo(db)
-	saved, err := links.Upsert(ctx, &domain.GuangyaShareLink{
+	saved, err := links.Create(ctx, &domain.GuangyaShareLink{
 		ShareID: "1969_transfer", URL: "https://example.com/s/1", Title: "转存测试",
 	})
 	if err != nil {
-		t.Fatalf("upsert link: %v", err)
+		t.Fatalf("create link: %v", err)
 	}
 
-	err = transfers.UpsertMany(ctx, "1969_transfer", []*domain.GuangyaShareTransferredFile{
+	err = transfers.UpsertMany(ctx, saved.ID, []*domain.GuangyaShareTransferredFile{
 		{FileID: "f1", OriginalName: "01.mp4", NewName: "剧名-S01E01-01.mp4", AccountID: 2, TargetParentID: "dir-1"},
 		{FileID: "f2", OriginalName: "02.mp4", NewName: "剧名-S01E02-02.mp4", AccountID: 2, TargetParentID: "dir-1"},
 	})
 	if err != nil {
 		t.Fatalf("upsert transfers: %v", err)
 	}
-	files, err := transfers.ListByShare(ctx, "1969_transfer")
+	files, err := transfers.ListByLink(ctx, saved.ID)
 	if err != nil {
 		t.Fatalf("list transfers: %v", err)
 	}
@@ -294,13 +315,13 @@ func TestGuangyaShareTransferredRepo(t *testing.T) {
 		}
 	}
 
-	// 同一 share_id + file_id 更新而非新增。
-	if err := transfers.UpsertMany(ctx, "1969_transfer", []*domain.GuangyaShareTransferredFile{
+	// 同一收藏 + file_id 更新而非新增。
+	if err := transfers.UpsertMany(ctx, saved.ID, []*domain.GuangyaShareTransferredFile{
 		{FileID: "f1", OriginalName: "01.mp4", NewName: "01.mp4", AccountID: 0, Status: domain.GuangyaShareFileDiscarded},
 	}); err != nil {
 		t.Fatalf("update transfer: %v", err)
 	}
-	files, _ = transfers.ListByShare(ctx, "1969_transfer")
+	files, _ = transfers.ListByLink(ctx, saved.ID)
 	if len(files) != 2 {
 		t.Fatalf("expected 2 transfers after upsert, got %d", len(files))
 	}
@@ -315,10 +336,10 @@ func TestGuangyaShareTransferredRepo(t *testing.T) {
 	}
 
 	// 删除收藏链接后，关联转存历史级联删除。
-	if _, err := links.Delete(ctx, saved.ID); err != nil {
+	if err := links.Delete(ctx, saved.ID); err != nil {
 		t.Fatalf("delete link: %v", err)
 	}
-	files, err = transfers.ListByShare(ctx, "1969_transfer")
+	files, err = transfers.ListByLink(ctx, saved.ID)
 	if err != nil {
 		t.Fatalf("list after delete: %v", err)
 	}
@@ -329,24 +350,20 @@ func TestGuangyaShareTransferredRepo(t *testing.T) {
 
 func TestGuangyaShareLinkRepoFixedOrder(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(ctx, store.Options{Memory: true})
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	db := newGuangyaShareTestDB(t)
 	repo := store.NewGuangyaShareLinkRepo(db)
+	var firstID int64
 	for _, shareID := range []string{"first", "second", "third"} {
-		if _, err := repo.Upsert(ctx, &domain.GuangyaShareLink{ShareID: shareID, URL: "https://example.com/" + shareID}); err != nil {
-			t.Fatalf("upsert %s: %v", shareID, err)
+		saved, err := repo.Create(ctx, &domain.GuangyaShareLink{ShareID: shareID, URL: "https://example.com/" + shareID})
+		if err != nil {
+			t.Fatalf("create %s: %v", shareID, err)
+		}
+		if shareID == "first" {
+			firstID = saved.ID
 		}
 	}
 	// 最近使用时间变化不应改变固定收藏顺序。
-	if _, err := repo.Upsert(ctx, &domain.GuangyaShareLink{
-		ShareID: "first", URL: "https://example.com/first", LastUsedAt: time.Now().Add(time.Hour),
-	}); err != nil {
+	if err := repo.Touch(ctx, firstID); err != nil {
 		t.Fatalf("touch first: %v", err)
 	}
 	links, err := repo.List(ctx)

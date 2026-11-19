@@ -84,6 +84,7 @@ func bueiGuangyaShareRenameRulesToDTO(rules []domain.GuangyaShareRenameRule) []b
 }
 
 type bueiGuangyaShareParseDTO struct {
+	SavedLinkID      int64                               `json:"saved_link_id"`
 	ShareID          string                              `json:"share_id"`
 	Title            string                              `json:"title"`
 	Owner            string                              `json:"owner"`
@@ -191,6 +192,7 @@ func bueiGuangyaShareItemsToDTO(items []guangyashare.ShareItem) []bueiGuangyaSha
 
 func bueiGuangyaShareParseResultToDTO(res *guangyashare.ParseResult) bueiGuangyaShareParseDTO {
 	return bueiGuangyaShareParseDTO{
+		SavedLinkID:      res.SavedLinkID,
 		ShareID:          res.ShareID,
 		Title:            res.Title,
 		Owner:            res.Owner,
@@ -212,6 +214,7 @@ func (h *Handler) bueiGuangyaShareParse(w http.ResponseWriter, r *http.Request) 
 	var in struct {
 		URL      string `json:"url"`
 		Password string `json:"password"`
+		SavedID  int64  `json:"saved_id"`
 	}
 	if err := decodeJSON(r, &in); err != nil {
 		writeErr(w, err)
@@ -220,6 +223,7 @@ func (h *Handler) bueiGuangyaShareParse(w http.ResponseWriter, r *http.Request) 
 	res, err := h.buei.GuangyaShare.Parse(r.Context(), guangyashare.ParseInput{
 		URL:      in.URL,
 		Password: in.Password,
+		SavedID:  in.SavedID,
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -267,6 +271,7 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 		URL           string   `json:"url"`
 		ShareID       string   `json:"share_id"`
 		Password      string   `json:"password"`
+		SavedLinkID   int64    `json:"saved_link_id"`
 		FileIDs       []string `json:"file_ids"`
 		AccountID     int64    `json:"account_id"`
 		ParentID      string   `json:"parent_id"`
@@ -339,6 +344,7 @@ func (h *Handler) bueiGuangyaShareTransfer(w http.ResponseWriter, r *http.Reques
 		URL:           in.URL,
 		ShareID:       in.ShareID,
 		Password:      in.Password,
+		SavedID:       in.SavedLinkID,
 		FileIDs:       in.FileIDs,
 		AccountID:     in.AccountID,
 		ParentID:      in.ParentID,
@@ -430,8 +436,8 @@ func (h *Handler) bueiGuangyaShareDiscard(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var in struct {
-		ShareID string `json:"share_id"`
-		Files   []struct {
+		SavedLinkID int64 `json:"saved_link_id"`
+		Files       []struct {
 			FileID       string `json:"file_id"`
 			OriginalName string `json:"original_name"`
 		} `json:"files"`
@@ -449,7 +455,7 @@ func (h *Handler) bueiGuangyaShareDiscard(w http.ResponseWriter, r *http.Request
 		})
 	}
 	count, err := h.buei.GuangyaShare.Discard(r.Context(), guangyashare.DiscardInput{
-		ShareID: in.ShareID,
+		SavedID: in.SavedLinkID,
 		Files:   files,
 	})
 	if err != nil {

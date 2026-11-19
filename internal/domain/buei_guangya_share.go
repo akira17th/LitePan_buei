@@ -112,27 +112,31 @@ type GuangyaShareTransferredFile struct {
 	UpdatedAt      time.Time
 }
 
-// GuangyaShareTransferredRepository 负责分享转存历史的持久化。
+// GuangyaShareTransferredRepository 按收藏 ID 持久化分享转存历史。
+// 链接可以重复收藏，因此不能再用 share_id 区分不同收藏的历史。
 type GuangyaShareTransferredRepository interface {
-	ListByShare(ctx context.Context, shareID string) ([]*GuangyaShareTransferredFile, error)
-	UpsertMany(ctx context.Context, shareID string, files []*GuangyaShareTransferredFile) error
-	DeleteByShare(ctx context.Context, shareID string) error
+	ListByLink(ctx context.Context, linkID int64) ([]*GuangyaShareTransferredFile, error)
+	UpsertMany(ctx context.Context, linkID int64, files []*GuangyaShareTransferredFile) error
+	DeleteByLink(ctx context.Context, linkID int64) error
 }
 
 // GuangyaShareLinkRepository 负责收藏链接的持久化。
 type GuangyaShareLinkRepository interface {
 	List(ctx context.Context) ([]*GuangyaShareLink, error)
-	// Upsert 按 share_id 去重；重复解析同一分享时更新标题、链接与最近使用时间。
-	Upsert(ctx context.Context, link *GuangyaShareLink) (*GuangyaShareLink, error)
-	// UpdateDestination 更新分享上次成功转存的目标预设，不影响收藏链接本身。
-	UpdateDestination(ctx context.Context, shareID string, dest *GuangyaShareDestination) error
-	// UpdateBrowsePath 更新上次转存时浏览的分享目录。
-	UpdateBrowsePath(ctx context.Context, shareID string, crumbs []GuangyaShareBrowseCrumb) error
-	// UpdateRenameReplace 保存“替换文本”重命名规则。
-	UpdateRenameReplace(ctx context.Context, shareID string, rule GuangyaShareRenameReplace) error
-	// UpdateIdentity 更新收藏的分享身份（链接、分享 ID、标题、提取码），保留目标预设与重命名规则。
-	// clearBrowsePath 用于分享 ID 变化时清理已失效的浏览路径。
+	Get(ctx context.Context, id int64) (*GuangyaShareLink, error)
+	// Create 新建一条收藏；相同 share_id 可以重复收藏。
+	Create(ctx context.Context, link *GuangyaShareLink) (*GuangyaShareLink, error)
+	// Touch 只更新最近使用时间，按收藏 ID 定位，不修改链接内容。
+	Touch(ctx context.Context, id int64) error
+	// UpdateDestination 更新该收藏上次成功转存的目标预设。
+	UpdateDestination(ctx context.Context, id int64, dest *GuangyaShareDestination) error
+	// UpdateBrowsePath 更新该收藏上次转存时浏览的分享目录。
+	UpdateBrowsePath(ctx context.Context, id int64, crumbs []GuangyaShareBrowseCrumb) error
+	// UpdateRenameReplace 保存该收藏的“替换文本”重命名规则。
+	UpdateRenameReplace(ctx context.Context, id int64, rule GuangyaShareRenameReplace) error
+	// UpdateIdentity 按收藏 ID 更新分享身份（链接、分享 ID、标题、提取码），保留目标预设与重命名规则。
+	// clearBrowsePath 用于分享 ID 变化时清理已失效的浏览路径和转存历史。
 	UpdateIdentity(ctx context.Context, id int64, shareID, url, password, title, owner string, clearBrowsePath bool) (*GuangyaShareLink, error)
-	// Delete 删除收藏并返回 share_id，供调用方清理关联数据。
-	Delete(ctx context.Context, id int64) (string, error)
+	// Delete 按收藏 ID 删除收藏，关联转存历史由外键级联清理。
+	Delete(ctx context.Context, id int64) error
 }

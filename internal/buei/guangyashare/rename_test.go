@@ -198,6 +198,7 @@ func TestTransferAppliesRenames(t *testing.T) {
 		URL:       "https://www.guangyapan.com/s/" + testShareID,
 		ShareID:   testShareID,
 		Password:  testPassword,
+		SavedID:   1,
 		FileIDs:   []string{"f1"},
 		AccountID: 2,
 		ParentID:  "root",
@@ -222,9 +223,9 @@ func TestTransferAppliesRenames(t *testing.T) {
 
 func TestSaveRenameReplaceNormalizesRules(t *testing.T) {
 	repo := newFakeLinkRepo()
-	repo.links[testShareID] = &domain.GuangyaShareLink{ID: 1, ShareID: testShareID}
+	repo.links[1] = &domain.GuangyaShareLink{ID: 1, ShareID: testShareID}
 	svc := &Service{links: repo}
-	svc.saveRenameReplace(context.Background(), testShareID, &domain.GuangyaShareRenameReplace{
+	svc.saveRenameReplace(context.Background(), 1, &domain.GuangyaShareRenameReplace{
 		Enabled: true,
 		Rules: []domain.GuangyaShareRenameRule{
 			{Find: "   "},
@@ -232,7 +233,7 @@ func TestSaveRenameReplaceNormalizesRules(t *testing.T) {
 			{Find: "HDR", ReplaceWith: " "},
 		},
 	})
-	rule := repo.links[testShareID].RenameReplace
+	rule := repo.links[1].RenameReplace
 	if len(rule.Rules) != 2 || rule.Rules[0].Find != "2160p" || rule.Rules[1].ReplaceWith != " " {
 		t.Fatalf("unexpected saved rules: %+v", rule)
 	}

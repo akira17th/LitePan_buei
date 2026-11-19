@@ -80,6 +80,7 @@ export interface GuangyaShareDestinationBase {
 }
 
 export interface GuangyaShareParseResult {
+  saved_link_id: number;
   share_id: string;
   title: string;
   owner: string;
@@ -124,6 +125,7 @@ export interface GuangyaShareTransferPayload {
   url: string;
   share_id: string;
   password: string;
+  saved_link_id: number;
   file_ids: string[];
   account_id: number;
   parent_id: string;
@@ -180,7 +182,7 @@ export interface GuangyaShareTransferResult {
 }
 
 export const bueiGuangyaShareApi = {
-  parse: (payload: { url: string; password: string }, signal?: AbortSignal) =>
+  parse: (payload: { url: string; password: string; saved_id?: number }, signal?: AbortSignal) =>
     http.postWithTimeout<GuangyaShareParseResult>(
       "/admin/tools/guangya-share/parse",
       payload,
@@ -199,9 +201,9 @@ export const bueiGuangyaShareApi = {
     http.put<GuangyaShareParseResult>(`/admin/tools/guangya-share/saved/${id}`, payload),
   progress: (id: string) =>
     http.get<GuangyaShareTransferProgress>("/admin/tools/guangya-share/progress", { id }),
-  discard: (shareId: string, files: { file_id: string; original_name: string }[]) =>
+  discard: (savedLinkId: number, files: { file_id: string; original_name: string }[]) =>
     http.post<{ discarded: number }>("/admin/tools/guangya-share/discard", {
-      share_id: shareId,
+      saved_link_id: savedLinkId,
       files,
     }),
   deleteSaved: (id: number) =>

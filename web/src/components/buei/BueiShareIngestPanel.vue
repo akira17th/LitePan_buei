@@ -24,6 +24,10 @@ import { filesApi } from "@/api/files";
 import { fetchStrmTasks, type StrmTask } from "@/api/strm";
 import { fetchStrmScrapeProgress, type StrmScrapeProgress } from "@/api/strmScrape";
 import {
+  searchMediaOrganizeTmdb,
+  type MediaOrganizeTmdbSearchHit,
+} from "@/api/mediaOrganize";
+import {
   fetchEmbyConfigs,
   fetchEmbyLibraries,
   type EmbyConfig,
@@ -91,6 +95,7 @@ type DestinationBase = {
 };
 
 const QUICK_FILE_KINDS = new Set<GuangyaShareKind>(["video", "image", "subtitle", "document"]);
+const FOLDER_TITLE_MAX = 100;
 const FAVORITE_PROVIDER_OPTIONS: { value: Provider; label: string }[] = [
   { value: "quark", label: "夸克" },
 ];
@@ -262,8 +267,8 @@ const selectedMap = ref<Map<string, GuangyaShareItem>>(new Map());
 // Shift 连选的锚点：记录上一次点击在当前页中的位置。
 const anchorIndex = ref(-1);
 const keyword = ref("");
-const sortKey = ref<SortKey | null>("time");
-const sortDir = ref<"asc" | "desc">("desc");
+const sortKey = ref<SortKey | null>("name");
+const sortDir = ref<"asc" | "desc">("asc");
 const page = ref(1);
 const pageSize = 100;
 
@@ -311,6 +316,13 @@ const renameReplaceOn = ref(false);
 type RenameReplaceRule = { find: string; replaceWith: string };
 const renameReplaceRules = ref<RenameReplaceRule[]>([{ find: "", replaceWith: "" }]);
 const renameStartEpisode = ref(1);
+
+// TMDB 匹配：复用系统「目录整理」里的 TMDB 设置。
+const tmdbResults = ref<MediaOrganizeTmdbSearchHit[]>([]);
+const tmdbLoading = ref(false);
+const tmdbError = ref("");
+const tmdbSearched = ref(false);
+let tmdbSearchSeq = 0;
 const transferConfirmOpen = ref(false);
 const pendingTransfer = ref<PendingTransfer | null>(null);
 // 入库完成后的结果直接展示在同一个确认弹窗里。
@@ -746,10 +758,12 @@ const filteredItems = computed(() => {
 });
 
 const sortedItems = computed(() => {
-  // 取消排序后保留接口返回的原始顺序。
-  if (!sortKey.value) return filteredItems.value;
-  const direction = sortDir.value === "asc" ? 1 : -1;
+  // 已入库 / 已丢弃的文件始终排在最后；其余项按当前排序规则排列。
   return [...filteredItems.value].sort((a, b) => {
+    const processedDiff = Number(isProcessed(a)) - Number(isProcessed(b));
+    if (processedDiff !== 0) return processedDiff;
+    if (!sortKey.value) return 0;
+    const direction = sortDir.value === "asc" ? 1 : -1;
     let diff = 0;
     switch (sortKey.value) {
       case "time":
@@ -870,7 +884,7 @@ function sanitizeFolderName(value: string) {
     .replace(/[\x00-\x1f\x7f]/g, "")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 100)
+    .slice(0, FOLDER_TITLE_MAX)
     .replace(/^\.+|\.+$/g, "")
     .trim();
 }
@@ -885,15 +899,144 @@ function joinPath(base: string, segments: string[]) {
 const sanitizedFolderTitle = computed(() => sanitizeFolderName(folderTitle.value));
 const seasonNumber = computed(() => clampSeason(season.value));
 
-// #region buei:guangya-rename
-// 前缀基名 U：剧集去掉“(年份)”与首尾空格；电影保留年份。
-const renamePrefixBase = computed(() => {
-  let base = sanitizedFolderTitle.value;
-  if (isSeries.value) {
-    base = base.replace(/\s*[（(]\s*\d{4}\s*[）)]\s*/g, " ").trim();
+function stripTmdbTags(value: string) {
+  return String(value ?? "")
+    .replace(/\s*\{\s*tmdb\s*-\s*\d+\s*\}\s*/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripTrailingYear(value: string) {
+  return String(value ?? "").replace(/\s*[（(]\s*\d{4}\s*[）)]\s*$/g, "").trim();
+}
+
+// TMDB 搜索名：取目标文件夹名，去掉末尾年份和 {tmdb-ID}。
+const tmdbSearchTitle = computed(() => {
+  let base = stripTmdbTags(sanitizedFolderTitle.value);
+  let previous = "";
+  while (base && base !== previous) {
+    previous = base;
+    base = stripTrailingYear(base);
   }
   return base;
 });
+
+const tmdbSelectedID = computed(() => {
+  const match = sanitizedFolderTitle.value.match(/\{\s*tmdb\s*-\s*(\d+)\s*\}/i);
+  return match?.[1] || "";
+});
+
+// #region buei:guangya-rename
+// 前缀基名 U：剧集去掉“(年份)”与首尾空格；电影保留年份；两者都去掉 {tmdb-ID}。
+const renamePrefixBase = computed(() => {
+  let base = stripTmdbTags(sanitizedFolderTitle.value);
+  if (isSeries.value) {
+    base = base.replace(/\s*[（(]\s*\d{4}\s*[）)]\s*/g, " ").replace(/\s+/g, " ").trim();
+  }
+  return base;
+});
+
+function resetTmdbMatch() {
+  tmdbSearchSeq += 1;
+  tmdbResults.value = [];
+  tmdbLoading.value = false;
+  tmdbError.value = "";
+  tmdbSearched.value = false;
+}
+
+function tmdbResultType(item: MediaOrganizeTmdbSearchHit): "movie" | "tv" {
+  if (item.media_type === "movie") return "movie";
+  if (item.media_type === "tv") return "tv";
+  return isSeries.value ? "tv" : "movie";
+}
+
+function tmdbResultTypeLabel(item: MediaOrganizeTmdbSearchHit) {
+  return tmdbResultType(item) === "tv" ? "剧集" : "电影";
+}
+
+function tmdbResultTitle(item: MediaOrganizeTmdbSearchHit) {
+  return String(item.title || item.name || item.original_title || item.original_name || "未命名").trim();
+}
+
+function tmdbResultOriginal(item: MediaOrganizeTmdbSearchHit) {
+  const title = tmdbResultTitle(item);
+  const original = String(item.original_title || item.original_name || "").trim();
+  return original && original.toLowerCase() !== title.toLowerCase() ? original : "";
+}
+
+function tmdbResultYear(item: MediaOrganizeTmdbSearchHit) {
+  const type = tmdbResultType(item);
+  const raw = type === "movie" ? item.release_date : item.first_air_date;
+  const date = raw || item.release_date || item.first_air_date || "";
+  return String(date).match(/^(\d{4})/)?.[1] || "";
+}
+
+function tmdbWebURL(item: MediaOrganizeTmdbSearchHit) {
+  return `https://www.themoviedb.org/${tmdbResultType(item)}/${encodeURIComponent(String(item.id ?? ""))}`;
+}
+
+function isTmdbSelected(item: MediaOrganizeTmdbSearchHit) {
+  return !!tmdbSelectedID.value && String(item.id ?? "") === tmdbSelectedID.value;
+}
+
+// 搜索结果按年份倒序；无年份的条目排在最后，同年保持接口原始顺序。
+const sortedTmdbResults = computed(() =>
+  [...tmdbResults.value].sort((a, b) => {
+    const aYear = Number(tmdbResultYear(a)) || 0;
+    const bYear = Number(tmdbResultYear(b)) || 0;
+    return bYear - aYear;
+  }),
+);
+
+async function searchTMDB() {
+  const query = tmdbSearchTitle.value.trim();
+  if (!query) {
+    tmdbError.value = "请先填写目标文件夹";
+    return;
+  }
+  if (tmdbLoading.value) return;
+  const seq = ++tmdbSearchSeq;
+  tmdbLoading.value = true;
+  tmdbError.value = "";
+  tmdbSearched.value = false;
+  try {
+    const results = await searchMediaOrganizeTmdb({
+      query,
+      media_type: isSeries.value ? "tv" : "movie",
+    });
+    if (seq !== tmdbSearchSeq) return;
+    tmdbResults.value = results.filter(
+      (item) => item && item.id !== undefined && item.id !== null && String(item.id).trim() !== "",
+    );
+    tmdbSearched.value = true;
+  } catch (error) {
+    if (seq !== tmdbSearchSeq) return;
+    tmdbResults.value = [];
+    const message = getApiErrorMessage(error, "TMDB 搜索失败");
+    tmdbError.value = /TMDB API Key|未配置.*TMDB|TMDB.*未配置/i.test(message)
+      ? "系统未配置 TMDB API Key，请先在「任务管理 / 目录整理」的 TMDB 设置中填写"
+      : message;
+  } finally {
+    if (seq === tmdbSearchSeq) tmdbLoading.value = false;
+  }
+}
+
+function selectTMDBResult(item: MediaOrganizeTmdbSearchHit) {
+  const id = String(item.id ?? "").trim();
+  if (!id) return;
+  const base = tmdbResultTitle(item);
+  if (!base || base === "未命名") {
+    tmdbError.value = "该 TMDB 结果没有可用标题";
+    return;
+  }
+  const year = tmdbResultYear(item);
+  const suffix = `${year ? ` (${year})` : ""} {tmdb-${id}}`;
+  const safeBase = base.slice(0, Math.max(1, FOLDER_TITLE_MAX - suffix.length)).trim();
+  folderTitle.value = sanitizeFolderName(`${safeBase}${suffix}`);
+  tmdbError.value = "";
+}
+
+watch(isSeries, resetTmdbMatch);
 
 function splitFileName(name: string) {
   const index = name.lastIndexOf(".");
@@ -1187,10 +1330,13 @@ function applyDestinationForShare(res: GuangyaShareParseResult) {
   void nextTick(() => {
     restoringEmby = false;
   });
+  resetTmdbMatch();
 }
 
 function normalizeFolderTitle() {
+  const previousSearchTitle = tmdbSearchTitle.value;
   folderTitle.value = sanitizeFolderName(toHalfWidthBrackets(folderTitle.value));
+  if (tmdbSearchTitle.value !== previousSearchTitle) resetTmdbMatch();
 }
 
 function onFolderTitleInput(event: Event) {
@@ -1202,7 +1348,9 @@ function onFolderTitleInput(event: Event) {
   const next = toHalfWidthBrackets(raw)
     .replace(/^\s+/, "")
     .replace(/\s+$/, "");
+  const previousSearchTitle = tmdbSearchTitle.value;
   folderTitle.value = next;
+  if (tmdbSearchTitle.value !== previousSearchTitle) resetTmdbMatch();
   if (raw !== next) {
     const cursor = input.selectionStart ?? raw.length;
     const leadingRemoved = raw.length - raw.replace(/^\s+/, "").length;
@@ -1389,7 +1537,7 @@ async function selectGuangyaFavorite(link: GuangyaShareSavedLink) {
   activeFavoriteKey.value = `g:${link.id}`;
   url.value = (link.url || link.share_id).trim();
   password.value = link.password || "";
-  await parseShare(false);
+  await parseShare(false, link.id);
 }
 
 function applyQuarkPreset(preset: QuarkIngestPreset | null, favorite: QuarkFavoriteEntry) {
@@ -1421,6 +1569,7 @@ function applyQuarkPreset(preset: QuarkIngestPreset | null, favorite: QuarkFavor
   void nextTick(() => {
     restoringEmby = false;
   });
+  resetTmdbMatch();
 }
 
 async function selectQuarkFavorite(favorite: QuarkFavoriteEntry) {
@@ -1446,8 +1595,9 @@ async function selectQuarkFavorite(favorite: QuarkFavoriteEntry) {
   anchorIndex.value = -1;
   keyword.value = "";
   page.value = 1;
-  sortKey.value = "time";
-  sortDir.value = "desc";
+  sortKey.value = "name";
+  sortDir.value = "asc";
+  resetTmdbMatch();
   resetRenameRules();
   destination.value = {
     accountId: favorite.account_id,
@@ -1746,11 +1896,10 @@ async function submitFavorite() {
       }
       applyParsedGuangya(res, link);
       await loadSavedLinks();
-      if (editingFavorite) {
+      if (res.saved_link_id > 0) {
+        activeFavoriteKey.value = `g:${res.saved_link_id}`;
+      } else if (editingFavorite) {
         activeFavoriteKey.value = `g:${editingFavorite.id}`;
-      } else {
-        const saved = savedLinks.value.find((item) => item.share_id === res.share_id);
-        activeFavoriteKey.value = saved ? `g:${saved.id}` : null;
       }
       favoriteDialogOpen.value = false;
       toast.success(editingFavorite ? "光鸭收藏已更新" : "已添加光鸭收藏");
@@ -1828,6 +1977,7 @@ function applyParsedGuangya(res: GuangyaShareParseResult, input: string) {
   activeQuarkFavorite.value = null;
   quarkSourceItems.value = [];
   quarkSourceError.value = "";
+  if (res.saved_link_id > 0) activeFavoriteKey.value = `g:${res.saved_link_id}`;
   result.value = res;
   parsedURL.value = input;
   if (!res.need_code) password.value = "";
@@ -1846,8 +1996,9 @@ function applyParsedGuangya(res: GuangyaShareParseResult, input: string) {
   resetRenameRules();
   keyword.value = "";
   page.value = 1;
-  sortKey.value = "time";
-  sortDir.value = "desc";
+  sortKey.value = "name";
+  sortDir.value = "asc";
+  resetTmdbMatch();
   if (!res.need_password) {
     applyRenameReplace(res.rename_replace);
     applyDestinationForShare(res);
@@ -1855,7 +2006,7 @@ function applyParsedGuangya(res: GuangyaShareParseResult, input: string) {
   }
 }
 
-async function parseShare(refreshSaved = true) {
+async function parseShare(refreshSaved = true, savedID?: number) {
   if (interactionBusy.value) {
     toast.info("正在入库，请稍候");
     return;
@@ -1878,7 +2029,7 @@ async function parseShare(refreshSaved = true) {
   parseError.value = "";
   try {
     const res = await bueiGuangyaShareApi.parse(
-      { url: input, password: password.value.trim() },
+      { url: input, password: password.value.trim(), saved_id: savedID },
       controller.signal,
     );
     if (controller.signal.aborted) return;
@@ -1928,8 +2079,9 @@ function resetParse() {
   embyMode.value = "global";
   embyLibraryId.value = "";
   embyLibraries.value = [];
-  sortKey.value = "time";
-  sortDir.value = "desc";
+  sortKey.value = "name";
+  sortDir.value = "asc";
+  resetTmdbMatch();
 }
 
 async function loadFolder(parentID: string, parentPath: string) {
@@ -2156,8 +2308,12 @@ async function discardSelected() {
 
   discarding.value = true;
   try {
+    if (!result.value.saved_link_id) {
+      toast.error("收藏记录不存在，请重新打开收藏");
+      return;
+    }
     const res = await bueiGuangyaShareApi.discard(
-      result.value.share_id,
+      result.value.saved_link_id,
       files.map((file) => ({ file_id: file.id, original_name: file.name })),
     );
     if (result.value) {
@@ -2445,6 +2601,7 @@ async function confirmTransfer() {
       url: parsedURL.value || url.value.trim(),
       share_id: result.value.share_id,
       password: password.value.trim(),
+      saved_link_id: result.value.saved_link_id,
       file_ids: selectedItems.value.map((item) => item.id),
       account_id: pending.base.accountId,
       parent_id: pending.base.parentId,
@@ -2936,9 +3093,9 @@ onBeforeUnmount(() => {
               maxlength="12"
               placeholder="提取码"
               :disabled="parsing"
-              @keydown.enter.prevent="parseShare(false)"
+              @keydown.enter.prevent="parseShare(false, result?.saved_link_id || undefined)"
             />
-            <AppButton size="sm" variant="primary" :disabled="parsing" @click="parseShare(false)">
+            <AppButton size="sm" variant="primary" :disabled="parsing" @click="parseShare(false, result?.saved_link_id || undefined)">
               {{ parsing ? "提取中…" : "提取文件" }}
             </AppButton>
           </div>
@@ -3197,6 +3354,84 @@ onBeforeUnmount(() => {
           </section>
         </div>
         <aside class="gys__sidecol">
+        <section class="gys__side gys__side--tmdb">
+          <div class="gys__side-scroll">
+            <div v-if="!hasSource" class="gys__empty gys__empty--small">
+              <SvgIcon name="film" :size="36" />
+              <p>选择收藏后匹配 TMDB</p>
+            </div>
+            <section
+              v-if="hasSource"
+              class="gys__panel gys__panel--tmdb"
+              :class="{ 'is-busy': transferring }"
+            >
+              <div class="gys__panel-head">
+                <h4>TMDB</h4>
+                <span class="gys__panel-hint">
+                  {{ tmdbLoading ? "匹配中…" : tmdbSelectedID ? "已应用" : "可选" }}
+                </span>
+              </div>
+
+              <div class="gys__tmdb-queryrow">
+                <span class="gys__tmdb-query" :title="tmdbSearchTitle || '请先填写目标文件夹'">
+                  <span class="gys__tmdb-query-type">{{ isSeries ? "剧集" : "电影" }}</span>
+                  <span class="gys__tmdb-query-name">{{ tmdbSearchTitle || "请先填写目标文件夹" }}</span>
+                </span>
+                <AppButton
+                  class="gys__tmdb-match"
+                  size="sm"
+                  variant="secondary"
+                  :disabled="!tmdbSearchTitle || transferring || tmdbLoading"
+                  @click="searchTMDB"
+                >
+                  {{ tmdbLoading ? "匹配中…" : "匹配" }}
+                </AppButton>
+              </div>
+
+              <p v-if="tmdbError" class="gys__rule-error gys__tmdb-error">{{ tmdbError }}</p>
+              <p v-else-if="!tmdbSearchTitle" class="gys__tmdb-empty">填写目标文件夹后可匹配 TMDB。</p>
+
+              <div v-if="tmdbResults.length" class="gys__tmdb-results">
+                <div
+                  v-for="item in sortedTmdbResults"
+                  :key="`${tmdbResultType(item)}:${item.id}`"
+                  class="gys__tmdb-result"
+                  :class="{ 'is-selected': isTmdbSelected(item) }"
+                >
+                  <a
+                    class="gys__tmdb-result-link"
+                    :href="tmdbWebURL(item)"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    :title="`在 TMDB 打开 ${tmdbResultTitle(item)}`"
+                  >
+                    <span class="gys__tmdb-result-body">
+                      <span class="gys__tmdb-result-title">
+                        {{ tmdbResultTitle(item) }}
+                        <span v-if="tmdbResultYear(item)" class="gys__tmdb-year">({{ tmdbResultYear(item) }})</span>
+                      </span>
+                      <span class="gys__tmdb-result-sub">
+                        {{ tmdbResultTypeLabel(item) }}
+                        <template v-if="tmdbResultOriginal(item)"> · {{ tmdbResultOriginal(item) }}</template>
+                      </span>
+                    </span>
+                    <SvgIcon name="arrow-up-right-from-square" :size="11" />
+                  </a>
+                  <button
+                    type="button"
+                    class="gys__tmdb-pick"
+                    :class="{ 'is-selected': isTmdbSelected(item) }"
+                    :disabled="transferring"
+                    @click="selectTMDBResult(item)"
+                  >
+                    {{ isTmdbSelected(item) ? "已选" : "选择" }}
+                  </button>
+                </div>
+              </div>
+              <p v-else-if="tmdbSearched && !tmdbLoading" class="gys__tmdb-empty">没有找到匹配项。</p>
+            </section>
+          </div>
+        </section>
         <section class="gys__side gys__side--rename">
           <div class="gys__side-scroll">
             <div v-if="!hasSource" class="gys__empty gys__empty--small">
@@ -3226,7 +3461,7 @@ onBeforeUnmount(() => {
                     <code>{{ renamePrefixBase || "U" }} + 连接符</code>
                   </span>
                   <span class="gys__rule-desc">
-                    {{ isSeries ? "剧集去年份与首尾空格" : "电影保留年份" }}；连接符沿用原名中的 . - _ 空格，否则用 -
+                    {{ isSeries ? "剧集去年份与首尾空格" : "电影保留年份" }}；均去掉 {tmdb-ID}；连接符沿用原名中的 . - _ 空格，否则用 -
                   </span>
                 </span>
               </label>
@@ -5100,7 +5335,7 @@ onBeforeUnmount(() => {
   }
 }
 
-/* 窄屏：收藏 → 保存位置 → 重命名 → 联动动作 依次纵向排列，滚动交给页面。 */
+/* 窄屏：收藏 → 保存位置 → TMDB → 重命名 → 联动动作 依次纵向排列，滚动交给页面。 */
 @media (max-width: 980px) {
   .gys__body {
     display: flex;
@@ -5156,7 +5391,7 @@ onBeforeUnmount(() => {
   }
 }
 
-/* 影视入库：左侧收藏+文件、保存位置+目标浏览两张大卡片；右侧重命名 / 联动动作自适应高度。 */
+/* 影视入库：左侧收藏+文件、保存位置+目标浏览两张大卡片；右侧 TMDB / 重命名 / 联动动作自适应高度。 */
 .gys__body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 330px;
@@ -5401,6 +5636,169 @@ onBeforeUnmount(() => {
   border: 0;
   border-radius: 0;
   background: transparent;
+}
+
+.gys__side--tmdb {
+  max-height: 300px;
+  overflow: hidden;
+}
+
+.gys__side--tmdb .gys__side-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 300px;
+  overflow: hidden;
+}
+
+.gys__side--tmdb .gys__panel--tmdb {
+  min-height: 0;
+}
+
+.gys__tmdb-queryrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.gys__tmdb-query {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.gys__tmdb-query-type {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--brand) 10%, var(--surface-sunken));
+  color: var(--brand);
+  font-size: 9px;
+  line-height: 15px;
+}
+
+.gys__tmdb-query-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.gys__tmdb-match {
+  flex: 0 0 auto;
+}
+
+.gys__tmdb-error {
+  margin-top: 6px;
+}
+
+.gys__tmdb-empty {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.gys__tmdb-results {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 0;
+  margin-top: 8px;
+  padding-right: 2px;
+  overflow-y: auto;
+}
+
+.gys__tmdb-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+
+.gys__tmdb-result.is-selected {
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--border));
+  background: color-mix(in srgb, var(--brand) 7%, var(--surface-sunken));
+}
+
+.gys__tmdb-result-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.gys__tmdb-result-link:hover .gys__tmdb-result-title {
+  color: var(--brand);
+}
+
+.gys__tmdb-result-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.gys__tmdb-result-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.gys__tmdb-year {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.gys__tmdb-result-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.gys__tmdb-pick {
+  flex: 0 0 auto;
+  height: 23px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.gys__tmdb-pick:hover:not(:disabled) {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.gys__tmdb-pick.is-selected {
+  border-color: var(--brand);
+  color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 7%, var(--surface));
+}
+
+.gys__tmdb-pick:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .gys__side .gys__empty {

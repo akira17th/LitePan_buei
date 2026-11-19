@@ -337,7 +337,10 @@ func matchTaskForDirSegments(tasks []*domain.StrmTask, dirs []string) (*domain.S
 		if !ok {
 			continue
 		}
-		if depth := len(dirs) - len(rel); depth > bestDepth {
+		// 同一源目录存在多个任务时固定选择较新的任务，避免生成和待处理状态
+		// 落到旧任务，出现「提示成功但目标任务目录没有文件」。
+		depth := len(dirs) - len(rel)
+		if depth > bestDepth || (depth == bestDepth && (best == nil || task.ID > best.ID)) {
 			bestDepth = depth
 			best = task
 			bestRel = append([]string{}, rel...)
@@ -360,7 +363,7 @@ func matchTaskForDisplayPath(tasks []*domain.StrmTask, currentPath string) (*dom
 			continue
 		}
 		taskLen := len(normalizeDisplayPath(task.Path))
-		if taskLen > bestLen {
+		if taskLen > bestLen || (taskLen == bestLen && (best == nil || task.ID > best.ID)) {
 			bestLen = taskLen
 			best = task
 			bestRel = rel

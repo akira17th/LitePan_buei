@@ -76,7 +76,7 @@
 | 本地一键启动脚本 | `run.sh` |
 | 本地运行 / 镜像构建说明 | `readme_run.md` |
 | README 定制说明 | `README.md` |
-| 影视入库（辅助工具单 tab，统一管理光鸭与夸克；收藏栏 + 按钮先识别光鸭链接并解析收藏，非光鸭链接显示云盘下拉（当前仅夸克，不校验域名）并选择「来自：分享」收藏文件夹；打开收藏后标题行右侧箭头可新窗口打开收藏链接；左侧收藏与文件列表同卡片、保存位置与目标文件夹浏览同卡片，右侧重命名 / 联动动作；光鸭收藏与夸克收藏均可编辑，光鸭改链接后自动重新解析并保留保存位置 / 重命名规则 / 联动动作，仅清理旧分享的文件对应关系；光鸭保留文件夹入库 / 丢弃 / 入库历史，夸克保留平铺目录 / 删除文件 / 来源文件夹改名；目标路径存在时只读展示目标文件夹内容（名称/类型/大小/时间，类型图标与源列表一致，默认名称倒序，可点表头排序）；支持目标路径预设、浏览目录记忆、Shift 连选、前缀 / SxxEnn / 多组替换文本、入库后 STRM / 刮削 / Emby 联动） | `internal/buei/guangyashare/`、`internal/buei/quarkingest/`、`internal/store/buei_guangya_share_repo.go`、`internal/store/buei_quark_ingest_repo.go`、`drivers/Guangya/buei_share.go`、`internal/api/buei_guangya_share.go`、`internal/api/buei_quark_ingest.go`、`web/src/components/buei/BueiShareIngestPanel.vue`、`web/src/components/buei/BueiIngestTargetFiles.vue`、`web/src/components/buei/BueiGuangyaShareConfirm.vue`、`web/src/api/bueiGuangyaShare.ts`、`web/src/api/bueiQuarkIngest.ts`、`web/src/utils/bueiShareLink.ts`、`web/src/utils/bueiIngestKinds.ts`、`web/src/utils/bueiQuarkShare.ts` |
+| 影视入库（辅助工具单 tab，统一管理光鸭与夸克；收藏栏 + 按钮先识别光鸭链接并解析收藏，非光鸭链接显示云盘下拉（当前仅夸克，不校验域名）并选择「来自：分享」收藏文件夹；打开收藏后标题行右侧箭头可新窗口打开收藏链接；左侧收藏与文件列表同卡片、保存位置与目标文件夹浏览同卡片，右侧 TMDB / 重命名 / 联动动作；收藏链接允许重复，保存位置、浏览目录、重命名规则与转存历史均按收藏 ID 隔离，不再按链接去重或匹配；光鸭收藏与夸克收藏均可编辑，光鸭改链接后自动重新解析并保留保存位置 / 重命名规则 / 联动动作，仅清理该收藏旧分享的文件对应关系；光鸭保留文件夹入库 / 丢弃 / 入库历史，夸克保留平铺目录 / 删除文件 / 来源文件夹改名；目标路径存在时只读展示目标文件夹内容（名称/类型/大小/时间，类型图标与源列表一致，默认名称倒序，可点表头排序）；收藏文件列表默认按名称升序，已入库 / 已丢弃始终置底；重命名上方支持 TMDB 匹配（按目标文件夹的剧集/电影与名称搜索，结果按年份倒序展示、可打开 TMDB，选择后用 TMDB 剧名 + “ (年份)” + “ {tmdb-ID}” 完全替换目标文件夹名，系统未配置 API Key 时提示），添加前缀会去掉 {tmdb-ID}；支持目标路径预设、浏览目录记忆、Shift 连选、前缀 / SxxEnn / 多组替换文本、入库后 STRM / 刮削 / Emby 联动） | `internal/buei/guangyashare/`、`internal/buei/quarkingest/`、`internal/store/buei_guangya_share_repo.go`、`internal/store/buei_quark_ingest_repo.go`、`drivers/Guangya/buei_share.go`、`internal/api/buei_guangya_share.go`、`internal/api/buei_quark_ingest.go`、`web/src/components/buei/BueiShareIngestPanel.vue`、`web/src/components/buei/BueiIngestTargetFiles.vue`、`web/src/components/buei/BueiGuangyaShareConfirm.vue`、`web/src/api/bueiGuangyaShare.ts`、`web/src/api/bueiQuarkIngest.ts`、`web/src/utils/bueiShareLink.ts`、`web/src/utils/bueiIngestKinds.ts`、`web/src/utils/bueiQuarkShare.ts` |
 | 影视入库收藏文件夹直接父目录 | `web/src/components/file/FolderSelector.vue`、`FolderPickerModal.vue`（`buei:quark-ingest` 标记，返回 `parentDirId`） |
 | `.tools/` 忽略 | `.gitignore` |
 | 删除一条上游注释（无功能影响） | `drivers/all.go` |
@@ -359,7 +359,7 @@ HTTP
 - 迁移文件在 `internal/store/migrations/NNNN_name.sql`，按版本号顺序执行，记录在 `schema_migrations`。
 - 迁移 SQL 按分号拆分执行，**字符串字面量里不要出现分号**。
 - 已执行的迁移绝不能修改或改编号；只能新增后续迁移。
-- 当前最新迁移为 `0035_buei_quark_ingest_favorites.sql`；buei 新迁移从 `0036` 起。
+- 当前最新迁移为 `0036_buei_guangya_share_links_by_id.sql`；buei 新迁移从 `0037` 起。
 - 说明：`0033_buei_guangya_share_provider.sql`（夸克分享 provider）已随功能回撤删除，但部分已有数据库仍记录该版本；恢复夸克功能时沿用原文件即可，新迁移不要复用 0033。
 
 ### 4.8 全局设置

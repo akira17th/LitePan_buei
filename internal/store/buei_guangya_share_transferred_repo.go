@@ -17,12 +17,15 @@ func NewGuangyaShareTransferredRepo(db *DB) domain.GuangyaShareTransferredReposi
 	return &guangyaShareTransferredRepo{db: db}
 }
 
-func (r *guangyaShareTransferredRepo) ListByShare(ctx context.Context, shareID string) ([]*domain.GuangyaShareTransferredFile, error) {
+func (r *guangyaShareTransferredRepo) ListByLink(ctx context.Context, linkID int64) ([]*domain.GuangyaShareTransferredFile, error) {
+	if linkID <= 0 {
+		return nil, domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
+	}
 	rows, err := r.db.read.QueryContext(ctx,
 		`SELECT file_id, original_name, new_name, account_id, target_parent_id, status, updated_at
 		 FROM buei_guangya_share_transferred_files
-		 WHERE share_id=?
-		 ORDER BY updated_at DESC, id DESC`, strings.TrimSpace(shareID))
+		 WHERE link_id=?
+		 ORDER BY updated_at DESC, id DESC`, linkID)
 	if err != nil {
 		return nil, wrapDB(err)
 	}
@@ -49,10 +52,9 @@ func (r *guangyaShareTransferredRepo) ListByShare(ctx context.Context, shareID s
 	return files, nil
 }
 
-func (r *guangyaShareTransferredRepo) UpsertMany(ctx context.Context, shareID string, files []*domain.GuangyaShareTransferredFile) error {
-	shareID = strings.TrimSpace(shareID)
-	if shareID == "" {
-		return domain.Errorf(domain.CodeValidation, "分享 ID 不能为空")
+func (r *guangyaShareTransferredRepo) UpsertMany(ctx context.Context, linkID int64, files []*domain.GuangyaShareTransferredFile) error {
+	if linkID <= 0 {
+		return domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
 	}
 	if len(files) == 0 {
 		return nil
@@ -78,16 +80,16 @@ func (r *guangyaShareTransferredRepo) UpsertMany(ctx context.Context, shareID st
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO buei_guangya_share_transferred_files
-			   (share_id, file_id, account_id, original_name, new_name, target_parent_id, status, created_at, updated_at)
+			   (link_id, file_id, account_id, original_name, new_name, target_parent_id, status, created_at, updated_at)
 			 VALUES (?,?,?,?,?,?,?,?,?)
-			 ON CONFLICT(share_id, file_id) DO UPDATE SET
+			 ON CONFLICT(link_id, file_id) DO UPDATE SET
 			   account_id=excluded.account_id,
 			   original_name=excluded.original_name,
 			   new_name=excluded.new_name,
 			   target_parent_id=excluded.target_parent_id,
 			   status=excluded.status,
 			   updated_at=excluded.updated_at`,
-			shareID, file.FileID, file.AccountID, file.OriginalName, file.NewName,
+			linkID, file.FileID, file.AccountID, file.OriginalName, file.NewName,
 			file.TargetParentID, status, tsValue(now), tsValue(updatedAt),
 		); err != nil {
 			return wrapDB(err)
@@ -99,13 +101,12 @@ func (r *guangyaShareTransferredRepo) UpsertMany(ctx context.Context, shareID st
 	return nil
 }
 
-func (r *guangyaShareTransferredRepo) DeleteByShare(ctx context.Context, shareID string) error {
-	shareID = strings.TrimSpace(shareID)
-	if shareID == "" {
+func (r *guangyaShareTransferredRepo) DeleteByLink(ctx context.Context, linkID int64) error {
+	if linkID <= 0 {
 		return nil
 	}
 	if _, err := r.db.write.ExecContext(ctx,
-		`DELETE FROM buei_guangya_share_transferred_files WHERE share_id=?`, shareID,
+		`DELETE FROM buei_guangya_share_transferred_files WHERE link_id=?`, linkID,
 	); err != nil {
 		return wrapDB(err)
 	}
