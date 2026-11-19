@@ -1,6 +1,6 @@
 import { http } from "./client";
 
-// buei 定制：后台「辅助工具 / 光鸭分享」。
+// buei 定制：后台「辅助工具 / 光鸭入库」。
 
 export type GuangyaShareKind =
   | "folder"
@@ -204,7 +204,7 @@ export const bueiGuangyaShareApi = {
     }),
   deleteSaved: (id: number) =>
     http.del<{ deleted: boolean }>(`/admin/tools/guangya-share/saved/${id}`),
-  // 大文件夹转存需要等待服务端任务；开启自动刮削时还要等索引重建，给足超时时间。
+  // 大文件夹入库需要等待服务端任务；开启自动刮削时还要等索引重建，给足超时时间。
   transfer: (payload: GuangyaShareTransferPayload, signal?: AbortSignal) =>
     http.postWithTimeout<GuangyaShareTransferResult>(
       "/admin/tools/guangya-share/transfer",

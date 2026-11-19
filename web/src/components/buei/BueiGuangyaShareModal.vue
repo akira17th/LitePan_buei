@@ -37,7 +37,7 @@ import BueiGuangyaShareConfirm, {
   type RenamePreviewRow,
 } from "@/components/buei/BueiGuangyaShareConfirm.vue";
 
-// buei 定制：后台「辅助工具 / 光鸭分享」独立 tab 的工作区。
+// buei 定制：后台「辅助工具 / 光鸭入库」独立 tab 的工作区。
 
 const router = useRouter();
 const accountsStore = useAccountsStore();
@@ -141,7 +141,7 @@ const renameReplaceRules = ref<RenameReplaceRule[]>([{ find: "", replaceWith: ""
 const renameStartEpisode = ref(1);
 const transferConfirmOpen = ref(false);
 const pendingTransfer = ref<PendingTransfer | null>(null);
-// 转存完成后的结果直接展示在同一个确认弹窗里。
+// 入库完成后的结果直接展示在同一个确认弹窗里。
 const transferDone = ref(false);
 const transferResult = ref({
   renamed: 0,
@@ -365,7 +365,7 @@ async function loadScrapeTasks() {
 watch(autoStrm, (on) => {
   if (on) autoScrape.value = true;
 });
-// 转存阶段进度：由后端记录，前端轮询展示「转存中 → 重命名 → 生成 STRM」。
+// 入库阶段进度：由后端记录，前端轮询展示「入库中 → 重命名 → 生成 STRM」。
 const transferPhase = ref<GuangyaShareTransferPhase>("");
 let progressTimer: number | undefined;
 let progressIdRef = "";
@@ -496,7 +496,7 @@ function selectRange(endIndex: number) {
 
 function toggleSelect(item: GuangyaShareItem, event?: MouseEvent, fromCheckbox = false) {
   if (ancestorSelected.value) return;
-  // 已转存文件只允许通过复选框重新选中，点击整行不触发。
+  // 已入库文件只允许通过复选框重新选中，点击整行不触发。
   if (isProcessed(item) && !fromCheckbox) return;
   const index = sortedItems.value.findIndex((entry) => entry.id === item.id);
   // Shift + 点击：从上次点击处连选到当前位置，锚点保持不变便于继续扩展。
@@ -621,7 +621,7 @@ const selectedFolderCount = computed(() => selectedItems.value.filter((item) => 
 const selectedFiles = computed(() => selectedItems.value.filter((item) => !item.is_dir));
 const selectedFileCount = computed(() => selectedFiles.value.length);
 
-// 表头复选框：只统计当前目录里可批量选择的项（已转存文件需单独勾选）。
+// 表头复选框：只统计当前目录里可批量选择的项（已入库文件需单独勾选）。
 const selectableCurrentItems = computed(() => currentItems.value.filter((item) => !isProcessed(item)));
 const allCurrentSelected = computed(
   () =>
@@ -632,7 +632,7 @@ const someCurrentSelected = computed(() =>
   selectableCurrentItems.value.some((item) => selectedIds.value.has(item.id)),
 );
 
-// 已转存文件：按 file_id 置灰，并显示持久化的新名称。
+// 已入库文件：按 file_id 置灰，并显示持久化的新名称。
 const processedMap = computed(() => {
   const map = new Map<string, GuangyaShareTransferredFile>();
   for (const file of result.value?.transferred_files ?? []) {
@@ -1145,7 +1145,7 @@ async function restoreBrowsePath(crumbs?: GuangyaShareBrowseCrumb[]) {
 
 async function parseShare(refreshSaved = true) {
   if (transferring.value) {
-    toast.info("正在转存，请稍候");
+    toast.info("正在入库，请稍候");
     return;
   }
   if (discarding.value) return;
@@ -1404,7 +1404,7 @@ async function discardSelected() {
   }
   const ok = await confirm({
     title: "标记为已丢弃？",
-    message: `将 ${files.length} 个文件标记为已丢弃。行会置灰并跳过批量选择，但仍可通过复选框单独选中后转存。`,
+    message: `将 ${files.length} 个文件标记为已丢弃。行会置灰并跳过批量选择，但仍可通过复选框单独选中后入库。`,
     confirmText: "标记丢弃",
     cancelText: "取消",
     danger: false,
@@ -1452,11 +1452,11 @@ async function discardSelected() {
 function submitTransfer() {
   if (!result.value || transferring.value || discarding.value) return;
   if (!selectedItems.value.length) {
-    toast.info("请先勾选要转存的文件");
+    toast.info("请先勾选要入库的文件");
     return;
   }
   if (!destination.value.accountId) {
-    toast.info("请先选择转存账号和目录");
+    toast.info("请先选择入库账号和目录");
     return;
   }
   if (!sanitizedFolderTitle.value) {
@@ -1531,7 +1531,7 @@ function cancelTransferConfirm() {
 
 function stayAfterTransfer() {
   resetTransferDialog();
-  toast.success("转存完成");
+  toast.success("入库完成");
 }
 
 async function openAfterTransfer() {
@@ -1553,7 +1553,7 @@ const transferPhaseLabel = computed(() => {
     case "done":
       return "即将完成…";
     default:
-      return "转存中…";
+      return "入库中…";
   }
 });
 
@@ -1574,7 +1574,7 @@ function isProgressFinished(phase: string) {
   return phase === "done" || phase === "failed";
 }
 
-// 轮询转存阶段；请求返回后如果刮削/刷库还在后台跑，继续轮询到真正结束。
+// 轮询入库阶段；请求返回后如果刮削/刷库还在后台跑，继续轮询到真正结束。
 async function pollTransferProgress(id: string) {
   stopProgressPolling();
   try {
@@ -1698,12 +1698,12 @@ async function confirmTransfer() {
       ].filter(Boolean);
       toast.info(
         followUps.length
-          ? `转存任务已提交，完成后会自动执行${followUps.join("与")}，请稍后查看`
-          : "转存任务已提交，内容较多时可能需要稍等片刻",
+          ? `入库任务已提交，完成后会自动执行${followUps.join("与")}，请稍后查看`
+          : "入库任务已提交，内容较多时可能需要稍等片刻",
       );
     }
   } catch (error) {
-    toast.error(getApiErrorMessage(error, "转存失败"));
+    toast.error(getApiErrorMessage(error, "入库失败"));
     return;
   } finally {
     transferring.value = false;
@@ -1729,11 +1729,11 @@ function goPage(delta: number) {
 // 「辅助工具」tab 顶部按钮通过 ref 读取这些状态。
 const transferHint = computed(() => {
   if (!result.value) return "先解析分享链接";
-  if (!selectedItems.value.length) return "先在文件列表勾选要转存的内容";
+  if (!selectedItems.value.length) return "先在文件列表勾选要入库的内容";
   const parts: string[] = [];
   if (selectedFolderCount.value) parts.push(`含 ${selectedFolderCount.value} 个文件夹`);
   parts.push(`文件合计 ${formatSize(selectedFileSize.value)}`);
-  parts.push("文件夹按实际内容转存");
+  parts.push("文件夹按实际内容入库");
   return parts.join(" · ");
 });
 
@@ -2073,7 +2073,7 @@ onBeforeUnmount(() => {
                         </span>
                         <span v-if="itemNewName(item) || isProcessed(item)" class="gys__name-sub">
                           <span v-if="isProcessed(item)" class="gys__transferred-tag">
-                            {{ processedStatus(item) === "discarded" ? "已丢弃" : "已转存" }}
+                            {{ processedStatus(item) === "discarded" ? "已丢弃" : "已入库" }}
                           </span>
                           <span
                             v-if="itemNewName(item)"
@@ -2135,9 +2135,9 @@ onBeforeUnmount(() => {
               <AccountFolderField
                 class="gys__basefield"
                 :display="destinationDisplay"
-                placeholder="选择转存账号和目录"
+                placeholder="选择入库账号和目录"
                 browse-label="选择"
-                :title="destinationDisplay || '选择转存账号和目录'"
+                :title="destinationDisplay || '选择入库账号和目录'"
                 @browse="openPicker"
               />
               <label class="gys__field">
@@ -2202,7 +2202,7 @@ onBeforeUnmount(() => {
             >
               <div class="gys__panel-head">
                 <h4>自动重命名</h4>
-                <span class="gys__panel-hint">{{ renameActive ? "转存后自动应用" : "可选" }}</span>
+                <span class="gys__panel-hint">{{ renameActive ? "入库后自动应用" : "可选" }}</span>
               </div>
 
               <label class="gys__rule" :class="{ 'is-disabled': !renamePrefixBase }">
@@ -2351,7 +2351,7 @@ onBeforeUnmount(() => {
                   <span class="gys__switch-desc">
                     <template v-if="!autoStrm">需先开启「生成 STRM」</template>
                     <template v-else-if="!scrapeAvailable">暂无 STRM 任务可刮削</template>
-                    <template v-else>转存后重建刮削索引，只刮本次转存的作品</template>
+                    <template v-else>入库后重建刮削索引，只刮本次入库的作品</template>
                   </span>
                 </span>
                 <button
@@ -2394,7 +2394,7 @@ onBeforeUnmount(() => {
                     <template v-else-if="autoStrm && autoScrape && scrapeAvailable">
                       等刮削完成后触发，避免刷到未刮削的内容
                     </template>
-                    <template v-else>转存后触发一次媒体库扫描</template>
+                    <template v-else>入库后触发一次媒体库扫描</template>
                   </span>
                 </span>
                 <button
@@ -2484,8 +2484,8 @@ onBeforeUnmount(() => {
     :account-id="pickerAccountId"
     :initial-path="pickerInitialPath"
     allow-create-folder
-    title="选择光鸭转存目录"
-    confirm-text="转存到此目录"
+    title="选择光鸭入库目录"
+    confirm-text="入库到此目录"
     @close="pickerOpen = false"
     @resolve="onFolderResolved"
   />

@@ -4,7 +4,7 @@ import AppButton from "@/components/base/AppButton.vue";
 import AppModal from "@/components/base/AppModal.vue";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
 
-// buei 定制：光鸭分享收藏的转存确认弹窗，附带重命名预览。
+// buei 定制：光鸭入库收藏的入库确认弹窗，附带重命名预览。
 
 export interface ScrapeProgressView {
   running: boolean;
@@ -45,11 +45,11 @@ const props = withDefaults(
     embyRefreshed?: boolean;
     embyScheduled?: boolean;
     embyError?: string;
-    /** 动作名称：光鸭分享使用「转存」，夸克入库使用「入库」。 */
+    /** 动作名称：光鸭入库与夸克入库均使用「入库」。 */
     actionLabel?: string;
     hint?: string;
   }>(),
-  { actionLabel: "转存", hint: "" },
+  { actionLabel: "入库", hint: "" },
 );
 
 const emit = defineEmits<{ confirm: []; cancel: []; stay: []; open: [] }>();
@@ -143,7 +143,7 @@ function stepDetail(key: string) {
   }
 }
 
-// 转存 → 重命名 → 生成 STRM；没有改名/未开启自动 STRM 时显示为跳过。
+// 入库 → 重命名 → 生成 STRM；没有改名/未开启自动 STRM 时显示为跳过。
 const steps = computed(() => {
   const defs = [
     { key: "transfer", label: props.actionLabel, skipped: false },
@@ -246,7 +246,7 @@ const phaseText = computed(() => {
           </span>
         </header>
         <p v-if="!renames.length" class="gysc__empty">
-          当前没有需要修改的文件名，转存后保留原名称。
+          当前没有需要修改的文件名，入库后保留原名称。
         </p>
         <ul v-else class="gysc__list">
           <li v-for="row in renames" :key="`${row.path}|${row.oldName}`" class="gysc__row">
@@ -311,7 +311,7 @@ const phaseText = computed(() => {
   line-height: 1.5;
 }
 
-/* 转存阶段进度条：每个步骤的结果显示在自身下方 */
+/* 入库阶段进度条：每个步骤的结果显示在自身下方 */
 .gysc__steps {
   display: flex;
   align-items: stretch;

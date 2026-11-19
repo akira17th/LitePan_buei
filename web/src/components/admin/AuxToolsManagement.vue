@@ -50,7 +50,7 @@ const QUARK_TAB = "quark";
 // #endregion buei:quark-ingest
 const tabs = [
   // #region buei:guangya-share
-  { key: GUANGYA_TAB, label: "光鸭分享" },
+  { key: GUANGYA_TAB, label: "光鸭入库" },
   // #endregion buei:guangya-share
   // #region buei:quark-ingest
   { key: QUARK_TAB, label: "夸克入库" },
@@ -81,7 +81,7 @@ function revertDrawerSettings() {
 const { confirmDiscardChanges } = useSettingsPageDirty(settingsPageDirty, revertDrawerSettings);
 
 const route = useRoute();
-// buei:guangya-share —— 无 tab 参数时默认进入光鸭分享
+// buei:guangya-share —— 无 tab 参数时默认进入光鸭入库
 const initialTab = String(route.query.tab ?? "") === PROXY_TAB ? ENHANCED_TAB : GUANGYA_TAB;
 const { activeTab, setActiveTab } = useSectionTabRoute(
   initialTab,
@@ -182,7 +182,7 @@ async function handleDrawerSave() {
           {{
             guangyaShareRef?.transferring
               ? guangyaShareRef?.transferPhaseLabel
-              : `转存 ${guangyaShareRef?.selectedCount ?? 0} 项`
+              : `入库 ${guangyaShareRef?.selectedCount ?? 0} 项`
           }}
         </AppButton>
         <!-- #endregion buei:guangya-share -->
@@ -241,7 +241,7 @@ async function handleDrawerSave() {
 </template>
 
 <style scoped>
-/* 顶部 tab 栏吸顶：长列表滚动时仍能切换标签并使用右侧的转存/开始刮削按钮 */
+/* 顶部 tab 栏吸顶：长列表滚动时仍能切换标签并使用右侧的入库/开始刮削按钮 */
 .aux-tabs {
   position: sticky;
   top: 0;

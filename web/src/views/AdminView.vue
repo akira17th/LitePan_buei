@@ -63,10 +63,10 @@ const PAGE_TABS: Record<string, { defaultTab: string; tabs: Record<string, strin
     tabs: { strm: "STRM 任务", cache: "缓存任务", organize: "目录整理", automation: "自动联动" },
   },
   tools: {
-    // buei:guangya-share —— 辅助工具默认进入光鸭分享
+    // buei:guangya-share —— 辅助工具默认进入光鸭入库
     defaultTab: "guangya",
-    // buei:guangya-share —— 光鸭分享从增强工具拆成独立 tab
-    tabs: { scrape: "STRM 刮削", enhanced: "增强工具", guangya: "光鸭分享", quark: "夸克入库", backup: "备份管理" },
+    // buei:guangya-share —— 光鸭入库从增强工具拆成独立 tab
+    tabs: { scrape: "STRM 刮削", enhanced: "增强工具", guangya: "光鸭入库", quark: "夸克入库", backup: "备份管理" },
   },
   share: { defaultTab: "webdav", tabs: { webdav: "WebDAV", fuse: "本地挂载" } },
   "cross-transfer": { defaultTab: "plain", tabs: { plain: "跨盘普传", rapid: "跨盘秒传" } },
@@ -200,7 +200,7 @@ function buildPageQuery(pageKey: string): Record<string, string> {
   if (pageKey === "settings" && mustChangePassword.value) {
     query.tab = "security";
   }
-  // buei:guangya-share —— 点击左侧「辅助工具」总是进入光鸭分享 tab
+  // buei:guangya-share —— 点击左侧「辅助工具」总是进入光鸭入库 tab
   if (pageKey === "tools") {
     query.tab = "guangya";
   }
