@@ -1,6 +1,6 @@
 import { http } from "./client";
 
-// buei 定制：后台「辅助工具 / 夸克入库」。
+// buei 定制：后台「辅助工具 / 影视入库」的夸克接口。
 
 export interface QuarkIngestRenameRule {
   find: string;

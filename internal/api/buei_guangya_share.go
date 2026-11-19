@@ -189,6 +189,22 @@ func bueiGuangyaShareItemsToDTO(items []guangyashare.ShareItem) []bueiGuangyaSha
 	return dtos
 }
 
+func bueiGuangyaShareParseResultToDTO(res *guangyashare.ParseResult) bueiGuangyaShareParseDTO {
+	return bueiGuangyaShareParseDTO{
+		ShareID:          res.ShareID,
+		Title:            res.Title,
+		Owner:            res.Owner,
+		NeedCode:         res.NeedCode,
+		NeedPassword:     res.NeedPassword,
+		Items:            bueiGuangyaShareItemsToDTO(res.Items),
+		LastDestination:  bueiGuangyaShareDestinationToDTO(res.LastDestination),
+		LastBase:         bueiGuangyaShareDestinationBaseToDTO(res.LastBase),
+		TransferredFiles: bueiGuangyaShareTransferredToDTO(res.TransferredFiles),
+		LastBrowsePath:   bueiGuangyaShareBrowsePathToDTO(res.LastBrowsePath),
+		RenameReplace:    bueiGuangyaShareRenameReplaceToDTO(res.RenameReplace),
+	}
+}
+
 func (h *Handler) bueiGuangyaShareParse(w http.ResponseWriter, r *http.Request) {
 	if !ensureServiceReady(w, h.buei.GuangyaShare != nil) {
 		return
@@ -209,19 +225,7 @@ func (h *Handler) bueiGuangyaShareParse(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, err)
 		return
 	}
-	writeOK(w, bueiGuangyaShareParseDTO{
-		ShareID:          res.ShareID,
-		Title:            res.Title,
-		Owner:            res.Owner,
-		NeedCode:         res.NeedCode,
-		NeedPassword:     res.NeedPassword,
-		Items:            bueiGuangyaShareItemsToDTO(res.Items),
-		LastDestination:  bueiGuangyaShareDestinationToDTO(res.LastDestination),
-		LastBase:         bueiGuangyaShareDestinationBaseToDTO(res.LastBase),
-		TransferredFiles: bueiGuangyaShareTransferredToDTO(res.TransferredFiles),
-		LastBrowsePath:   bueiGuangyaShareBrowsePathToDTO(res.LastBrowsePath),
-		RenameReplace:    bueiGuangyaShareRenameReplaceToDTO(res.RenameReplace),
-	})
+	writeOK(w, bueiGuangyaShareParseResultToDTO(res))
 }
 
 func (h *Handler) bueiGuangyaShareList(w http.ResponseWriter, r *http.Request) {
@@ -469,6 +473,35 @@ func (h *Handler) bueiGuangyaShareSavedList(w http.ResponseWriter, r *http.Reque
 		dtos = append(dtos, bueiGuangyaShareSavedLinkToDTO(link))
 	}
 	writeOK(w, map[string]any{"items": dtos})
+}
+
+func (h *Handler) bueiGuangyaShareSavedUpdate(w http.ResponseWriter, r *http.Request) {
+	if !ensureServiceReady(w, h.buei.GuangyaShare != nil) {
+		return
+	}
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	var in struct {
+		URL      string `json:"url"`
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	res, err := h.buei.GuangyaShare.UpdateSavedLink(r.Context(), guangyashare.UpdateSavedInput{
+		ID:       id,
+		URL:      in.URL,
+		Password: in.Password,
+	})
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeOK(w, bueiGuangyaShareParseResultToDTO(res))
 }
 
 func (h *Handler) bueiGuangyaShareSavedDelete(w http.ResponseWriter, r *http.Request) {

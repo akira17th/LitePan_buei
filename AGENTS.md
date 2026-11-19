@@ -76,9 +76,8 @@
 | 本地一键启动脚本 | `run.sh` |
 | 本地运行 / 镜像构建说明 | `readme_run.md` |
 | README 定制说明 | `README.md` |
-| 光鸭入库（辅助工具独立 tab；收藏链接 / 解析 / 类型勾选 / 目标路径预设（数据库） / 浏览目录记忆 / Shift 连选 / 自动重命名（前缀 / SxxEnn / 多组替换文本）/ 入库历史 / 丢弃标记 / 入库 / 入库后联动动作（生成 STRM / 刮削元数据（只刮本次作品） / Emby 刷库（预设持久化））） | `internal/buei/guangyashare/`、`internal/store/buei_guangya_share_repo.go`、`drivers/Guangya/buei_share.go`、`internal/api/buei_guangya_share.go`、`web/src/components/buei/`（含 `AppModal` 的 `wide` / `inline` 支持） |
-| 夸克入库（后台「辅助工具 / 夸克入库」独立 tab，位于光鸭入库之后；左侧收藏链接 + 「来自：分享」文件夹；打开收藏文件夹勾选文件批量入库；表格可直接删除勾选文件；支持「平铺目录」递归移动子文件夹文件并删除文件夹、重名自动加序号；删除收藏时一并删除对应收藏文件夹；目标文件夹名默认取收藏文件夹名并同步改名；保存位置 / 重命名 / 联动动作；预设持久化） | `internal/buei/quarkingest/`、`internal/domain/buei_quark_ingest.go`、`internal/store/buei_quark_ingest_repo.go`、`internal/api/buei_quark_ingest.go`、`web/src/api/bueiQuarkIngest.ts`、`web/src/components/buei/BueiQuarkIngestPanel.vue`、`web/src/components/buei/BueiQuarkIngestSettings.vue`、`web/src/utils/bueiQuarkShare.ts` |
-| 夸克入库收藏文件夹直接父目录 | `web/src/components/file/FolderSelector.vue`、`FolderPickerModal.vue`（`buei:quark-ingest` 标记，返回 `parentDirId`） |
+| 影视入库（辅助工具单 tab，统一管理光鸭与夸克；收藏栏 + 按钮自动识别链接：光鸭解析收藏、夸克选择「来自：分享」收藏文件夹；左侧收藏与文件列表同卡片、保存位置与目标文件夹浏览同卡片，右侧重命名 / 联动动作；光鸭收藏与夸克收藏均可编辑，光鸭改链接后自动重新解析并保留保存位置 / 重命名规则 / 联动动作，仅清理旧分享的文件对应关系；光鸭保留文件夹入库 / 丢弃 / 入库历史，夸克保留平铺目录 / 删除文件 / 来源文件夹改名；目标路径存在时只读展示目标文件夹内容（名称/类型/大小/时间，类型图标与源列表一致，默认名称倒序，可点表头排序）；支持目标路径预设、浏览目录记忆、Shift 连选、前缀 / SxxEnn / 多组替换文本、入库后 STRM / 刮削 / Emby 联动） | `internal/buei/guangyashare/`、`internal/buei/quarkingest/`、`internal/store/buei_guangya_share_repo.go`、`internal/store/buei_quark_ingest_repo.go`、`drivers/Guangya/buei_share.go`、`internal/api/buei_guangya_share.go`、`internal/api/buei_quark_ingest.go`、`web/src/components/buei/BueiShareIngestPanel.vue`、`web/src/components/buei/BueiIngestTargetFiles.vue`、`web/src/components/buei/BueiGuangyaShareConfirm.vue`、`web/src/api/bueiGuangyaShare.ts`、`web/src/api/bueiQuarkIngest.ts`、`web/src/utils/bueiShareLink.ts`、`web/src/utils/bueiIngestKinds.ts`、`web/src/utils/bueiQuarkShare.ts` |
+| 影视入库收藏文件夹直接父目录 | `web/src/components/file/FolderSelector.vue`、`FolderPickerModal.vue`（`buei:quark-ingest` 标记，返回 `parentDirId`） |
 | `.tools/` 忽略 | `.gitignore` |
 | 删除一条上游注释（无功能影响） | `drivers/all.go` |
 

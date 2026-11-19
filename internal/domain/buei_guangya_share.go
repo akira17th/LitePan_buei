@@ -130,6 +130,9 @@ type GuangyaShareLinkRepository interface {
 	UpdateBrowsePath(ctx context.Context, shareID string, crumbs []GuangyaShareBrowseCrumb) error
 	// UpdateRenameReplace 保存“替换文本”重命名规则。
 	UpdateRenameReplace(ctx context.Context, shareID string, rule GuangyaShareRenameReplace) error
+	// UpdateIdentity 更新收藏的分享身份（链接、分享 ID、标题、提取码），保留目标预设与重命名规则。
+	// clearBrowsePath 用于分享 ID 变化时清理已失效的浏览路径。
+	UpdateIdentity(ctx context.Context, id int64, shareID, url, password, title, owner string, clearBrowsePath bool) (*GuangyaShareLink, error)
 	// Delete 删除收藏并返回 share_id，供调用方清理关联数据。
 	Delete(ctx context.Context, id int64) (string, error)
 }

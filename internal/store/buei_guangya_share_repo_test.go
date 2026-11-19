@@ -188,6 +188,72 @@ func TestGuangyaShareLinkRepoCRUD(t *testing.T) {
 	}
 }
 
+func TestGuangyaShareLinkRepoUpdateIdentity(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, store.Options{Memory: true})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	repo := store.NewGuangyaShareLinkRepo(db)
+	saved, err := repo.Upsert(ctx, &domain.GuangyaShareLink{
+		ShareID: "1969_old", URL: "https://www.guangyapan.com/s/1969_old",
+		Title: "旧标题", Owner: "旧用户",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	dest := &domain.GuangyaShareDestination{
+		AccountID: 2, ParentID: "dir-1", BasePath: "/媒体", Title: "剧名 (2026)",
+		Season: 1, IsSeries: true, AutoStrm: true, AutoScrape: true, RefreshEmby: true,
+		EmbyConfigID: "emby-1", EmbyMode: "library", EmbyLibraryID: "lib-1",
+	}
+	if err := repo.UpdateDestination(ctx, saved.ShareID, dest); err != nil {
+		t.Fatalf("update destination: %v", err)
+	}
+	rule := domain.GuangyaShareRenameReplace{Enabled: true, Find: "old", ReplaceWith: "new"}
+	if err := repo.UpdateRenameReplace(ctx, saved.ShareID, rule); err != nil {
+		t.Fatalf("update rename: %v", err)
+	}
+	if err := repo.UpdateBrowsePath(ctx, saved.ShareID, []domain.GuangyaShareBrowseCrumb{{ID: "d1", Name: "目录", Path: "/目录"}}); err != nil {
+		t.Fatalf("update browse path: %v", err)
+	}
+	transfers := store.NewGuangyaShareTransferredRepo(db)
+	if err := transfers.UpsertMany(ctx, saved.ShareID, []*domain.GuangyaShareTransferredFile{{FileID: "f1", OriginalName: "01.mp4"}}); err != nil {
+		t.Fatalf("insert transferred file: %v", err)
+	}
+
+	updated, err := repo.UpdateIdentity(ctx, saved.ID, "1969_new", "https://www.guangyapan.com/s/1969_new", "pwd", "新标题", "新用户", true)
+	if err != nil {
+		t.Fatalf("update identity: %v", err)
+	}
+	if updated.ID != saved.ID || updated.ShareID != "1969_new" || updated.Title != "新标题" || updated.Owner != "新用户" || updated.Password != "pwd" {
+		t.Fatalf("unexpected identity: %+v", updated)
+	}
+	if updated.LastDestination == nil || updated.LastDestination.Title != "剧名 (2026)" || !updated.LastDestination.AutoStrm {
+		t.Fatalf("destination not preserved: %+v", updated.LastDestination)
+	}
+	if !updated.RenameReplace.Enabled || updated.RenameReplace.Find != "old" {
+		t.Fatalf("rename rule not preserved: %+v", updated.RenameReplace)
+	}
+	if len(updated.LastBrowsePath) != 0 {
+		t.Fatalf("browse path should be cleared: %+v", updated.LastBrowsePath)
+	}
+	if updated.CreatedAt.IsZero() || updated.UpdatedAt.IsZero() || updated.LastUsedAt.IsZero() {
+		t.Fatalf("timestamps missing: %+v", updated)
+	}
+	oldFiles, err := transfers.ListByShare(ctx, "1969_old")
+	if err != nil {
+		t.Fatalf("list old transferred files: %v", err)
+	}
+	if len(oldFiles) != 0 {
+		t.Fatalf("old transferred files should be cleared: %+v", oldFiles)
+	}
+}
+
 func TestGuangyaShareTransferredRepo(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(ctx, store.Options{Memory: true})

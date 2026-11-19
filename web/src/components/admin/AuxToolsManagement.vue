@@ -12,9 +12,9 @@ import { readPanelSaving, type SettingsPanelExpose } from "@/composables/useSett
 const StrmScrapePanel = defineAsyncComponent(() => import("@/components/admin/StrmScrapePanel.vue"));
 const StrmScrapeSettings = defineAsyncComponent(() => import("@/components/admin/StrmScrapeSettings.vue"));
 const CloudToolsPanel = defineAsyncComponent(() => import("@/components/admin/CloudToolsPanel.vue"));
-// #region buei:guangya-share
-const BueiGuangyaShareModal = defineAsyncComponent(() => import("@/components/buei/BueiGuangyaShareModal.vue"));
-type GuangyaSharePanelApi = {
+// #region buei:share-ingest
+const BueiShareIngestPanel = defineAsyncComponent(() => import("@/components/buei/BueiShareIngestPanel.vue"));
+type ShareIngestPanelApi = {
   selectedCount?: number;
   canTransfer?: boolean;
   transferring?: boolean;
@@ -22,39 +22,21 @@ type GuangyaSharePanelApi = {
   transferHint?: string;
   submitTransfer?: () => void;
 };
-const guangyaShareRef = ref<GuangyaSharePanelApi | null>(null);
-// #endregion buei:guangya-share
-// #region buei:quark-ingest
-const BueiQuarkIngestPanel = defineAsyncComponent(() => import("@/components/buei/BueiQuarkIngestPanel.vue"));
-type QuarkIngestPanelApi = {
-  selectedCount?: number;
-  canIngest?: boolean;
-  submitting?: boolean;
-  transferPhaseLabel?: string;
-  transferHint?: string;
-  submitIngest?: () => void;
-};
-const quarkIngestRef = ref<QuarkIngestPanelApi | null>(null);
-// #endregion buei:quark-ingest
+const shareIngestRef = ref<ShareIngestPanelApi | null>(null);
+// #endregion buei:share-ingest
 const BackupRestorePanel = defineAsyncComponent(() => import("@/components/admin/BackupRestorePanel.vue"));
 
 const SCRAPE_TAB = "scrape";
 const PROXY_TAB = "proxy";
 const ENHANCED_TAB = "enhanced";
 const BACKUP_TAB = "backup";
-// #region buei:guangya-share
-const GUANGYA_TAB = "guangya";
-// #endregion buei:guangya-share
-// #region buei:quark-ingest
-const QUARK_TAB = "quark";
-// #endregion buei:quark-ingest
+// #region buei:share-ingest
+const SHARE_INGEST_TAB = "media";
+// #endregion buei:share-ingest
 const tabs = [
-  // #region buei:guangya-share
-  { key: GUANGYA_TAB, label: "光鸭入库" },
-  // #endregion buei:guangya-share
-  // #region buei:quark-ingest
-  { key: QUARK_TAB, label: "夸克入库" },
-  // #endregion buei:quark-ingest
+  // #region buei:share-ingest
+  { key: SHARE_INGEST_TAB, label: "影视入库" },
+  // #endregion buei:share-ingest
   { key: SCRAPE_TAB, label: "STRM 刮削" },
   { key: ENHANCED_TAB, label: "增强工具" },
   { key: BACKUP_TAB, label: "备份管理" },
@@ -81,11 +63,11 @@ function revertDrawerSettings() {
 const { confirmDiscardChanges } = useSettingsPageDirty(settingsPageDirty, revertDrawerSettings);
 
 const route = useRoute();
-// buei:guangya-share —— 无 tab 参数时默认进入光鸭入库
-const initialTab = String(route.query.tab ?? "") === PROXY_TAB ? ENHANCED_TAB : GUANGYA_TAB;
+// buei:share-ingest —— 无 tab 参数时默认进入影视入库
+const initialTab = String(route.query.tab ?? "") === PROXY_TAB ? ENHANCED_TAB : SHARE_INGEST_TAB;
 const { activeTab, setActiveTab } = useSectionTabRoute(
   initialTab,
-  [SCRAPE_TAB, ENHANCED_TAB, GUANGYA_TAB, QUARK_TAB, BACKUP_TAB],
+  [SCRAPE_TAB, ENHANCED_TAB, SHARE_INGEST_TAB, BACKUP_TAB],
   {
     beforeTabChange: async () => {
       if (!settingsDrawerOpen.value) return true;
@@ -116,12 +98,9 @@ const drawerSaving = computed(() => readPanelSaving(scrapeSettingsRef.value?.sav
 const isScrapeTab = computed(() => activeTab.value === SCRAPE_TAB);
 const isEnhancedTab = computed(() => activeTab.value === ENHANCED_TAB);
 const isBackupTab = computed(() => activeTab.value === BACKUP_TAB);
-// #region buei:guangya-share
-const isGuangyaTab = computed(() => activeTab.value === GUANGYA_TAB);
-// #endregion buei:guangya-share
-// #region buei:quark-ingest
-const isQuarkTab = computed(() => activeTab.value === QUARK_TAB);
-// #endregion buei:quark-ingest
+// #region buei:share-ingest
+const isShareIngestTab = computed(() => activeTab.value === SHARE_INGEST_TAB);
+// #endregion buei:share-ingest
 
 async function openScrapeSettings() {
   scrapeSettingsVisited.value = true;
@@ -170,38 +149,22 @@ async function handleDrawerSave() {
         <AppButton v-else-if="isEnhancedTab" type="button" variant="secondary" @click="enhancedSearchOpen = true">
           搜索工具
         </AppButton>
-        <!-- #region buei:guangya-share -->
+        <!-- #region buei:share-ingest -->
         <AppButton
-          v-else-if="isGuangyaTab"
+          v-else-if="isShareIngestTab"
           type="button"
           variant="primary"
-          :disabled="!guangyaShareRef?.canTransfer"
-          :title="guangyaShareRef?.transferHint || ''"
-          @click="guangyaShareRef?.submitTransfer?.()"
+          :disabled="!shareIngestRef?.canTransfer"
+          :title="shareIngestRef?.transferHint || ''"
+          @click="shareIngestRef?.submitTransfer?.()"
         >
           {{
-            guangyaShareRef?.transferring
-              ? guangyaShareRef?.transferPhaseLabel
-              : `入库 ${guangyaShareRef?.selectedCount ?? 0} 项`
+            shareIngestRef?.transferring
+              ? shareIngestRef?.transferPhaseLabel
+              : `入库 ${shareIngestRef?.selectedCount ?? 0} 项`
           }}
         </AppButton>
-        <!-- #endregion buei:guangya-share -->
-        <!-- #region buei:quark-ingest -->
-        <AppButton
-          v-else-if="isQuarkTab"
-          type="button"
-          variant="primary"
-          :disabled="!quarkIngestRef?.canIngest"
-          :title="quarkIngestRef?.transferHint || ''"
-          @click="quarkIngestRef?.submitIngest?.()"
-        >
-          {{
-            quarkIngestRef?.submitting
-              ? quarkIngestRef?.transferPhaseLabel
-              : `入库 ${quarkIngestRef?.selectedCount ?? 0} 项`
-          }}
-        </AppButton>
-        <!-- #endregion buei:quark-ingest -->
+        <!-- #endregion buei:share-ingest -->
       </template>
     </SectionTabBar>
 
@@ -218,12 +181,13 @@ async function handleDrawerSave() {
       :search-open="enhancedSearchOpen"
       @update:search-open="enhancedSearchOpen = $event"
     />
-    <!-- #region buei:guangya-share -->
-    <BueiGuangyaShareModal v-if="tabsVisited[GUANGYA_TAB]" v-show="isGuangyaTab" ref="guangyaShareRef" />
-    <!-- #endregion buei:guangya-share -->
-    <!-- #region buei:quark-ingest -->
-    <BueiQuarkIngestPanel v-if="tabsVisited[QUARK_TAB]" v-show="isQuarkTab" ref="quarkIngestRef" />
-    <!-- #endregion buei:quark-ingest -->
+    <!-- #region buei:share-ingest -->
+    <BueiShareIngestPanel
+      v-if="tabsVisited[SHARE_INGEST_TAB]"
+      v-show="isShareIngestTab"
+      ref="shareIngestRef"
+    />
+    <!-- #endregion buei:share-ingest -->
     <BackupRestorePanel v-if="tabsVisited[BACKUP_TAB]" v-show="isBackupTab" />
 
     <AdminSettingsDrawer

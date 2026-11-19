@@ -111,6 +111,13 @@ type ParseInput struct {
 	Password string
 }
 
+// UpdateSavedInput 是编辑光鸭收藏链接的入参。
+type UpdateSavedInput struct {
+	ID       int64
+	URL      string
+	Password string
+}
+
 // ParseResult 是分享解析结果，只包含分享根目录内容，子目录按需通过 List 加载。
 type ParseResult struct {
 	ShareID          string                                `json:"share_id"`
@@ -335,6 +342,99 @@ func (s *Service) Parse(ctx context.Context, in ParseInput) (*ParseResult, error
 			rule := saved.RenameReplace
 			result.RenameReplace = &rule
 		}
+	}
+	result.LastBase = s.loadLastBase(ctx)
+	result.TransferredFiles = s.loadTransferred(ctx, link.ShareID)
+	return result, nil
+}
+
+// UpdateSavedLink 用新链接替换收藏的分享身份，同时保留保存位置、重命名规则与联动动作。
+func (s *Service) UpdateSavedLink(ctx context.Context, in UpdateSavedInput) (*ParseResult, error) {
+	if s == nil || s.client == nil {
+		return nil, domain.Errorf(domain.CodeInternal, "光鸭分享服务未初始化")
+	}
+	if s.links == nil {
+		return nil, domain.Errorf(domain.CodeNotImplement, "收藏功能未启用")
+	}
+	if in.ID <= 0 {
+		return nil, domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
+	}
+	links, err := s.links.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var old *domain.GuangyaShareLink
+	for _, item := range links {
+		if item.ID == in.ID {
+			old = item
+			break
+		}
+	}
+	if old == nil {
+		return nil, domain.Errf(domain.CodeNotFound)
+	}
+
+	link, err := ParseShareLink(in.URL)
+	if err != nil {
+		return nil, err
+	}
+	password := strings.TrimSpace(in.Password)
+	if password == "" {
+		password = link.Password
+	}
+	summary, err := s.client.shareSummary(ctx, link.ShareID)
+	if err != nil {
+		return nil, err
+	}
+	result := &ParseResult{
+		ShareID:  link.ShareID,
+		Title:    strings.TrimSpace(summary.Title),
+		Owner:    strings.TrimSpace(summary.NickName),
+		NeedCode: summary.NeedCode,
+	}
+	if summary.NeedCode && password == "" {
+		result.NeedPassword = true
+		return result, nil
+	}
+	if !summary.NeedCode {
+		password = ""
+	}
+	for _, item := range links {
+		if item.ID != old.ID && item.ShareID == link.ShareID {
+			return nil, domain.Errorf(domain.CodeValidation, "新链接已在收藏中，请先删除重复收藏")
+		}
+	}
+	items, err := s.listItems(ctx, link.ShareID, password, "", "")
+	if err != nil {
+		return nil, err
+	}
+	clearBrowsePath := old.ShareID != link.ShareID
+	updated, err := s.links.UpdateIdentity(
+		ctx,
+		old.ID,
+		link.ShareID,
+		in.URL,
+		password,
+		summary.Title,
+		summary.NickName,
+		clearBrowsePath,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if clearBrowsePath && s.transfers != nil {
+		if err := s.transfers.DeleteByShare(ctx, old.ShareID); err != nil {
+			s.logger().Warn("清理光鸭旧分享文件对应关系失败", "share_id", old.ShareID, "error", err)
+		}
+	}
+	result.Items = items
+	result.LastDestination = updated.LastDestination
+	if !clearBrowsePath {
+		result.LastBrowsePath = updated.LastBrowsePath
+	}
+	if updated.RenameReplace.Enabled || len(updated.RenameReplace.NormalizeRules()) > 0 {
+		rule := updated.RenameReplace
+		result.RenameReplace = &rule
 	}
 	result.LastBase = s.loadLastBase(ctx)
 	result.TransferredFiles = s.loadTransferred(ctx, link.ShareID)

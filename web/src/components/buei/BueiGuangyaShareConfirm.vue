@@ -4,7 +4,7 @@ import AppButton from "@/components/base/AppButton.vue";
 import AppModal from "@/components/base/AppModal.vue";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
 
-// buei 定制：光鸭入库收藏的入库确认弹窗，附带重命名预览。
+// buei 定制：影视入库（光鸭 / 夸克）的入库确认弹窗，附带重命名预览。
 
 export interface ScrapeProgressView {
   running: boolean;
@@ -45,7 +45,7 @@ const props = withDefaults(
     embyRefreshed?: boolean;
     embyScheduled?: boolean;
     embyError?: string;
-    /** 动作名称：光鸭入库与夸克入库均使用「入库」。 */
+    /** 动作名称：光鸭与夸克入库均使用「入库」。 */
     actionLabel?: string;
     hint?: string;
   }>(),
@@ -198,7 +198,7 @@ const phaseText = computed(() => {
       </p>
       <p v-else class="gysc__summary">
         将 <b>{{ count }}</b> 项内容{{ actionLabel }}到「{{ target }}」。
-        目标文件夹不存在时会自动创建；文件夹会连同其中的文件一起{{ actionLabel }}。
+        目标文件夹不存在时会自动创建。
       </p>
       <p v-if="hint && !done" class="gysc__hint">{{ hint }}</p>
 

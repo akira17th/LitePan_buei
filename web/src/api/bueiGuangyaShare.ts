@@ -1,6 +1,6 @@
 import { http } from "./client";
 
-// buei 定制：后台「辅助工具 / 光鸭入库」。
+// buei 定制：后台「辅助工具 / 影视入库」的光鸭接口。
 
 export type GuangyaShareKind =
   | "folder"
@@ -195,6 +195,8 @@ export const bueiGuangyaShareApi = {
       signal,
     ),
   saved: () => http.get<{ items: GuangyaShareSavedLink[] }>("/admin/tools/guangya-share/saved"),
+  updateSaved: (id: number, payload: { url: string; password: string }) =>
+    http.put<GuangyaShareParseResult>(`/admin/tools/guangya-share/saved/${id}`, payload),
   progress: (id: string) =>
     http.get<GuangyaShareTransferProgress>("/admin/tools/guangya-share/progress", { id }),
   discard: (shareId: string, files: { file_id: string; original_name: string }[]) =>

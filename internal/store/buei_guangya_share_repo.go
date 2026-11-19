@@ -100,6 +100,73 @@ func (r *guangyaShareLinkRepo) Upsert(ctx context.Context, link *domain.GuangyaS
 	return saved, nil
 }
 
+func (r *guangyaShareLinkRepo) UpdateIdentity(ctx context.Context, id int64, shareID, url, password, title, owner string, clearBrowsePath bool) (*domain.GuangyaShareLink, error) {
+	if id <= 0 {
+		return nil, domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
+	}
+	shareID = strings.TrimSpace(shareID)
+	if shareID == "" {
+		return nil, domain.Errorf(domain.CodeValidation, "分享 ID 不能为空")
+	}
+	now := tsValue(time.Now().UTC())
+	browsePathSQL := "last_browse_path"
+	if clearBrowsePath {
+		browsePathSQL = "'[]'"
+	}
+
+	tx, err := r.db.write.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, wrapDB(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var oldShareID string
+	if err := tx.QueryRowContext(ctx, `SELECT share_id FROM buei_guangya_share_links WHERE id=?`, id).Scan(&oldShareID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.Errf(domain.CodeNotFound)
+		}
+		return nil, wrapDB(err)
+	}
+	// 分享 ID 变化时，先删除旧分享的转存/丢弃记录，避免外键阻止父记录更换 share_id。
+	if oldShareID != shareID {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM buei_guangya_share_transferred_files WHERE share_id=?`, oldShareID); err != nil {
+			return nil, wrapDB(err)
+		}
+	}
+	result, err := tx.ExecContext(ctx,
+		`UPDATE buei_guangya_share_links
+		 SET share_id=?, url=?, password=?, title=?, owner=?, updated_at=?, last_used_at=?,
+		     last_browse_path=`+browsePathSQL+`
+		 WHERE id=?`,
+		shareID, strings.TrimSpace(url), password, strings.TrimSpace(title), strings.TrimSpace(owner),
+		now, now, id,
+	)
+	if err != nil {
+		return nil, wrapDB(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, wrapDB(err)
+	}
+	if affected == 0 {
+		return nil, domain.Errf(domain.CodeNotFound)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, wrapDB(err)
+	}
+	row := r.db.write.QueryRowContext(ctx,
+		`SELECT `+guangyaShareLinkColumns+`
+		 FROM buei_guangya_share_links WHERE id=?`, id)
+	saved, err := scanGuangyaShareLink(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.Errf(domain.CodeNotFound)
+	}
+	if err != nil {
+		return nil, wrapDB(err)
+	}
+	return saved, nil
+}
+
 func (r *guangyaShareLinkRepo) UpdateDestination(ctx context.Context, shareID string, dest *domain.GuangyaShareDestination) error {
 	shareID = strings.TrimSpace(shareID)
 	if shareID == "" {

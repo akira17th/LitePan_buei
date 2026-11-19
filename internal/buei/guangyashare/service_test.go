@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"litepan/internal/domain"
 )
@@ -266,6 +267,38 @@ func (r *fakeLinkRepo) Upsert(_ context.Context, link *domain.GuangyaShareLink) 
 	existing.UpdatedAt = link.UpdatedAt
 	existing.LastUsedAt = link.LastUsedAt
 	copy := *existing
+	return &copy, nil
+}
+
+func (r *fakeLinkRepo) UpdateIdentity(_ context.Context, id int64, shareID, url, password, title, owner string, clearBrowsePath bool) (*domain.GuangyaShareLink, error) {
+	var oldShareID string
+	var link *domain.GuangyaShareLink
+	for key, item := range r.links {
+		if item.ID == id {
+			oldShareID = key
+			link = item
+			break
+		}
+	}
+	if link == nil {
+		return nil, domain.Errf(domain.CodeNotFound)
+	}
+	if _, exists := r.links[shareID]; exists && shareID != oldShareID {
+		return nil, domain.Errorf(domain.CodeValidation, "新链接已在收藏中")
+	}
+	delete(r.links, oldShareID)
+	link.ShareID = shareID
+	link.URL = url
+	link.Password = password
+	link.Title = title
+	link.Owner = owner
+	link.UpdatedAt = time.Now().UTC()
+	link.LastUsedAt = link.UpdatedAt
+	if clearBrowsePath {
+		link.LastBrowsePath = nil
+	}
+	r.links[shareID] = link
+	copy := *link
 	return &copy, nil
 }
 
@@ -613,6 +646,101 @@ func TestServiceDiscard(t *testing.T) {
 		if file.Status != domain.GuangyaShareFileDiscarded || file.NewName != file.OriginalName {
 			t.Fatalf("unexpected discarded record: %+v", file)
 		}
+	}
+}
+
+func TestUpdateSavedLinkPreservesSettings(t *testing.T) {
+	const newShareID = "1969341399784386636_newShareID"
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch r.URL.Path {
+		case pathShareSummary:
+			if body["shareId"] != newShareID {
+				writeJSON(w, map[string]any{"code": 201, "msg": "invalid share"})
+				return
+			}
+			writeJSON(w, map[string]any{"code": 0, "msg": "success", "data": map[string]any{
+				"shareId": newShareID, "title": "新测试分享", "nickName": "新用户", "needCode": true,
+			}})
+		case pathShareAccessToken:
+			if body["code"] != testPassword {
+				writeJSON(w, map[string]any{"code": 209, "msg": "提取码错误"})
+				return
+			}
+			writeJSON(w, map[string]any{"code": 0, "msg": "success", "data": map[string]any{"accessToken": "new-token"}})
+		case pathShareFileList:
+			if body["accessToken"] != "new-token" {
+				writeJSON(w, map[string]any{"code": 210, "msg": "分享accessToken无效"})
+				return
+			}
+			writeJSON(w, map[string]any{"code": 0, "msg": "success", "data": map[string]any{
+				"total": 1,
+				"list": []map[string]any{
+					{"fileId": "new-f1", "parentId": "", "fileName": "new.mp4", "resType": 1, "fileSize": 100, "utime": 1700000000, "fileType": fileTypeVideo},
+				},
+			}})
+		default:
+			writeJSON(w, map[string]any{"code": 201, "msg": "unknown"})
+		}
+	})
+	svc := newTestService(t, handler)
+	oldDestination := &domain.GuangyaShareDestination{
+		AccountID: 2, ParentID: "p1", BasePath: "/媒体", Title: "测试剧", Season: 1, IsSeries: true,
+		AutoStrm: true, AutoScrape: true, RefreshEmby: true, EmbyConfigID: "emby-1",
+	}
+	oldRename := domain.GuangyaShareRenameReplace{
+		Enabled: true,
+		Rules:   []domain.GuangyaShareRenameRule{{Find: "old", ReplaceWith: "new"}},
+	}
+	repo := newFakeLinkRepo()
+	repo.links[testShareID] = &domain.GuangyaShareLink{
+		ID: 1, ShareID: testShareID, URL: "https://www.guangyapan.com/s/" + testShareID,
+		Title: "旧分享", Owner: "旧用户",
+		LastDestination: oldDestination,
+		LastBrowsePath:  []domain.GuangyaShareBrowseCrumb{{ID: "d1", Name: "目录", Path: "/目录"}},
+		RenameReplace:   oldRename,
+	}
+	svc.links = repo
+	transfers := newFakeTransferredRepo()
+	transfers.files[testShareID] = []*domain.GuangyaShareTransferredFile{{FileID: "old-f1"}}
+	svc.transfers = transfers
+
+	res, err := svc.UpdateSavedLink(context.Background(), UpdateSavedInput{
+		ID:       1,
+		URL:      "https://www.guangyapan.com/s/" + newShareID,
+		Password: testPassword,
+	})
+	if err != nil {
+		t.Fatalf("UpdateSavedLink() error = %v", err)
+	}
+	if res.ShareID != newShareID || res.Title != "新测试分享" || len(res.Items) != 1 {
+		t.Fatalf("unexpected parse result: %+v", res)
+	}
+	if res.LastDestination == nil || res.LastDestination.Title != "测试剧" || !res.LastDestination.AutoStrm {
+		t.Fatalf("last destination not preserved: %+v", res.LastDestination)
+	}
+	if res.RenameReplace == nil || !res.RenameReplace.Enabled || len(res.RenameReplace.NormalizeRules()) != 1 {
+		t.Fatalf("rename rule not preserved: %+v", res.RenameReplace)
+	}
+	if len(res.LastBrowsePath) != 0 {
+		t.Fatalf("browse path should be cleared, got %+v", res.LastBrowsePath)
+	}
+	saved := repo.links[newShareID]
+	if saved == nil || saved.ID != 1 || saved.Title != "新测试分享" || saved.URL == "" {
+		t.Fatalf("saved link identity not updated: %+v", saved)
+	}
+	if saved.LastDestination == nil || saved.LastDestination.Title != "测试剧" {
+		t.Fatalf("saved destination not preserved: %+v", saved.LastDestination)
+	}
+	if !saved.RenameReplace.Enabled {
+		t.Fatalf("saved rename rule not preserved: %+v", saved.RenameReplace)
+	}
+	if len(saved.LastBrowsePath) != 0 {
+		t.Fatalf("saved browse path should be cleared, got %+v", saved.LastBrowsePath)
+	}
+	if len(transfers.files[testShareID]) != 0 {
+		t.Fatalf("old transferred history should be cleared, got %+v", transfers.files[testShareID])
 	}
 }
 

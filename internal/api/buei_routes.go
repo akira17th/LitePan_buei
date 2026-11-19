@@ -12,6 +12,7 @@ func (h *Handler) registerBueiRoutes(r chi.Router) {
 		r.Get("/progress", h.bueiGuangyaShareProgress)
 		r.Post("/discard", h.bueiGuangyaShareDiscard)
 		r.Get("/saved", h.bueiGuangyaShareSavedList)
+		r.Put("/saved/{id}", h.bueiGuangyaShareSavedUpdate)
 		r.Delete("/saved/{id}", h.bueiGuangyaShareSavedDelete)
 	})
 	r.Route("/tools/quark-ingest", func(r chi.Router) {
