@@ -708,12 +708,14 @@ const sanitizedFolderTitle = computed(() => sanitizeFolderName(folderTitle.value
 const seasonNumber = computed(() => clampSeason(season.value));
 
 // #region buei:guangya-rename
-// 前缀基名 U：文件夹名去掉“(年份)”与空格。剧集目录名里通常带年份，逐个文件再补前缀会很啰嗦。
-const renamePrefixBase = computed(() =>
-  sanitizedFolderTitle.value
-    .replace(/\s*[（(]\s*\d{4}\s*[）)]\s*/g, " ")
-    .trim(),
-);
+// 前缀基名 U：剧集去掉“(年份)”与首尾空格；电影保留年份。
+const renamePrefixBase = computed(() => {
+  let base = sanitizedFolderTitle.value;
+  if (isSeries.value) {
+    base = base.replace(/\s*[（(]\s*\d{4}\s*[）)]\s*/g, " ").trim();
+  }
+  return base;
+});
 
 function splitFileName(name: string) {
   const index = name.lastIndexOf(".");
@@ -1009,7 +1011,26 @@ function applyDestinationForShare(res: GuangyaShareParseResult) {
 }
 
 function normalizeFolderTitle() {
-  folderTitle.value = sanitizedFolderTitle.value;
+  folderTitle.value = sanitizeFolderName(toHalfWidthBrackets(folderTitle.value));
+}
+
+function onFolderTitleInput(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const inputEvent = event as InputEvent;
+  // 中文输入法组合期间不要改写输入框，等 compositionend 后的 input 再统一清洗。
+  if (inputEvent.isComposing) return;
+  const raw = input.value;
+  const next = toHalfWidthBrackets(raw)
+    .replace(/^\s+/, "")
+    .replace(/\s+$/, "");
+  folderTitle.value = next;
+  if (raw !== next) {
+    const cursor = input.selectionStart ?? raw.length;
+    const leadingRemoved = raw.length - raw.replace(/^\s+/, "").length;
+    const nextCursor = Math.max(0, Math.min(next.length, cursor - leadingRemoved));
+    input.value = next;
+    input.setSelectionRange(nextCursor, nextCursor);
+  }
 }
 
 function normalizeSeasonInput() {
@@ -2143,12 +2164,13 @@ onBeforeUnmount(() => {
               <label class="gys__field">
                 <span class="gys__field-label">文件夹名</span>
                 <input
-                  v-model="folderTitle"
+                  :value="folderTitle"
                   class="gys__field-input"
                   type="text"
                   maxlength="120"
                   placeholder="默认为分享标题，可修改"
                   :disabled="transferring"
+                  @input="onFolderTitleInput"
                   @blur="normalizeFolderTitle"
                 />
               </label>
@@ -2217,7 +2239,9 @@ onBeforeUnmount(() => {
                     添加前缀
                     <code>{{ renamePrefixBase || "U" }} + 连接符</code>
                   </span>
-                  <span class="gys__rule-desc">去年份与首尾空格；连接符沿用原名中的 . - _ 空格，否则用 -</span>
+                  <span class="gys__rule-desc">
+                    {{ isSeries ? "剧集去年份与首尾空格" : "电影保留年份" }}；连接符沿用原名中的 . - _ 空格，否则用 -
+                  </span>
                 </span>
               </label>
 
