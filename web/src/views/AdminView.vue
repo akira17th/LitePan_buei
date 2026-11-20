@@ -20,6 +20,9 @@ const adminPageLoaders = {
   settings: () => import("@/components/admin/SystemSettings.vue"),
   tasks: () => import("@/components/admin/TaskManagement.vue"),
   tools: () => import("@/components/admin/AuxToolsManagement.vue"),
+  // #region buei:emby-library
+  "emby-library": () => import("@/components/admin/BueiEmbyLibraryPage.vue"),
+  // #endregion buei:emby-library
   "cross-transfer": () => import("@/components/admin/CrossDriveTransferPage.vue"),
   share: () => import("@/components/admin/FileShareManagement.vue"),
 };
@@ -28,6 +31,9 @@ const AccountManagement = defineAsyncComponent(adminPageLoaders.accounts);
 const SystemSettings = defineAsyncComponent(adminPageLoaders.settings);
 const TaskManagement = defineAsyncComponent(adminPageLoaders.tasks);
 const AuxToolsManagement = defineAsyncComponent(adminPageLoaders.tools);
+// #region buei:emby-library
+const BueiEmbyLibraryPage = defineAsyncComponent(adminPageLoaders["emby-library"]);
+// #endregion buei:emby-library
 const CrossDriveTransferPage = defineAsyncComponent(adminPageLoaders["cross-transfer"]);
 const FileShareManagement = defineAsyncComponent(adminPageLoaders.share);
 import { logout, fetchSystemConfig } from "@/api/auth";
@@ -46,6 +52,9 @@ const nav = [
   { key: "settings", label: "系统设置", icon: "cogs" },
   { key: "tasks", label: "任务管理", icon: "tasks" },
   { key: "tools", label: "辅助工具", icon: "toolbox" },
+  // #region buei:emby-library
+  { key: "emby-library", label: "Emby 媒体库", icon: "film" },
+  // #endregion buei:emby-library
   { key: "cross-transfer", label: "跨盘传输", icon: "right-left" },
   { key: "share", label: "文件共享", icon: "share-alt" },
 ];
@@ -136,6 +145,9 @@ const cachedPageComponents: Record<string, Component> = {
   accounts: AccountManagement,
   tasks: TaskManagement,
   tools: AuxToolsManagement,
+  // #region buei:emby-library
+  "emby-library": BueiEmbyLibraryPage,
+  // #endregion buei:emby-library
 };
 const cachedPageComponent = computed(() => cachedPageComponents[page.value] ?? null);
 
@@ -295,7 +307,7 @@ onMounted(async () => {
     />
 
     <AdminEmptyState
-      v-if="!cachedPageComponent && !['settings', 'cross-transfer', 'share'].includes(page)"
+      v-if="!cachedPageComponent && !['settings', 'cross-transfer', 'share', 'emby-library'].includes(page)"
       icon="screwdriver-wrench"
       :title="`「${nav.find((n) => n.key === page)?.label}」功能开发中`"
     />
@@ -309,6 +321,9 @@ onMounted(async () => {
       />
       <CrossDriveTransferPage v-else-if="page === 'cross-transfer'" />
       <FileShareManagement v-else-if="page === 'share'" />
+      <!-- #region buei:emby-library -->
+      <BueiEmbyLibraryPage v-else-if="page === 'emby-library'" />
+      <!-- #endregion buei:emby-library -->
       <component :is="cachedPageComponent" v-else-if="cachedPageComponent" :key="page" />
     </KeepAlive>
   </AdminShell>

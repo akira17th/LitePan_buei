@@ -260,3 +260,21 @@ func TestRelUnderAbsRootWithRelativeFull(t *testing.T) {
 		t.Fatalf("relUnder=%q want %q（绝对 root + 相对 full 不应退化成 basename）", got, want)
 	}
 }
+
+func TestListIndexItemsEmptyIndexStats(t *testing.T) {
+	dir := t.TempDir()
+	svc := &Service{dataDir: dir}
+	db, err := openTaskIndexDB(svc.indexPath(8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	result, err := svc.listIndexItems(8, ItemListQuery{Limit: defaultItemListLimit, Sort: ItemListSortTitleAsc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 0 || result.Stats.Total != 0 || result.Stats.OK != 0 || result.Stats.Miss != 0 || result.Stats.Doubt != 0 {
+		t.Fatalf("empty index stats=%+v result=%+v", result.Stats, result)
+	}
+}

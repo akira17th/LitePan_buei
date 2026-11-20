@@ -371,9 +371,9 @@ func readIndexStats(db *sql.DB) (ItemListStats, error) {
 	err := db.QueryRow(`
 SELECT
   COUNT(*),
-  SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END),
-  SUM(CASE WHEN status = 'miss' THEN 1 ELSE 0 END),
-  SUM(CASE WHEN status = 'doubt' THEN 1 ELSE 0 END)
+  COALESCE(SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END), 0),
+  COALESCE(SUM(CASE WHEN status = 'miss' THEN 1 ELSE 0 END), 0),
+  COALESCE(SUM(CASE WHEN status = 'doubt' THEN 1 ELSE 0 END), 0)
 FROM items
 `).Scan(&stats.Total, &stats.OK, &stats.Miss, &stats.Doubt)
 	return stats, err

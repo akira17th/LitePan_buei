@@ -5,6 +5,18 @@ import "github.com/go-chi/chi/v5"
 // registerBueiRoutes 注册 buei 定制专用接口。
 // 由 router.go 在管理员路由组内调用，按需继续追加 /tools/... 子路由。
 func (h *Handler) registerBueiRoutes(r chi.Router) {
+	// buei:emby-library —— 后台 Emby 媒体库浏览与删除。
+	r.Route("/buei/emby-library", func(r chi.Router) {
+		r.Get("/libraries", h.bueiEmbyLibraryState)
+		r.Get("/items", h.bueiEmbyLibraryItems)
+		r.Get("/items/{itemID}", h.bueiEmbyLibraryItemDetail)
+		r.Delete("/items/{itemID}", h.bueiEmbyLibraryDeleteItem)
+		r.Post("/sync", h.bueiEmbyLibrarySync)
+		r.Post("/archive", h.bueiEmbyLibraryArchive)
+		r.Post("/restore", h.bueiEmbyLibraryRestore)
+		r.Get("/sync-state", h.bueiEmbyLibrarySyncState)
+		r.Get("/images/{itemID}", h.bueiEmbyLibraryImage)
+	})
 	r.Route("/tools/guangya-share", func(r chi.Router) {
 		r.Post("/parse", h.bueiGuangyaShareParse)
 		r.Post("/list", h.bueiGuangyaShareList)
