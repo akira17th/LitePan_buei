@@ -92,7 +92,7 @@ export function bueiEmbyLibraryKind(collectionType?: string, name?: string): Bue
   // 部分 Emby 版本不返回 collection_type，再按媒体库名称兜底判断。
   const text = (name || "").trim().toLowerCase();
   if (/电影|影片|movie|film/.test(text)) return "movies";
-  if (/剧|电视|动漫|动画|tv|series|show|anime/.test(text)) return "series";
+  if (/剧|电视|动漫|动画|综艺|纪录片|记录片|variety|documentary|tv|series|show|anime/.test(text)) return "series";
   if (/音乐|歌|music/.test(text)) return "music";
   if (/照片|相册|图片|photo|image|picture/.test(text)) return "photos";
   if (/家庭|录像|home\s?video/.test(text)) return "homevideos";

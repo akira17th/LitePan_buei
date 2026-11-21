@@ -383,6 +383,7 @@ func (s *Service) listLibraries(ctx context.Context, cfg Config) ([]Library, err
 			CollectionType: strings.TrimSpace(anyString(item["CollectionType"])),
 		})
 	}
+	s.enrichLibraryCollectionTypes(ctx, base, cfg.APIKey, out) // buei: 补全媒体库内容类型
 	return out, nil
 }
 

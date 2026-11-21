@@ -34,7 +34,7 @@ import BusySpinner from "@/components/base/BusySpinner.vue";
 import BueiEmbyArchiveLogModal from "@/components/buei/BueiEmbyArchiveLogModal.vue";
 import BueiEmbyArchiveRuleModal from "@/components/buei/BueiEmbyArchiveRuleModal.vue";
 import BueiEmbyLibraryIcon from "@/components/buei/BueiEmbyLibraryIcon.vue";
-import { bueiEmbyLibraryKind, bueiEmbyLibraryKindLabel, type BueiEmbyLibraryKind } from "@/components/buei/bueiEmbyLibraryIcons";
+import { bueiEmbyLibraryKind, type BueiEmbyLibraryKind } from "@/components/buei/bueiEmbyLibraryIcons";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
 import type { DropdownMenuItem } from "@/types/menu";
 
@@ -134,10 +134,6 @@ function imageURL(path: string | undefined) {
 
 function libraryKind(library: BueiEmbyLibrary): BueiEmbyLibraryKind {
   return bueiEmbyLibraryKind(library.collection_type, library.name);
-}
-
-function libraryKindLabel(library: BueiEmbyLibrary): string {
-  return bueiEmbyLibraryKindLabel(library.collection_type, library.name);
 }
 
 function taskID(task: StrmTask) {
@@ -601,7 +597,6 @@ onActivated(() => {
             class="emby-library-nav-item"
             :class="{ 'is-active': library.id === selectedLibraryId }"
             :aria-current="library.id === selectedLibraryId ? 'page' : undefined"
-            :title="`${library.name} · ${libraryKindLabel(library)}`"
             @click="chooseLibrary(library)"
           >
             <span class="emby-library-nav-item__icon" :class="`is-kind-${libraryKind(library)}`">
