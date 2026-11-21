@@ -789,9 +789,6 @@ func clampSeason(season int) int {
 	if season < 0 {
 		return 0
 	}
-	if season > 99 {
-		return 99
-	}
 	return season
 }
 

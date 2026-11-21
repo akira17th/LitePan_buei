@@ -306,7 +306,7 @@ const transferring = ref(false);
 const discarding = ref(false);
 
 // 重命名规则：prefix=加 U- 前缀，episode=补 SxxEnn，replace=正则替换。
-const SEASON_EPISODE_RE = /S\d{1,2}E\d{1,3}/i;
+const SEASON_EPISODE_RE = /S\d+E\d+/i;
 const renamePrefixOn = ref(false);
 const renamePrefixTouched = ref(false);
 const renameEpisodeOn = ref(false);
@@ -644,9 +644,7 @@ function addSelection(item: GuangyaShareItem, ids: Set<string>, map: Map<string,
 }
 
 function isAllSelected(list: GuangyaShareItem[]) {
-  const selectable = list.filter(
-    (item) => !isProcessed(item) && (provider.value === "guangya" || !item.is_dir),
-  );
+  const selectable = list.filter((item) => !item.is_dir && !isProcessed(item));
   return selectable.length > 0 && selectable.every((item) => selectedIds.value.has(item.id));
 }
 
@@ -660,7 +658,7 @@ function selectRange(endIndex: number) {
   const nextMap = new Map(selectedMap.value);
   for (let index = start; index <= end; index++) {
     const item = list[index];
-    if (isProcessed(item) || (provider.value === "quark" && item.is_dir)) continue;
+    if (item.is_dir || isProcessed(item)) continue;
     addSelection(item, nextIds, nextMap);
   }
   selectedIds.value = nextIds;
@@ -670,7 +668,8 @@ function selectRange(endIndex: number) {
 
 function toggleSelect(item: GuangyaShareItem, event?: MouseEvent, fromCheckbox = false) {
   if (ancestorSelected.value) return;
-  if (provider.value === "quark" && item.is_dir) return;
+  // 文件夹不可选中：点击文件夹只会进入内部。
+  if (item.is_dir) return;
   // 已入库文件只允许通过复选框重新选中，点击整行不触发。
   if (isProcessed(item) && !fromCheckbox) return;
   const index = sortedItems.value.findIndex((entry) => entry.id === item.id);
@@ -732,8 +731,7 @@ function selectAllCurrent() {
   const nextIds = new Set(selectedIds.value);
   const nextMap = new Map(selectedMap.value);
   for (const item of list) {
-    if (isProcessed(item)) continue;
-    if (provider.value === "quark" && item.is_dir) continue;
+    if (item.is_dir || isProcessed(item)) continue;
     if (remove) {
       nextIds.delete(item.id);
       nextMap.delete(item.id);
@@ -795,15 +793,12 @@ watch(totalPages, (total) => {
 });
 
 const selectedItems = computed(() => [...selectedMap.value.values()]);
-const selectedFolderCount = computed(() => selectedItems.value.filter((item) => item.is_dir).length);
 const selectedFiles = computed(() => selectedItems.value.filter((item) => !item.is_dir));
 const selectedFileCount = computed(() => selectedFiles.value.length);
 
-// 表头复选框：只统计当前目录里可批量选择的项（已入库文件需单独勾选）。
+// 表头复选框：只统计当前目录里可批量选择的文件（文件夹不可选中，已入库文件需单独勾选）。
 const selectableCurrentItems = computed(() =>
-  sourceItems.value.filter(
-    (item) => !isProcessed(item) && (provider.value === "guangya" || !item.is_dir),
-  ),
+  sourceItems.value.filter((item) => !item.is_dir && !isProcessed(item)),
 );
 const allCurrentSelected = computed(
   () =>
@@ -866,7 +861,7 @@ function clampSeason(value: number) {
   if (String(value ?? "").trim() === "") return 1;
   const number = Number(value);
   if (!Number.isFinite(number)) return 1;
-  return Math.max(0, Math.min(99, Math.trunc(number)));
+  return Math.max(0, Math.trunc(number));
 }
 
 function seasonFolderName(value: number) {
@@ -1061,13 +1056,13 @@ function connectorAfterPrefix(base: string, prefix: string) {
 function pad2(value: number) {
   const number = Math.trunc(Number(value));
   if (!Number.isFinite(number)) return "00";
-  return String(Math.max(0, Math.min(99, number))).padStart(2, "0");
+  return String(Math.max(0, number)).padStart(2, "0");
 }
 
 const renameStartEpisodeNumber = computed(() => {
   const number = Math.trunc(Number(renameStartEpisode.value));
   if (!Number.isFinite(number)) return 1;
-  return Math.max(1, Math.min(99, number));
+  return Math.max(1, number);
 });
 
 // 序号按当前目录的表格顺序依次递增；跨目录选中的文件追加在末尾并按路径排序。
@@ -2149,6 +2144,11 @@ function onRowClick(item: GuangyaShareItem, event: MouseEvent) {
   toggleSelect(item, event);
 }
 
+// 文件夹没有复选框，点击复选框列直接进入文件夹，避免出现“点了没反应”的死区。
+function onCheckCellClick(item: GuangyaShareItem, event: MouseEvent) {
+  if (item.is_dir) onRowClick(item, event);
+}
+
 async function refreshCurrentFolder() {
   if (provider.value === "quark") {
     anchorIndex.value = -1;
@@ -2813,13 +2813,7 @@ function goPage(delta: number) {
 const transferHint = computed(() => {
   if (!hasSource.value) return "先从左侧收藏选择要入库的内容";
   if (!selectedItems.value.length) return "先在文件列表勾选要入库的内容";
-  const parts: string[] = [];
-  if (provider.value === "guangya" && selectedFolderCount.value) {
-    parts.push(`含 ${selectedFolderCount.value} 个文件夹`);
-  }
-  parts.push(`文件合计 ${formatSize(selectedFileSize.value)}`);
-  if (provider.value === "guangya") parts.push("文件夹按实际内容入库");
-  return parts.join(" · ");
+  return `文件合计 ${formatSize(selectedFileSize.value)}`;
 });
 
 defineExpose({
@@ -3174,14 +3168,16 @@ onBeforeUnmount(() => {
                   }"
                   @click="onRowClick(item, $event)"
                 >
-                  <td class="gys__col-check" @click.stop>
+                  <td class="gys__col-check" @click.stop="onCheckCellClick(item, $event)">
+                    <!-- buei:share-ingest 文件夹不可选中，只能点击进入内部 -->
                     <button
+                      v-if="!item.is_dir"
                       type="button"
                       class="gys__check"
                       :class="{ 'is-checked': selectedIds.has(item.id) || ancestorSelected }"
                       role="checkbox"
                       :aria-checked="selectedIds.has(item.id) || ancestorSelected"
-                      :disabled="ancestorSelected || (provider === 'quark' && item.is_dir)"
+                      :disabled="ancestorSelected"
                       @click="toggleSelect(item, $event, true)"
                     >
                       <SvgIcon
@@ -3320,7 +3316,6 @@ onBeforeUnmount(() => {
                     class="gys__season-input"
                     type="number"
                     min="0"
-                    max="99"
                     step="1"
                     :disabled="transferring"
                     @blur="normalizeSeasonInput"
@@ -3489,7 +3484,6 @@ onBeforeUnmount(() => {
                   class="gys__ep-input"
                   type="number"
                   min="1"
-                  max="99"
                   step="1"
                   :disabled="transferring"
                 />
@@ -3726,7 +3720,7 @@ onBeforeUnmount(() => {
     :hint="
       pendingTransfer?.provider === 'quark'
         ? '仅移动勾选的文件，收藏文件夹会同步改名。'
-        : '勾选的文件夹会连同其中的文件一起入库。'
+        : '勾选的文件会移动到目标文件夹。'
     "
     @confirm="confirmTransfer"
     @cancel="cancelTransferConfirm"
