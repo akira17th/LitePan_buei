@@ -669,6 +669,7 @@ web/src/composables/useBueiXxx.ts
   - 配置存 `buei_emby_archive_rules`（迁移 `0037`），同一来源媒体库只能被一个归档媒体库占用；保存接口与配置弹窗都会校验并禁用已占用来源。
   - 规则固定、不做配置：剧集必须 `tv_state=ended`（电影不需要这一条），且任一 Emby 用户 `played=true`；两个条件同时满足才会归档。观看状态在每轮执行时直接查询 Emby（`ListLibraryItemsRaw` + `ListLibraryItemUserStatuses`），不依赖是否点过「Emby 同步」。
   - 保存后写入 `next_run_at`（当前时间 + 频率），`internal/buei/embyarchive` 的循环每分钟检查一次；「立即执行」异步启动并立即返回日志记录。
+  - 页面标题下方展示执行计划：`自动归档 每 N 小时 检查一次 · 下次执行 <时间> · 来源 N 个媒体库`（数据来自 `GET /archive-rule`，保存配置与执行结束后自动刷新）；未配置时提示去「配置」选择来源。
   - 归档执行复用媒体卡片「… → 归档」的步骤（网盘移动 + STRM 移动 + 写 `buei_archive.json` + 刷新索引/媒体库），批量执行时 `SkipRefresh` 只在整轮结束后统一刷新一次。
   - **执行后刷新**：整轮只要有项目归档成功（`archived > 0`），结束前立即依次刷新源任务索引 → 归档任务索引 → 源媒体库 → 归档媒体库（单个任务索引刷新失败只记警告，不影响其余刷新）；日志弹窗观察到最新一次执行结束且有归档时，会通知页面重新读取当前媒体库项目。
   - 每次执行写 `buei_emby_archive_runs`，日志弹窗展示最新记录的扫描/归档/跳过/失败统计与项目明细，状态为 `running` 时每 2 秒轮询。

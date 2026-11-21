@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, onActivated, onBeforeUnmount, onMounted, ref } from "vue";
 import { getApiErrorMessage } from "@/api/client";
-import { runBueiEmbyArchiveNow, type BueiEmbyArchiveRun } from "@/api/bueiEmbyArchive";
+import {
+  fetchBueiEmbyArchiveRule,
+  runBueiEmbyArchiveNow,
+  type BueiEmbyArchiveRuleView,
+  type BueiEmbyArchiveRun,
+} from "@/api/bueiEmbyArchive";
 import { fetchEmbyConfigs } from "@/api/emby";
 import {
   archiveBueiEmbyLibraryItem,
@@ -19,6 +24,7 @@ import {
 import { fetchStrmTasks, type StrmTask } from "@/api/strm";
 import { fetchStrmScrapeItems, refreshStrmScrapeIndex, type StrmScrapeItem } from "@/api/strmScrape";
 import { matchBueiEmbyLibraryStrmTasks } from "@/utils/bueiEmbyLibraryTasks";
+import { formatTimeShort } from "@/utils/format";
 import { confirm } from "@/composables/useConfirm";
 import { toast } from "@/composables/useToast";
 import AppDropdown from "@/components/base/AppDropdown.vue";
@@ -55,6 +61,20 @@ const archiveRuleOpen = ref(false);
 const archiveLogOpen = ref(false);
 const userPlayedPending = ref<Set<string>>(new Set());
 const tvStatePending = ref<Set<string>>(new Set());
+const archiveRule = ref<BueiEmbyArchiveRuleView | null>(null);
+const archiveRuleLoaded = ref(false);
+
+const archiveSchedule = computed(() => {
+  const rule = archiveRule.value?.rule;
+  const sources = rule?.source_libraries?.length || 0;
+  if (!rule || !sources) return null;
+  const hours = rule.interval_hours || 1;
+  return {
+    interval: hours === 24 ? "每 24 小时" : hours === 6 ? "每 6 小时" : "每小时",
+    next: archiveRule.value?.next_run_at || rule.next_run_at || "",
+    sources,
+  };
+});
 
 const selectedLibrary = computed(() => libraries.value.find((item) => item.id === selectedLibraryId.value) || null);
 const isArchiveLibrary = computed(() => selectedLibrary.value?.name.includes("归档") || false);
@@ -289,7 +309,25 @@ async function fetchAllTaskItems(task: StrmTask, refresh = false) {
   return out;
 }
 
+async function loadArchiveRule(libraryId: string) {
+  const library = libraries.value.find((item) => item.id === libraryId);
+  archiveRule.value = null;
+  archiveRuleLoaded.value = false;
+  if (!library || !library.name.includes("归档")) {
+    archiveRuleLoaded.value = true;
+    return;
+  }
+  try {
+    archiveRule.value = await fetchBueiEmbyArchiveRule(libraryId, configId.value);
+  } catch {
+    archiveRule.value = null;
+  } finally {
+    archiveRuleLoaded.value = true;
+  }
+}
+
 async function loadItems(libraryId: string, refresh = false) {
+  void loadArchiveRule(libraryId);
   if (!libraryId) {
     items.value = [];
     matchedTasks.value = [];
@@ -450,6 +488,7 @@ async function handleArchiveRunFinished(run: BueiEmbyArchiveRun) {
 
 function handleArchiveRuleSaved() {
   archiveRuleOpen.value = false;
+  void loadArchiveRule(selectedLibraryId.value);
   toast.success("自动归档配置已保存");
 }
 
@@ -566,6 +605,17 @@ onActivated(() => {
               </AppDropdown>
             </div>
           </div>
+          <p v-if="isArchiveLibrary && archiveRuleLoaded" class="emby-library-schedule">
+            <SvgIcon name="clock-rotate-left" :size="13" />
+            <template v-if="archiveSchedule">
+              <span>自动归档 <strong>{{ archiveSchedule.interval }}</strong> 检查一次</span>
+              <span class="emby-library-schedule__sep" aria-hidden="true" />
+              <span>下次执行 <strong>{{ formatTimeShort(archiveSchedule.next) || "未排期" }}</strong></span>
+              <span class="emby-library-schedule__sep" aria-hidden="true" />
+              <span>来源 {{ archiveSchedule.sources }} 个媒体库</span>
+            </template>
+            <span v-else>自动归档未配置，可在「自动归档 → 配置」选择来源媒体库</span>
+          </p>
         </header>
 
         <div v-if="errorMessage" class="emby-library-inline-error" role="alert">
@@ -849,6 +899,9 @@ onActivated(() => {
 .emby-library-breadcrumb { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; color: var(--text-muted); font-size: 11px; letter-spacing: .02em; }
 .emby-library-breadcrumb__sep { width: 1px; height: 10px; background: color-mix(in srgb, var(--text-muted) 42%, transparent); transform: rotate(16deg); }
 .emby-library-breadcrumb strong { color: var(--brand); font-weight: 650; }
+.emby-library-schedule { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+.emby-library-schedule strong { color: var(--text); font-weight: 700; }
+.emby-library-schedule__sep { width: 1px; height: 10px; background: color-mix(in srgb, var(--text-muted) 42%, transparent); }
 .emby-library-title-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .emby-library-title-row h2 { min-width: 0; }
 .emby-library-content h2 { margin: 0; font-size: clamp(24px, 3vw, 33px); line-height: 1.1; letter-spacing: -.05em; }
