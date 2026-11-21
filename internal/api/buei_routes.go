@@ -16,6 +16,15 @@ func (h *Handler) registerBueiRoutes(r chi.Router) {
 		r.Post("/restore", h.bueiEmbyLibraryRestore)
 		r.Get("/sync-state", h.bueiEmbyLibrarySyncState)
 		r.Get("/images/{itemID}", h.bueiEmbyLibraryImage)
+		// buei:emby-archive —— 归档媒体库的自动归档配置、立即执行与执行日志。
+		r.Get("/archive-rule", h.bueiEmbyArchiveRuleView)
+		r.Put("/archive-rule", h.bueiEmbyArchiveRuleSave)
+		r.Post("/archive-run", h.bueiEmbyArchiveRunNow)
+		r.Get("/archive-logs", h.bueiEmbyArchiveLogs)
+		// buei:emby-played —— 点击用户名切换“已看完 / 未看”。
+		r.Post("/played", h.bueiEmbyLibraryUserPlayed)
+		// buei:emby-tv-state —— 点击“已完结 / 未完结”切换完结状态。
+		r.Post("/tv-state", h.bueiEmbyLibraryTVState)
 	})
 	r.Route("/tools/guangya-share", func(r chi.Router) {
 		r.Post("/parse", h.bueiGuangyaShareParse)

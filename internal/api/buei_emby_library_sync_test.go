@@ -10,36 +10,6 @@ import (
 	"litepan/internal/strmscrape"
 )
 
-func TestBueiMatchStrmTasksUsesTaskNameSubstring(t *testing.T) {
-	tasks := []*domain.StrmTask{
-		{ID: 1, Name: "电影-国产"},
-		{ID: 2, Name: "电影-欧美"},
-		{ID: 3, Name: "剧集"},
-		{ID: 4, Name: ""},
-	}
-	matched := bueiMatchStrmTasks(tasks, "电影")
-	if len(matched) != 2 || matched[0].ID != 1 || matched[1].ID != 2 {
-		t.Fatalf("匹配任务异常：%+v", matched)
-	}
-}
-
-func TestBueiEmbyMatchScorePrefersTMDBIDAndYear(t *testing.T) {
-	year := 2024
-	item := strmscrape.Item{Title: "测试电影", FolderName: "测试电影 (2024)", MediaType: strmscrape.MediaTypeMovie, TMDBID: "123", Year: &year}
-	withTMDB := map[string]any{
-		"Id": "emby-1", "Name": "完全不同的名称", "Type": "Movie", "ProductionYear": 2024,
-		"ProviderIds": map[string]any{"Tmdb": "123"},
-	}
-	withoutTMDB := map[string]any{"Id": "emby-2", "Name": "测试电影", "Type": "Movie", "ProductionYear": 2024}
-	if got := bueiEmbyMatchScore(item, withTMDB); got <= bueiEmbyMatchScore(item, withoutTMDB) {
-		t.Fatalf("TMDB 精确匹配分数异常：with=%d without=%d", got, bueiEmbyMatchScore(item, withoutTMDB))
-	}
-	wrongType := map[string]any{"Name": "测试电影", "Type": "Series", "ProductionYear": 2024}
-	if got := bueiEmbyMatchScore(item, wrongType); got != 0 {
-		t.Fatalf("类型不一致不应匹配：%d", got)
-	}
-}
-
 func TestBueiEmbyProjectInfoPathUsesUniqueFileForFlatStrm(t *testing.T) {
 	root := t.TempDir()
 	task := &domain.StrmTask{ID: 1, OutputFolder: "电影"}

@@ -76,6 +76,8 @@
 | 本地一键启动脚本 | `run.sh` |
 | 本地运行 / 镜像构建说明 | `readme_run.md` |
 | README 定制说明 | `README.md` |
+| Emby 媒体库（后台辅助工具 tab；复用 Emby/Jellyfin 反代配置，左侧读取全部 Emby 媒体库；按媒体库名称匹配 STRM 任务并从 `/api/admin/strm-scrape/items` 展示项目；普通媒体库排除含“归档”的任务，归档媒体库只匹配名称同样含“归档”且同类的任务（不回退普通任务）；卡片显示所属任务、年份、完结状态、完整用户名及观看状态，剧集显示所有用户剩余集数最小值 / 总集数；“Emby 同步”查询完整项目和各用户 UserData，项目目录保存 `emby.json`，用户信息按用户名保存到 `emby_users/<用户名>.json`（平铺 STRM 使用项目专属用户目录）；“...”菜单普通媒体库提供“归档”，归档媒体库提供“移回原处”；归档保存 `buei_archive.json` 原始网盘/STRM/Emby 媒体库位置，移动网盘文件夹和 STRM 文件夹，刷新源/目标 STRM 索引及源/归档 Emby 媒体库；移回按记录还原并刷新两边索引和媒体库；卡片点击详情暂不启用） | `internal/api/buei_emby_library.go`、`internal/api/buei_emby_library_sync.go`、`internal/api/buei_emby_library_users.go`、`internal/api/buei_emby_library_archive.go`、`internal/api/buei_emby_library_restore.go`、`internal/api/buei_routes.go`、`internal/embyproxy/buei_library.go`、`internal/embyproxy/buei_library_raw.go`、`internal/embyproxy/buei_library_users.go`、`web/src/components/admin/BueiEmbyLibraryPage.vue`、`web/src/api/bueiEmbyLibrary.ts`、`web/src/utils/bueiEmbyLibraryTasks.ts` |
+| Emby 自动归档（归档媒体库工具栏「自动归档」下拉：立即执行 / 配置 / 日志；配置弹窗多选非归档来源媒体库，不同归档媒体库之间来源互斥；规则固定为「剧集已完结」+「任一用户已看完」，同时满足才归档；频率 1 / 6 / 24 小时，默认每小时；保存即写入 `next_run_at` 由后台循环按频率执行；每次执行写入日志并在弹窗展示时间、统计与项目明细，执行中自动轮询；批量归档沿用媒体卡片「… → 归档」步骤，只在最后统一刷新索引与 Emby 媒体库） | `internal/buei/embyarchive/`、`internal/api/buei_emby_archive.go`、`internal/store/buei_emby_archive_repo.go`、`internal/store/migrations/0037_buei_emby_archive_rules.sql`、`internal/domain/buei_emby_archive.go`、`internal/app/buei_emby_archive_wire.go`、`web/src/components/buei/BueiEmbyArchiveRuleModal.vue`、`web/src/components/buei/BueiEmbyArchiveLogModal.vue`、`web/src/api/bueiEmbyArchive.ts` |
 | 影视入库（辅助工具单 tab，统一管理光鸭与夸克；收藏栏 + 按钮先识别光鸭链接并解析收藏，非光鸭链接显示云盘下拉（当前仅夸克，不校验域名）并选择「来自：分享」收藏文件夹；打开收藏后标题行右侧箭头可新窗口打开收藏链接；左侧收藏与文件列表同卡片、保存位置与目标文件夹浏览同卡片，右侧 TMDB / 重命名 / 联动动作；收藏链接允许重复，保存位置、浏览目录、重命名规则与转存历史均按收藏 ID 隔离，不再按链接去重或匹配；光鸭收藏与夸克收藏均可编辑，光鸭改链接后自动重新解析并保留保存位置 / 重命名规则 / 联动动作，仅清理该收藏旧分享的文件对应关系；光鸭保留文件夹入库 / 丢弃 / 入库历史，夸克保留平铺目录 / 删除文件 / 来源文件夹改名；目标路径存在时只读展示目标文件夹内容（名称/类型/大小/时间，类型图标与源列表一致，默认名称倒序，可点表头排序）；收藏文件列表默认按名称升序，已入库 / 已丢弃始终置底；重命名上方支持 TMDB 匹配（按目标文件夹的剧集/电影与名称搜索，结果按年份倒序展示、可打开 TMDB，选择后用 TMDB 剧名 + “ (年份)” + “ {tmdb-ID}” 完全替换目标文件夹名，系统未配置 API Key 时提示），添加前缀会去掉 {tmdb-ID}；支持目标路径预设、浏览目录记忆、Shift 连选、前缀 / SxxEnn / 多组替换文本、入库后 STRM / 刮削 / Emby 联动） | `internal/buei/guangyashare/`、`internal/buei/quarkingest/`、`internal/store/buei_guangya_share_repo.go`、`internal/store/buei_quark_ingest_repo.go`、`drivers/Guangya/buei_share.go`、`internal/api/buei_guangya_share.go`、`internal/api/buei_quark_ingest.go`、`web/src/components/buei/BueiShareIngestPanel.vue`、`web/src/components/buei/BueiIngestTargetFiles.vue`、`web/src/components/buei/BueiGuangyaShareConfirm.vue`、`web/src/api/bueiGuangyaShare.ts`、`web/src/api/bueiQuarkIngest.ts`、`web/src/utils/bueiShareLink.ts`、`web/src/utils/bueiIngestKinds.ts`、`web/src/utils/bueiQuarkShare.ts` |
 | 影视入库收藏文件夹直接父目录 | `web/src/components/file/FolderSelector.vue`、`FolderPickerModal.vue`（`buei:quark-ingest` 标记，返回 `parentDirId`） |
 | `.tools/` 忽略 | `.gitignore` |
@@ -430,6 +432,7 @@ HTTP
 | FUSE | `internal/fusemount`、`internal/share/fuse`、`internal/fusereadcache` | 本地挂载、读缓存、写支持 |
 | 网盘分享 | `internal/cloudshare`、`internal/driver/share.go` | 通过驱动接口实现网盘分享创建/管理（当前 123、夸克已实现） |
 | Emby 反代 | `internal/embyproxy` | Emby 播放信息、WebSocket、媒体库刷新 |
+| Emby 媒体库（buei） | `internal/api/buei_emby_library*.go`、`internal/embyproxy/buei_library*.go`、`web/src/components/admin/BueiEmbyLibraryPage.vue` | 复用反代配置浏览 Emby 媒体库；名称匹配 STRM 刮削任务；同步完整项目与按用户名保存的用户观看状态；归档/移回网盘文件及 STRM 目录，并刷新两边索引和 Emby 媒体库 |
 | 飞牛影视反代 | `internal/fnosproxy` | 飞牛播放/管理接口反代、路径映射 |
 | 夸克 TV | `internal/quarktv` | 夸克 TV 绑定、播放链接接管 |
 | 缓存治理 | `internal/cache`、`internal/cacheretention` | 元数据 LRU、目录缓存、缓存保持任务 |
@@ -648,6 +651,30 @@ web/src/composables/useBueiXxx.ts
   - 需要认证就等 `startupGate` 或使用 `driverexec.Executor`。
   - 在 `app.Run` 启动、`app.Shutdown` 停止（最小接入点）。
 
+### 7.9 buei Emby 媒体库
+
+后台入口位于「辅助工具 → Emby 媒体库」，必须复用 `internal/embyproxy.Service` 中「Emby/Jellyfin 反代」的地址、API Key 和配置 ID，不新增独立配置。
+
+- **数据来源**：左侧媒体库来自 Emby 的全部可选媒体库；选中媒体库后读取 STRM 任务列表，再访问 `/api/admin/strm-scrape/items` 展示 STRM 刮削项目。刷新按钮对所有匹配任务调用 `/api/admin/strm-scrape/refresh-index` 后重新读取。
+- **任务匹配**：已禁用（`status=paused`）的 STRM 任务不参与匹配；普通媒体库名称匹配任务名称时排除含「归档」的任务。含「归档」的媒体库先去掉「归档」及其两侧常见分隔符，用剩余名称匹配同类归档任务；例如「归档 · 剧集」只匹配名称同时含「剧集」和「归档」的任务，找不到时不回退到普通任务，避免把普通任务的项目当成归档内容。前后端规则分别位于 `web/src/utils/bueiEmbyLibraryTasks.ts` 和 `internal/api/buei_emby_library_sync.go`，修改时必须同步。
+- **Emby 同步**：`POST /api/admin/buei/emby-library/sync` 查询媒体库完整项目及所有用户的 `UserData`。普通项目目录保存 `emby.json`；用户信息按用户名保存为 `emby_users/<用户名>.json`，平铺 STRM 项目使用项目专属用户目录。卡片显示完整用户名、观看状态；剧集的「未看集数 / 总集数」取所有用户剩余集数的最小值 / 精确总集数。
+- **观看状态快捷切换**：点击卡片上的用户名，会在 Emby 中标记 / 取消该用户的「已看完」（`POST` / `DELETE /Users/{userId}/PlayedItems/{itemId}`），并同步更新本地 `emby_users/<用户名>.json`（剧集按总集数换算已看 / 剩余，电影用 1/0），卡片状态与「未看集数」立即刷新；接口为 `POST /api/admin/buei/emby-library/played`。
+- **完结状态快捷切换**：点击卡片徽标上的「已完结 / 未完结」直接切换，不弹确认框；接口 `POST /api/admin/buei/emby-library/tv-state` 调用 `strmscrape.SetTVState`——设为完结按「刮削页 → 设为完结」写 `pending=ended`（根元数据不全时写手动完成标记），取消完结清除手动完成并置 `pending=updating`（下一轮刮削继续追更），切换后立即更新索引，自动归档的「剧集已完结」规则随之生效。
+- **TMDB 快捷入口**：卡片左上角显示「TMDB ↗」，仅当 STRM 项目有 `tmdb_id` 时出现，按剧集 / 电影打开 `https://www.themoviedb.org/tv|movie/{id}`，新窗口打开。
+- **归档**：普通媒体库项目的操作菜单显示「归档」。后端根据 `media_type` 选择「归档 · 电影」或「归档 · 剧集」，要求目标任务与源任务使用同一网盘账号；网盘目标路径按源任务路径去除顶级目录并避免重复的「电影」目录。网盘项目夹与本地 STRM 项目夹都移动后，在 STRM 项目目录写入 `buei_archive.json` 保存原任务、账号、父目录、相对路径、源/归档媒体库 ID 等信息，再刷新源/目标 STRM 索引及源/归档 Emby 媒体库。
+- **移回**：含「归档」的媒体库项目菜单只显示「移回原处」。后端读取 `buei_archive.json`，按记录把网盘文件夹和 STRM 文件夹移回原位置，删除归档记录，刷新两边 STRM 索引和 Emby 媒体库。找不到记录、目标已有同名目录、任务/账号不匹配时必须拒绝执行，不能覆盖。
+- **当前交互限制**：媒体卡片点击详情暂未启用；「归档」和「移回原处」操作需确认，并在按钮上显示执行中 loading，防止重复提交。
+- **索引空结果**：归档可能导致源任务索引为空，`internal/strmscrape/index.go` 的统计查询必须用 `COALESCE(SUM(...), 0)`，否则 SQLite 空表会将 `NULL` 扫描到 `int` 时报错。
+- **自动归档**：名称含「归档」的媒体库在「Emby 同步」右侧多一个「自动归档」下拉，依次为「立即执行」「配置」「日志」。
+  - 配置存 `buei_emby_archive_rules`（迁移 `0037`），同一来源媒体库只能被一个归档媒体库占用；保存接口与配置弹窗都会校验并禁用已占用来源。
+  - 规则固定、不做配置：剧集必须 `tv_state=ended`（电影不需要这一条），且任一 Emby 用户 `played=true`；两个条件同时满足才会归档。观看状态在每轮执行时直接查询 Emby（`ListLibraryItemsRaw` + `ListLibraryItemUserStatuses`），不依赖是否点过「Emby 同步」。
+  - 保存后写入 `next_run_at`（当前时间 + 频率），`internal/buei/embyarchive` 的循环每分钟检查一次；「立即执行」异步启动并立即返回日志记录。
+  - 归档执行复用媒体卡片「… → 归档」的步骤（网盘移动 + STRM 移动 + 写 `buei_archive.json` + 刷新索引/媒体库），批量执行时 `SkipRefresh` 只在整轮结束后统一刷新一次。
+  - **执行后刷新**：整轮只要有项目归档成功（`archived > 0`），结束前立即依次刷新源任务索引 → 归档任务索引 → 源媒体库 → 归档媒体库（单个任务索引刷新失败只记警告，不影响其余刷新）；日志弹窗观察到最新一次执行结束且有归档时，会通知页面重新读取当前媒体库项目。
+  - 每次执行写 `buei_emby_archive_runs`，日志弹窗展示最新记录的扫描/归档/跳过/失败统计与项目明细，状态为 `running` 时每 2 秒轮询。
+  - 分层：归档、移回、任务匹配、Emby 匹配、规则执行都在 `internal/buei/embyarchive`；`internal/api/buei_emby_library_*.go` 只做 HTTP 解析与 DTO，`buei_emby_library_sync.go` 仍需的匹配辅助函数通过 `embyarchive.*` 调用。
+  - 停止顺序：`app.Shutdown` 先停自动归档（`Scheduler.Stop`）再关 Emby 反代与数据库；后台执行使用 app 上下文，退出时可被取消。
+
 ---
 
 ## 8. 编码约定
@@ -688,6 +715,7 @@ web/src/composables/useBueiXxx.ts
 - 使用 `@/` 别名引用 `web/src`。
 - 网络请求统一走 `web/src/api/*` 和 `http` 封装；错误用 `getApiErrorMessage` 转文案。
 - 确认/提示使用 `showConfirm` / `toast`；不要用浏览器原生弹窗。
+- **成功提示要克制**：开关、勾选、切换、收藏这类“极其简单且单一”的操作，界面状态本身就是反馈，不要额外 `toast.success`；只有耗时、破坏性、批量或表单提交类操作才提示成功。失败提示仍应保留，避免操作静默失败。
 - 样式优先 CSS 变量与 scoped style；不要硬编码主题色。
 - 文案中文；变量名英文。
 
@@ -737,6 +765,10 @@ npm run build
 - 没有 ESLint/Prettier 配置；`vue-tsc` 的类型检查是主要门禁。
 - `npm run build` 会执行 Vite 构建 + gzip 压缩；Dockerfile 也会跑 `type-check`。
 - 没有浏览器端单测框架；交互改动需要手动验证关键路径。
+- **AI/代理默认不渲染页面截图**：除非用户在当次任务明确要求「渲染 / 截图 / 看效果」，不要启动 Vite dev server、chromium/playwright，也不要做 DOM 截图测量。前端改动默认只跑 `npm run type-check` 与 `npm run build`，视觉效果由用户自行确认。
+  - 背景：截图很费 token，且本机**没有中文字体**，截图里的中文会渲染成方框，中文排版、断行、字重无法据此判断。
+  - 用户明确要求渲染时：可临时新增预览入口（如 `web/buei-preview.html` + `web/src/bueiPreviewMain.ts`，用 mock `window.fetch` 喂假数据），验证完必须删除这些临时文件，不要提交；若只是确认间距/重叠，优先用 `page.evaluate` 取几何数值（便宜且比看图准）。
+  - 渲染环境（仅本机、可能变化）：chromium 在 `~/.cache/ms-playwright/`，需 `LD_LIBRARY_PATH=/tmp/libs/root/usr/lib/x86_64-linux-gnu:/tmp/libs/root/lib/x86_64-linux-gnu` 与 `FONTCONFIG_FILE=/tmp/fonts.conf`。
 
 ### 9.3 lint
 
@@ -830,6 +862,14 @@ make lint
 | `internal/playback/service.go` | 播放/下载直链解析与流式代理 |
 | `internal/upload/manager.go` | 上传任务队列与断点续传 |
 | `internal/strm/service.go` | STRM 任务调度与服务入口 |
+| `internal/api/buei_emby_library.go` | buei Emby 媒体库状态、项目、图片及兼容详情接口 |
+| `internal/api/buei_emby_library_sync.go` | Emby 完整项目同步、媒体库/STRM 任务匹配、归档状态接口 |
+| `internal/api/buei_emby_library_archive.go` | 归档网盘目录和 STRM 目录、刷新源/归档媒体库 |
+| `internal/api/buei_emby_library_restore.go` | 按 `buei_archive.json` 将归档项目移回原处 |
+| `internal/embyproxy/buei_library_users.go` | 查询 Emby 各用户观看状态及分集进度 |
+| `web/src/components/admin/BueiEmbyLibraryPage.vue` | Emby 媒体库卡片、任务筛选、同步、归档/移回交互 |
+| `web/src/api/bueiEmbyLibrary.ts` | buei Emby 媒体库前端 API 类型和请求 |
+| `web/src/utils/bueiEmbyLibraryTasks.ts` | 前端媒体库与 STRM 任务匹配规则 |
 | `internal/mediaorganize/service.go` | 目录整理服务入口 |
 | `internal/eventbus/bus.go` | 异步事件总线 |
 | `internal/logx/module.go` | 日志模块定义 |

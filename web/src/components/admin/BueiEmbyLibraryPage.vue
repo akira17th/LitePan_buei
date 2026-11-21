@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, onActivated, onBeforeUnmount, onMounted, ref } from "vue";
 import { getApiErrorMessage } from "@/api/client";
+import { runBueiEmbyArchiveNow, type BueiEmbyArchiveRun } from "@/api/bueiEmbyArchive";
 import { fetchEmbyConfigs } from "@/api/emby";
 import {
   archiveBueiEmbyLibraryItem,
-  deleteBueiEmbyLibraryItem,
   fetchBueiEmbyLibraryState,
   fetchBueiEmbyLibrarySyncState,
   restoreBueiEmbyLibraryItem,
+  setBueiEmbyLibraryTVState,
+  setBueiEmbyLibraryUserPlayed,
   syncBueiEmbyLibrary,
   type BueiEmbyLibrary,
   type BueiEmbyLibraryDetail,
@@ -23,6 +25,10 @@ import AppDropdown from "@/components/base/AppDropdown.vue";
 import AppEmptyState from "@/components/admin/AdminEmptyState.vue";
 import AppButton from "@/components/base/AppButton.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
+import BueiEmbyArchiveLogModal from "@/components/buei/BueiEmbyArchiveLogModal.vue";
+import BueiEmbyArchiveRuleModal from "@/components/buei/BueiEmbyArchiveRuleModal.vue";
+import BueiEmbyLibraryIcon from "@/components/buei/BueiEmbyLibraryIcon.vue";
+import { bueiEmbyLibraryKind, bueiEmbyLibraryKindLabel, type BueiEmbyLibraryKind } from "@/components/buei/bueiEmbyLibraryIcons";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
 import type { DropdownMenuItem } from "@/types/menu";
 
@@ -40,14 +46,18 @@ const loadingDetail = ref(false);
 const syncingEmby = ref(false);
 const archivingItemID = ref("");
 const errorMessage = ref("");
-const selectedIDs = ref<Set<string>>(new Set());
 const menuOpenID = ref("");
 const loaded = ref(false);
 const hasConfig = ref(false);
+const archiveMenuOpen = ref(false);
+const archiveRunStarting = ref(false);
+const archiveRuleOpen = ref(false);
+const archiveLogOpen = ref(false);
+const userPlayedPending = ref<Set<string>>(new Set());
+const tvStatePending = ref<Set<string>>(new Set());
 
 const selectedLibrary = computed(() => libraries.value.find((item) => item.id === selectedLibraryId.value) || null);
 const isArchiveLibrary = computed(() => selectedLibrary.value?.name.includes("归档") || false);
-const selectedCount = computed(() => selectedIDs.value.size);
 const hasItems = computed(() => items.value.length > 0);
 const visibleTaskList = computed(() => {
   const query = taskFilterQuery.value.trim().toLocaleLowerCase();
@@ -76,6 +86,12 @@ const activeTask = computed(() => {
 const hasVisibleItems = computed(() => visibleItems.value.length > 0);
 const isConfigured = computed(() => hasConfig.value);
 
+const archiveMenu = computed<DropdownMenuItem[]>(() => [
+  { key: "run", label: archiveRunStarting.value ? "正在启动…" : "立即执行", icon: "bolt", disabled: archiveRunStarting.value, type: "action" },
+  { key: "config", label: "配置", icon: "sliders", type: "action" },
+  { key: "logs", label: "日志", icon: "file-lines", type: "action" },
+]);
+
 const itemMenu = (itemID = ""): DropdownMenuItem[] => {
   const loading = archivingItemID.value === itemID;
   if (isArchiveLibrary.value) {
@@ -88,6 +104,14 @@ function imageURL(path: string | undefined) {
   return path || "";
 }
 
+function libraryKind(library: BueiEmbyLibrary): BueiEmbyLibraryKind {
+  return bueiEmbyLibraryKind(library.collection_type, library.name);
+}
+
+function libraryKindLabel(library: BueiEmbyLibrary): string {
+  return bueiEmbyLibraryKindLabel(library.collection_type, library.name);
+}
+
 function taskID(task: StrmTask) {
   return task.id || 0;
 }
@@ -98,22 +122,11 @@ function taskItemCount(task: StrmTask) {
 
 function selectTaskFilter(task: number | "all") {
   selectedTaskFilter.value = task;
-  resetSelection();
 }
 
-function resetSelection() {
-  selectedIDs.value = new Set();
-}
-
-function toggleItem(item: BueiEmbyLibraryItem) {
-  const next = new Set(selectedIDs.value);
-  if (next.has(item.id)) next.delete(item.id);
-  else next.add(item.id);
-  selectedIDs.value = next;
-}
-
-function isSelected(item: BueiEmbyLibraryItem) {
-  return selectedIDs.value.has(item.id);
+function tmdbURL(item: BueiEmbyLibraryItem) {
+  const kind = item.media_type === "tv" || item.type === "Series" ? "tv" : "movie";
+  return `https://www.themoviedb.org/${kind}/${encodeURIComponent(item.tmdb_id || "")}`;
 }
 
 function episodeLabel(item: BueiEmbyLibraryItem) {
@@ -122,6 +135,61 @@ function episodeLabel(item: BueiEmbyLibraryItem) {
   if (!values.length) return "";
   // 取各用户剩余集数的最小值，表示所有用户中观看进度最高者还剩多少集。
   return `未看 ${Math.min(...values)} / ${item.total_episodes} 集`;
+}
+
+function isTVStatePending(itemID: string) {
+  return tvStatePending.value.has(itemID);
+}
+
+async function toggleTVState(item: BueiEmbyLibraryItem) {
+  if (tvStatePending.value.has(item.id)) return;
+  const ended = item.tv_state !== "ended";
+  tvStatePending.value = new Set([...tvStatePending.value, item.id]);
+  try {
+    const result = await setBueiEmbyLibraryTVState({ item_id: item.id, ended });
+    item.tv_state = result.tv_state;
+  } catch (error) {
+    toast.error(getApiErrorMessage(error, "切换完结状态失败"));
+  } finally {
+    const pending = new Set(tvStatePending.value);
+    pending.delete(item.id);
+    tvStatePending.value = pending;
+  }
+}
+
+function userPlayedKey(itemID: string, userID: string) {
+  return `${itemID}::${userID}`;
+}
+
+function isUserPlayedPending(itemID: string, userID: string) {
+  return userPlayedPending.value.has(userPlayedKey(itemID, userID));
+}
+
+async function toggleUserPlayed(item: BueiEmbyLibraryItem, user: BueiEmbyLibraryItem["users"][number]) {
+  const key = userPlayedKey(item.id, user.user_id);
+  if (userPlayedPending.value.has(key)) return;
+  const nextPlayed = !user.played;
+  userPlayedPending.value = new Set([...userPlayedPending.value, key]);
+  try {
+    const result = await setBueiEmbyLibraryUserPlayed({
+      item_id: item.id,
+      user_id: user.user_id,
+      played: nextPlayed,
+      config_id: configId.value || undefined,
+    });
+    const index = item.users.findIndex((current) => current.user_id === user.user_id);
+    if (index >= 0) item.users[index] = { ...item.users[index], ...result.user };
+  } catch (error) {
+    toast.error(getApiErrorMessage(error, "更新观看状态失败"));
+  } finally {
+    const pending = new Set(userPlayedPending.value);
+    pending.delete(key);
+    userPlayedPending.value = pending;
+  }
+}
+
+function userStateTitle(user: BueiEmbyLibraryItem["users"][number]) {
+  return `${user.user_name}：${userStatusLabel(user)}（点击标记${user.played ? "未看" : "已看完"}）`;
 }
 
 function userStatusLabel(user: BueiEmbyLibraryItem["users"][number]) {
@@ -197,6 +265,7 @@ function toLibraryItem(task: StrmTask, item: StrmScrapeItem, synced?: BueiEmbyLi
     ep_tmdb: item.ep_tmdb,
     ep_scraped: item.ep_scraped,
     tv_state: item.tv_state,
+    tmdb_id: item.tmdb_id,
   };
 }
 
@@ -228,7 +297,6 @@ async function loadItems(libraryId: string, refresh = false) {
   }
   loadingItems.value = true;
   errorMessage.value = "";
-  resetSelection();
   selectedTaskFilter.value = "all";
   taskFilterQuery.value = "";
   matchedTasks.value = [];
@@ -270,6 +338,9 @@ async function loadItems(libraryId: string, refresh = false) {
 
 async function chooseLibrary(library: BueiEmbyLibrary) {
   if (library.id === selectedLibraryId.value && (loadingItems.value || hasItems.value)) return;
+  archiveRuleOpen.value = false;
+  archiveLogOpen.value = false;
+  archiveMenuOpen.value = false;
   selectedLibraryId.value = library.id;
   await loadItems(library.id);
 }
@@ -300,33 +371,6 @@ async function syncCurrentLibrary() {
 
 function closeDetail() {
   selectedItem.value = null;
-}
-
-async function deleteSelected() {
-  const targets = items.value.filter((item) => selectedIDs.value.has(item.id));
-  if (!targets.length) return;
-  const ok = await confirm({
-    title: `删除选中的 ${targets.length} 个媒体项目？`,
-    message: "这个操作可能同时删除对应的媒体文件，请确认。",
-    confirmText: "确认删除",
-    cancelText: "取消",
-    danger: true,
-  }).catch(() => false);
-  if (!ok) return;
-  for (const item of targets) {
-    await deleteItemWithoutConfirm(item);
-  }
-  resetSelection();
-  toast.success(`已删除 ${targets.length} 个媒体项目`);
-}
-
-async function deleteItemWithoutConfirm(item: BueiEmbyLibraryItem) {
-  try {
-    await deleteBueiEmbyLibraryItem(item.id, configId.value);
-    items.value = items.value.filter((current) => current.id !== item.id);
-  } catch (error) {
-    toast.error(getApiErrorMessage(error, `删除「${item.name}」失败`));
-  }
 }
 
 async function archiveItem(item: BueiEmbyLibraryItem) {
@@ -374,6 +418,39 @@ async function restoreItem(item: BueiEmbyLibraryItem) {
 function handleMenuSelect(item: BueiEmbyLibraryItem, key: string) {
   if (key === "archive") void archiveItem(item);
   else if (key === "restore") void restoreItem(item);
+}
+
+function handleArchiveMenu(key: string) {
+  if (key === "run") void runArchiveNow();
+  else if (key === "config") archiveRuleOpen.value = true;
+  else if (key === "logs") archiveLogOpen.value = true;
+}
+
+async function runArchiveNow() {
+  if (!selectedLibrary.value || archiveRunStarting.value) return;
+  archiveRunStarting.value = true;
+  try {
+    await runBueiEmbyArchiveNow({
+      config_id: configId.value || undefined,
+      archive_library_id: selectedLibrary.value.id,
+    });
+    archiveLogOpen.value = true;
+  } catch (error) {
+    toast.error(getApiErrorMessage(error, "启动自动归档失败"));
+  } finally {
+    archiveRunStarting.value = false;
+  }
+}
+
+// 立即执行结束后，若有项目被归档，重新读取当前媒体库项目（后端已刷新索引与 Emby 媒体库）。
+async function handleArchiveRunFinished(run: BueiEmbyArchiveRun) {
+  if (!run.archived || !selectedLibrary.value) return;
+  await loadItems(selectedLibrary.value.id);
+}
+
+function handleArchiveRuleSaved() {
+  archiveRuleOpen.value = false;
+  toast.success("自动归档配置已保存");
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -427,13 +504,15 @@ onActivated(() => {
             class="emby-library-nav-item"
             :class="{ 'is-active': library.id === selectedLibraryId }"
             :aria-current="library.id === selectedLibraryId ? 'page' : undefined"
+            :title="`${library.name} · ${libraryKindLabel(library)}`"
             @click="chooseLibrary(library)"
           >
-            <span class="emby-library-nav-item__icon"><SvgIcon name="folder-open-regular" :size="16" /></span>
+            <span class="emby-library-nav-item__icon" :class="`is-kind-${libraryKind(library)}`">
+              <BueiEmbyLibraryIcon :kind="libraryKind(library)" :size="16" />
+            </span>
             <span class="emby-library-nav-item__copy">
               <strong>{{ library.name }}</strong>
             </span>
-            <SvgIcon name="chevron-right" :size="12" />
           </button>
         </nav>
         <div class="emby-library-sidebar__foot">
@@ -444,12 +523,14 @@ onActivated(() => {
 
       <main class="emby-library-content">
         <header class="emby-library-content__head">
-          <div class="emby-library-breadcrumb"><span>媒体库</span><SvgIcon name="chevron-right" :size="11" /><strong>{{ selectedLibrary?.name || "未选择" }}</strong></div>
+          <div class="emby-library-breadcrumb">
+            <span>媒体库</span>
+            <span class="emby-library-breadcrumb__sep" aria-hidden="true" />
+            <strong>{{ selectedLibrary?.name || "未选择" }}</strong>
+          </div>
           <div class="emby-library-title-row">
             <h2>{{ selectedLibrary?.name || "选择一个媒体库" }}</h2>
             <div class="emby-library-toolbar">
-              <span v-if="selectedCount" class="emby-library-selection">已选 {{ selectedCount }} 项</span>
-              <AppButton v-if="selectedCount" variant="danger" size="sm" @click="deleteSelected">删除选中</AppButton>
               <button type="button" class="emby-library-refresh" :disabled="loadingItems || syncingEmby" aria-label="刷新当前媒体库" title="刷新当前媒体库" @click="refreshCurrentLibrary">
                 <SvgIcon name="rotate" :size="15" />
                 <span>刷新</span>
@@ -459,6 +540,30 @@ onActivated(() => {
                 <SvgIcon v-else name="cloud-arrow-down" :size="14" />
                 <span>Emby 同步</span>
               </AppButton>
+              <AppDropdown
+                v-if="isArchiveLibrary"
+                v-model:open="archiveMenuOpen"
+                :items="archiveMenu"
+                trigger="click"
+                align="right"
+                :min-width="150"
+                @select="handleArchiveMenu"
+              >
+                <template #trigger="{ open, toggle }">
+                  <button
+                    type="button"
+                    class="emby-library-archive-menu"
+                    :aria-expanded="open"
+                    aria-haspopup="menu"
+                    title="自动归档"
+                    @click.stop="toggle()"
+                  >
+                    <SvgIcon name="clock-rotate-left" :size="14" />
+                    <span>自动归档</span>
+                    <SvgIcon name="chevron-down" :size="11" />
+                  </button>
+                </template>
+              </AppDropdown>
             </div>
           </div>
         </header>
@@ -531,17 +636,35 @@ onActivated(() => {
               v-for="item in visibleItems"
               :key="item.id"
               class="emby-media-card"
-              :class="{ 'is-selected': isSelected(item) }"
             >
               <div class="emby-media-card__poster">
                 <img v-if="imageURL(item.poster_url)" :src="imageURL(item.poster_url)" :alt="item.name" loading="lazy" />
                 <div v-else class="emby-media-card__poster-fallback"><SvgIcon name="film" :size="28" /></div>
                 <div class="emby-media-card__poster-shade" />
-                <label class="emby-media-card__select" @click.stop>
-                  <input type="checkbox" :checked="isSelected(item)" :aria-label="`选择 ${item.name}`" @change="toggleItem(item)" />
-                  <span />
-                </label>
-                <span class="emby-media-card__type">{{ item.type === "Series" ? "剧集" : "电影" }}</span>
+                <span class="emby-media-card__type">
+                  <span>{{ item.type === "Series" ? "剧集" : "电影" }}</span>
+                  <span v-if="item.production_year" class="emby-media-card__year">{{ item.production_year }}</span>
+                  <button
+                    v-if="item.type === 'Series'"
+                    type="button"
+                    class="emby-media-card__state"
+                    :class="{ 'is-ended': item.tv_state === 'ended' }"
+                    :disabled="isTVStatePending(item.id)"
+                    :aria-pressed="item.tv_state === 'ended'"
+                    :title="item.tv_state === 'ended' ? '点击标记为未完结（会继续追更）' : '点击标记为已完结'"
+                    @click.stop="toggleTVState(item)"
+                  >{{ item.tv_state === "ended" ? "已完结" : "未完结" }}</button>
+                </span>
+                <a
+                  v-if="item.tmdb_id"
+                  class="emby-media-card__tmdb"
+                  :href="tmdbURL(item)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="在 TMDB 打开"
+                  aria-label="在 TMDB 打开"
+                  @click.stop
+                >TMDB<SvgIcon name="arrow-up-right-from-square" :size="9" /></a>
                 <span v-if="episodeLabel(item)" class="emby-media-card__episodes">{{ episodeLabel(item) }}</span>
                 <div class="emby-media-card__actions" @click.stop>
                   <AppDropdown
@@ -567,18 +690,21 @@ onActivated(() => {
                   <SvgIcon name="folder" :size="10" />
                   <span>{{ item.strm_task_name }}</span>
                 </div>
-                <p>{{ item.production_year || "年份未知" }}<span v-if="item.type === 'Series'"> · {{ item.tv_state === 'ended' ? '已完结' : '未完结' }}</span></p>
                 <div v-if="item.users.length" class="emby-media-card__users" aria-label="用户观看状态">
-                  <span
+                  <button
                     v-for="user in item.users"
                     :key="user.user_id"
+                    type="button"
                     class="emby-user-state"
                     :class="{ 'is-played': user.played, 'is-progress': !user.played && (user.watched_episodes || 0) > 0 }"
-                    :title="`${user.user_name}：${userStatusLabel(user)}`"
+                    :disabled="isUserPlayedPending(item.id, user.user_id)"
+                    :aria-pressed="user.played"
+                    :title="userStateTitle(user)"
+                    @click.stop="toggleUserPlayed(item, user)"
                   >
                     {{ user.user_name }}
                     <SvgIcon v-if="user.played" name="check" :size="8" />
-                  </span>
+                  </button>
                 </div>
               </div>
             </article>
@@ -642,6 +768,22 @@ onActivated(() => {
         </section>
       </div>
     </Teleport>
+
+    <BueiEmbyArchiveRuleModal
+      :open="archiveRuleOpen"
+      :library-id="selectedLibraryId"
+      :library-name="selectedLibrary?.name || ''"
+      :config-id="configId"
+      @close="archiveRuleOpen = false"
+      @saved="handleArchiveRuleSaved"
+    />
+    <BueiEmbyArchiveLogModal
+      :open="archiveLogOpen"
+      :library-id="selectedLibraryId"
+      :library-name="selectedLibrary?.name || ''"
+      @close="archiveLogOpen = false"
+      @finished="handleArchiveRunFinished"
+    />
   </div>
 </template>
 
@@ -685,30 +827,39 @@ onActivated(() => {
 .emby-library-sidebar__rule { height: 1px; margin: 20px 8px 16px; background: var(--border); }
 .emby-library-sidebar__label { margin: 0 8px 8px; color: var(--text-muted); font-size: 11px; font-weight: 700; }
 .emby-library-list { display: grid; gap: 5px; }
-.emby-library-nav-item { width: 100%; min-height: 58px; display: flex; align-items: center; gap: 9px; padding: 9px 9px; border: 1px solid transparent; border-radius: var(--radius-control); color: var(--text-muted); background: transparent; text-align: left; cursor: pointer; transition: background .16s ease, border-color .16s ease, color .16s ease, transform .16s ease; }
-.emby-library-nav-item:hover { color: var(--text); background: var(--surface); border-color: var(--border); transform: translateX(2px); }
-.emby-library-nav-item.is-active { color: var(--text); background: var(--surface); border-color: color-mix(in srgb, var(--brand) 30%, var(--border)); box-shadow: 0 4px 12px color-mix(in srgb, var(--brand) 10%, transparent); }
-.emby-library-nav-item__icon { display: grid; place-items: center; width: 31px; height: 31px; border-radius: 9px; color: var(--brand); background: color-mix(in srgb, var(--brand) 11%, var(--surface)); flex-shrink: 0; }
+.emby-library-nav-item { width: 100%; min-height: 56px; display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid transparent; border-radius: var(--radius-control); color: var(--text-muted); background: transparent; text-align: left; cursor: pointer; transition: background .16s ease, border-color .16s ease, color .16s ease; }
+.emby-library-nav-item:hover { color: var(--text); background: var(--surface); border-color: var(--border); }
+.emby-library-nav-item.is-active { color: var(--text); background: var(--surface); border-color: color-mix(in srgb, var(--brand) 26%, var(--border)); box-shadow: 0 4px 12px color-mix(in srgb, #0f172a 7%, transparent); }
+.emby-library-nav-item__icon { --lib-tone: var(--brand); display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; color: var(--lib-tone); background: color-mix(in srgb, var(--lib-tone) 11%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lib-tone) 16%, transparent); flex-shrink: 0; transition: color .16s ease, background .16s ease, box-shadow .16s ease; }
+.emby-library-nav-item.is-active .emby-library-nav-item__icon { color: #fff; background: var(--lib-tone); box-shadow: 0 4px 10px color-mix(in srgb, var(--lib-tone) 32%, transparent); }
+.emby-library-nav-item__icon.is-kind-movies { --lib-tone: #4c74df; }
+.emby-library-nav-item__icon.is-kind-series { --lib-tone: #7c5cd6; }
+.emby-library-nav-item__icon.is-kind-music { --lib-tone: #0e9b8c; }
+.emby-library-nav-item__icon.is-kind-photos { --lib-tone: #d9852b; }
+.emby-library-nav-item__icon.is-kind-homevideos { --lib-tone: #1590c4; }
+.emby-library-nav-item__icon.is-kind-books { --lib-tone: #a1703f; }
+.emby-library-nav-item__icon.is-kind-boxsets { --lib-tone: #c15c86; }
+.emby-library-nav-item__icon.is-kind-mixed { --lib-tone: #6b7a90; }
 .emby-library-nav-item__copy { min-width: 0; flex: 1; }
-.emby-library-nav-item__copy strong, .emby-library-nav-item__copy small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.emby-library-nav-item__copy strong { font-size: 15px; line-height: 1.35; }
-.emby-library-nav-item__copy small { margin-top: 2px; color: var(--text-muted); font-size: 10px; }
+.emby-library-nav-item__copy strong { display: block; overflow: hidden; font-size: 14px; font-weight: 600; line-height: 1.35; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
 .emby-library-sidebar__foot { display: flex; align-items: center; gap: 7px; margin: auto 8px 0; padding-top: 16px; color: var(--text-muted); font-size: 11px; line-height: 1.45; border-top: 1px dashed var(--border); }
 .emby-library-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 12%, transparent); flex-shrink: 0; }
 .emby-library-content { min-width: 0; padding: 30px clamp(18px, 3vw, 38px) 42px; background: var(--bg); }
 .emby-library-content__head { margin-bottom: 25px; }
-.emby-library-breadcrumb { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--text-muted); font-size: 11px; }
-.emby-library-breadcrumb strong { color: var(--brand); }
+.emby-library-breadcrumb { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; color: var(--text-muted); font-size: 11px; letter-spacing: .02em; }
+.emby-library-breadcrumb__sep { width: 1px; height: 10px; background: color-mix(in srgb, var(--text-muted) 42%, transparent); transform: rotate(16deg); }
+.emby-library-breadcrumb strong { color: var(--brand); font-weight: 650; }
 .emby-library-title-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .emby-library-title-row h2 { min-width: 0; }
 .emby-library-content h2 { margin: 0; font-size: clamp(24px, 3vw, 33px); line-height: 1.1; letter-spacing: -.05em; }
 .emby-library-content__head p { margin: 8px 0 0; color: var(--text-muted); font-size: 13px; }
 .emby-library-toolbar { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
-.emby-library-selection { color: var(--brand); font-size: 12px; font-weight: 700; }
 .emby-library-refresh { display: inline-flex; align-items: center; gap: 7px; height: 34px; min-height: 34px; padding: 0 11px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface); color: var(--text-muted); font-size: 12px; cursor: pointer; transition: .15s ease; }
 .emby-library-refresh:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); background: color-mix(in srgb, var(--brand) 6%, var(--surface)); }
 .emby-library-refresh:disabled { opacity: .55; cursor: not-allowed; }
 .emby-library-toolbar :deep(.emby-library-sync) { min-height: 34px; }
+.emby-library-archive-menu { display: inline-flex; align-items: center; gap: 6px; height: 34px; min-height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-control); color: var(--text-muted); background: var(--surface); font-size: 12px; cursor: pointer; transition: border-color .15s ease, color .15s ease, background .15s ease; }
+.emby-library-archive-menu:hover, .emby-library-archive-menu[aria-expanded="true"] { border-color: var(--brand); color: var(--brand); background: color-mix(in srgb, var(--brand) 6%, var(--surface)); }
 .emby-task-filter { margin: -7px 0 22px; padding: 14px 15px 12px; border: 1px solid var(--border); border-radius: var(--radius-card); background: color-mix(in srgb, var(--surface) 82%, var(--brand) 18%); box-shadow: 0 8px 20px color-mix(in srgb, var(--brand) 7%, transparent); }
 .emby-task-filter__head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
 .emby-task-filter__head > div:first-child { display: flex; align-items: baseline; flex-wrap: wrap; gap: 7px 10px; min-width: 0; }
@@ -732,24 +883,26 @@ onActivated(() => {
 .emby-library-inline-error { display: flex; align-items: center; gap: 7px; margin-bottom: 15px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 25%, var(--border)); border-radius: var(--radius-control); background: color-mix(in srgb, var(--danger) 7%, var(--surface)); color: var(--danger); font-size: 12px; }
 .emby-library-list-head { display: flex; align-items: center; gap: 9px; margin-bottom: 13px; color: var(--text-muted); font-size: 12px; }
 .emby-library-list-head__hint { margin-left: auto; font-size: 11px; }
-.emby-media-card__select { position: relative; display: inline-flex; cursor: pointer; }
-.emby-media-card__select input { position: absolute; opacity: 0; pointer-events: none; }
-.emby-media-card__select span { display: block; width: 16px; height: 16px; border: 1px solid color-mix(in srgb, var(--text-muted) 50%, var(--border)); border-radius: 5px; background: color-mix(in srgb, var(--surface) 75%, transparent); transition: .14s ease; }
-.emby-media-card__select input:checked + span { border-color: var(--brand); background: var(--brand); box-shadow: inset 0 0 0 3px var(--surface); }
 .emby-media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(172px, 1fr)); gap: 18px 14px; }
 .emby-media-card { position: relative; min-width: 0; overflow: visible; border: 1px solid transparent; border-radius: var(--radius-card); background: var(--surface); cursor: default; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
-.emby-media-card:hover, .emby-media-card.is-selected { transform: translateY(-3px); border-color: color-mix(in srgb, var(--brand) 42%, var(--border)); box-shadow: 0 12px 24px color-mix(in srgb, #0f172a 12%, transparent); }
+.emby-media-card:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--brand) 42%, var(--border)); box-shadow: 0 12px 24px color-mix(in srgb, #0f172a 12%, transparent); }
 .emby-media-card:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; }
-.emby-media-card__select input:focus-visible + span { outline: 2px solid var(--brand); outline-offset: 2px; }
 .emby-media-card__poster { position: relative; aspect-ratio: 2 / 3; overflow: hidden; border-radius: var(--radius-card) var(--radius-card) 0 0; background: linear-gradient(145deg, color-mix(in srgb, var(--brand) 22%, var(--surface-sunken)), var(--surface-sunken)); }
 .emby-media-card__poster img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform .35s ease; }
 .emby-media-card:hover .emby-media-card__poster img { transform: scale(1.035); }
 .emby-media-card__poster-fallback { display: grid; place-items: center; width: 100%; height: 100%; color: color-mix(in srgb, var(--brand) 55%, var(--text-muted)); }
 .emby-media-card__poster-shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(2,6,23,.22), transparent 34%, rgba(2,6,23,.7)); pointer-events: none; }
-.emby-media-card__select { position: absolute; top: 10px; left: 10px; z-index: 2; }
-.emby-media-card__select span { border-color: rgba(255,255,255,.8); background: rgba(2,6,23,.35); }
-.emby-media-card__select input:checked + span { background: var(--brand); border-color: #fff; box-shadow: inset 0 0 0 3px var(--brand); }
-.emby-media-card__type { position: absolute; left: 10px; bottom: 10px; padding: 3px 7px; border-radius: 5px; color: #fff; background: rgba(2,6,23,.6); backdrop-filter: blur(5px); font-size: 10px; font-weight: 700; }
+.emby-media-card__type { position: absolute; left: 10px; bottom: 10px; display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 6px; color: #fff; background: rgba(2,6,23,.62); backdrop-filter: blur(6px); box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); font-size: 10px; font-weight: 700; line-height: 1.5; white-space: nowrap; }
+.emby-media-card__year, .emby-media-card__state { display: inline-flex; align-items: center; color: rgba(255,255,255,.76); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.emby-media-card__state { padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: #ffd08a; cursor: pointer; }
+.emby-media-card__state:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 2px; }
+.emby-media-card__state:disabled { opacity: .6; cursor: progress; }
+.emby-media-card__state:focus-visible { outline: 2px solid rgba(255,255,255,.85); outline-offset: 2px; border-radius: 3px; }
+.emby-media-card__state.is-ended { color: #9ce3c0; }
+.emby-media-card__year::before, .emby-media-card__state::before { content: ""; width: 3px; height: 3px; margin: 0 6px 0 5px; border-radius: 50%; background: currentColor; opacity: .85; }
+.emby-media-card__tmdb { position: absolute; top: 10px; left: 10px; z-index: 2; display: inline-flex; align-items: center; gap: 3px; padding: 3px 7px; border-radius: 5px; color: rgba(255,255,255,.82); background: rgba(2,6,23,.68); backdrop-filter: blur(5px); font-size: 10px; font-weight: 750; letter-spacing: .02em; line-height: 1.5; text-decoration: none; transition: background .15s ease, color .15s ease; }
+.emby-media-card__tmdb:hover { color: #06202a; background: #01b4e4; }
+.emby-media-card__tmdb:focus-visible { outline: 2px solid #01b4e4; outline-offset: 2px; }
 .emby-media-card__episodes { position: absolute; top: 10px; right: 10px; z-index: 2; padding: 3px 7px; border-radius: 5px; color: #ffe9b0; background: rgba(2,6,23,.68); backdrop-filter: blur(5px); font-size: 10px; font-weight: 750; }
 .emby-media-card__actions { position: absolute; right: 7px; bottom: 7px; z-index: 3; }
 .emby-media-card__more { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); cursor: pointer; transition: background .15s ease, color .15s ease; }
@@ -760,9 +913,11 @@ onActivated(() => {
 .emby-media-card__body h3 { margin: 0; overflow: hidden; color: var(--text); font-size: 13px; font-weight: 700; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .emby-media-card__task { display: flex; align-items: center; gap: 4px; min-width: 0; margin-top: 6px; color: var(--brand); font-size: 10px; font-weight: 650; line-height: 1.2; }
 .emby-media-card__task span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.emby-media-card__body p { margin: 4px 0 8px; color: var(--text-muted); font-size: 11px; }
-.emby-media-card__users { display: flex; flex-wrap: wrap; gap: 4px; min-height: 20px; }
-.emby-user-state { position: relative; display: inline-flex; align-items: center; justify-content: center; width: auto; min-width: 20px; max-width: 100%; height: 22px; padding: 0 7px; border: 1px solid var(--border); border-radius: var(--radius-pill); color: var(--text-muted); background: var(--surface-sunken); font-size: 9px; font-weight: 700; line-height: 1; white-space: nowrap; }
+.emby-media-card__users { display: flex; flex-wrap: wrap; gap: 4px; min-height: 20px; margin-top: 8px; }
+.emby-user-state { position: relative; display: inline-flex; align-items: center; justify-content: center; width: auto; min-width: 20px; max-width: 100%; height: 22px; padding: 0 7px; border: 1px solid var(--border); border-radius: var(--radius-pill); color: var(--text-muted); background: var(--surface-sunken); font-family: inherit; font-size: 9px; font-weight: 700; line-height: 1; white-space: nowrap; cursor: pointer; transition: box-shadow .15s ease, transform .15s ease, opacity .15s ease; }
+.emby-user-state:hover:not(:disabled) { box-shadow: 0 2px 6px color-mix(in srgb, #0f172a 14%, transparent); transform: translateY(-1px); }
+.emby-user-state:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.emby-user-state:disabled { opacity: .65; cursor: progress; }
 .emby-user-state.is-played { border-color: color-mix(in srgb, var(--success) 62%, var(--border)); color: #fff; background: var(--success); }
 .emby-user-state.is-progress { border-color: color-mix(in srgb, var(--warning) 65%, var(--border)); color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, var(--surface-sunken)); }
 .emby-user-state :deep(.lp-svg-icon) { position: absolute; right: -2px; bottom: -2px; padding: 1px; border-radius: 50%; color: #fff; background: var(--success); }

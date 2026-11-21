@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
+	"litepan/internal/buei/embyarchive"
 	"litepan/internal/domain"
 	"litepan/internal/embyproxy"
 	"litepan/internal/strm"
@@ -96,7 +96,7 @@ func (h *Handler) bueiEmbyLibrarySync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	libraryName, err := bueiResolveEmbyLibraryName(r.Context(), h.embyProxy, configID, libraryID)
+	libraryName, err := embyarchive.ResolveLibraryName(r.Context(), h.embyProxy, configID, libraryID)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -106,7 +106,7 @@ func (h *Handler) bueiEmbyLibrarySync(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	matchedTasks := bueiMatchStrmTasks(tasks, libraryName)
+	matchedTasks := embyarchive.MatchStrmTasks(tasks, libraryName)
 	result := bueiEmbyLibrarySyncResultDTO{
 		LibraryID:    libraryID,
 		LibraryName:  libraryName,
@@ -179,7 +179,7 @@ func (h *Handler) bueiEmbyLibrarySyncState(w http.ResponseWriter, r *http.Reques
 		writeErr(w, domain.Errf(domain.CodeNotImplement))
 		return
 	}
-	libraryName, err := bueiResolveEmbyLibraryName(r.Context(), h.embyProxy, configID, libraryID)
+	libraryName, err := embyarchive.ResolveLibraryName(r.Context(), h.embyProxy, configID, libraryID)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -189,7 +189,7 @@ func (h *Handler) bueiEmbyLibrarySyncState(w http.ResponseWriter, r *http.Reques
 		writeErr(w, err)
 		return
 	}
-	matchedTasks := bueiMatchStrmTasks(tasks, libraryName)
+	matchedTasks := embyarchive.MatchStrmTasks(tasks, libraryName)
 	items, err := bueiBuildSyncState(r.Context(), h.strmDir, h.strmScrape, matchedTasks)
 	if err != nil {
 		writeErr(w, err)
@@ -199,76 +199,6 @@ func (h *Handler) bueiEmbyLibrarySyncState(w http.ResponseWriter, r *http.Reques
 		MatchedTasks: bueiEmbyLibrarySyncTaskDTOs(matchedTasks),
 		Items:        items,
 	})
-}
-
-func bueiResolveEmbyLibraryName(ctx context.Context, svc *embyproxy.Service, configID, libraryID string) (string, error) {
-	libraries, err := svc.ListLibraries(ctx, configID)
-	if err != nil {
-		return "", err
-	}
-	for _, library := range libraries {
-		if library.ID == libraryID {
-			name := strings.TrimSpace(library.Name)
-			if name != "" {
-				return name, nil
-			}
-		}
-	}
-	return "", domain.Errorf(domain.CodeNotFound, "所选 Emby/Jellyfin 媒体库不存在")
-}
-
-func bueiMatchStrmTasks(tasks []*domain.StrmTask, libraryName string) []*domain.StrmTask {
-	const archiveWord = "归档"
-	libraryName = strings.ToLower(strings.TrimSpace(libraryName))
-	if libraryName == "" {
-		return nil
-	}
-	if !strings.Contains(libraryName, archiveWord) {
-		out := make([]*domain.StrmTask, 0)
-		for _, task := range tasks {
-			if task == nil || task.ID <= 0 {
-				continue
-			}
-			taskName := strings.ToLower(strings.TrimSpace(task.Name))
-			if !strings.Contains(taskName, archiveWord) && strings.Contains(taskName, libraryName) {
-				out = append(out, task)
-			}
-		}
-		return out
-	}
-
-	baseName := bueiTrimArchiveSeparators(strings.TrimSpace(strings.ReplaceAll(libraryName, archiveWord, "")))
-	if baseName == "" {
-		return nil
-	}
-	archiveTasks := make([]*domain.StrmTask, 0)
-	for _, task := range tasks {
-		if task == nil || task.ID <= 0 {
-			continue
-		}
-		taskName := strings.ToLower(strings.TrimSpace(task.Name))
-		if strings.Contains(taskName, archiveWord) && strings.Contains(taskName, baseName) {
-			archiveTasks = append(archiveTasks, task)
-		}
-	}
-	if len(archiveTasks) > 0 {
-		return archiveTasks
-	}
-	fallback := make([]*domain.StrmTask, 0)
-	for _, task := range tasks {
-		if task == nil || task.ID <= 0 {
-			continue
-		}
-		taskName := strings.ToLower(strings.TrimSpace(task.Name))
-		if !strings.Contains(taskName, archiveWord) && strings.Contains(taskName, baseName) {
-			fallback = append(fallback, task)
-		}
-	}
-	return fallback
-}
-
-func bueiTrimArchiveSeparators(value string) string {
-	return strings.Trim(value, " \t·•|/\\_-:：")
 }
 
 func bueiEmbyLibrarySyncTaskDTOs(tasks []*domain.StrmTask) []bueiEmbyLibrarySyncTaskDTO {
@@ -283,27 +213,7 @@ func bueiEmbyLibrarySyncTaskDTOs(tasks []*domain.StrmTask) []bueiEmbyLibrarySync
 }
 
 func bueiListAllStrmItems(ctx context.Context, svc *strmscrape.Service, taskID int64) ([]strmscrape.Item, error) {
-	const limit = 200
-	all := make([]strmscrape.Item, 0, limit)
-	for offset := 0; ; {
-		page, err := svc.ListItems(ctx, taskID, strmscrape.ItemListQuery{
-			Offset: offset,
-			Limit:  limit,
-			Sort:   strmscrape.ItemListSortTitleAsc,
-		})
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, page.Items...)
-		if !page.HasMore || len(page.Items) == 0 {
-			return all, nil
-		}
-		next := offset + len(page.Items)
-		if next <= offset {
-			return all, nil
-		}
-		offset = next
-	}
+	return embyarchive.ListAllStrmItems(ctx, svc, taskID)
 }
 
 func bueiSyncTaskItems(ctx context.Context, strmDir string, task *domain.StrmTask, strmItems []strmscrape.Item, rawItems []map[string]any, userStatuses map[string][]embyproxy.LibraryUserItemStatus) (matched, saved int, failed []string, synced []bueiSyncedProject) {
@@ -315,7 +225,7 @@ func bueiSyncTaskItems(ctx context.Context, strmDir string, task *domain.StrmTas
 	synced = make([]bueiSyncedProject, 0)
 	for _, item := range strmItems {
 		if err := ctx.Err(); err != nil {
-			failed = append(failed, itemDisplayName(item)+": "+err.Error())
+			failed = append(failed, embyarchive.ItemDisplayName(item)+": "+err.Error())
 			break
 		}
 		bestIndex, bestScore := -1, 0
@@ -323,7 +233,7 @@ func bueiSyncTaskItems(ctx context.Context, strmDir string, task *domain.StrmTas
 			if used[index] {
 				continue
 			}
-			score := bueiEmbyMatchScore(item, raw)
+			score := embyarchive.EmbyMatchScore(item, raw)
 			if score > bestScore {
 				bestIndex, bestScore = index, score
 			}
@@ -335,20 +245,20 @@ func bueiSyncTaskItems(ctx context.Context, strmDir string, task *domain.StrmTas
 		matched++
 		path, err := bueiEmbyProjectInfoPath(strmDir, task, item)
 		if err != nil {
-			failed = append(failed, itemDisplayName(item)+": "+err.Error())
+			failed = append(failed, embyarchive.ItemDisplayName(item)+": "+err.Error())
 			continue
 		}
 		if err := bueiWriteEmbyProjectInfo(path, rawItems[bestIndex]); err != nil {
-			failed = append(failed, itemDisplayName(item)+": "+err.Error())
+			failed = append(failed, embyarchive.ItemDisplayName(item)+": "+err.Error())
 			continue
 		}
-		embyID := strings.TrimSpace(bueiRawString(rawItems[bestIndex], "Id"))
+		embyID := strings.TrimSpace(embyarchive.RawString(rawItems[bestIndex], "Id"))
 		users := userStatuses[embyID]
 		if err := bueiWriteEmbyUserItems(path, users); err != nil {
-			failed = append(failed, itemDisplayName(item)+": "+err.Error())
+			failed = append(failed, embyarchive.ItemDisplayName(item)+": "+err.Error())
 			continue
 		}
-		total := bueiRawInt(rawItems[bestIndex]["RecursiveItemCount"])
+		total := embyarchive.RawInt(rawItems[bestIndex]["RecursiveItemCount"])
 		for _, user := range users {
 			if user.TotalEpisodes > total {
 				total = user.TotalEpisodes
@@ -422,135 +332,6 @@ func bueiWriteEmbyProjectInfo(path string, raw map[string]any) error {
 	return nil
 }
 
-func bueiEmbyMatchScore(item strmscrape.Item, raw map[string]any) int {
-	itemType := strings.ToLower(strings.TrimSpace(item.MediaType))
-	rawType := strings.ToLower(strings.TrimSpace(bueiRawString(raw, "Type")))
-	if itemType == strmscrape.MediaTypeTV && rawType != "" && rawType != "series" {
-		return 0
-	}
-	if itemType == strmscrape.MediaTypeMovie && rawType != "" && rawType != "movie" {
-		return 0
-	}
-
-	itemTMDB := strings.TrimSpace(item.TMDBID)
-	rawTMDB := bueiRawProviderID(raw, "tmdb")
-	if itemTMDB != "" && rawTMDB != "" && itemTMDB == rawTMDB {
-		return 1000
-	}
-
-	rawName := bueiRawString(raw, "Name")
-	if rawName == "" {
-		return 0
-	}
-	rawTitle := bueiNormalizeMatchName(rawName)
-	if rawTitle == "" {
-		return 0
-	}
-	itemNames := []string{item.Title, item.FolderName, strings.TrimSuffix(item.StrmName, filepath.Ext(item.StrmName))}
-	best := 0
-	pathName := strings.ReplaceAll(bueiRawString(raw, "Path"), "\\", "/")
-	pathName = bueiNormalizeMatchName(filepath.Base(pathName))
-	if pathName != "" && bueiNormalizeMatchName(item.FolderName) == pathName {
-		best = 900
-	}
-	for _, candidate := range itemNames {
-		candidate = bueiNormalizeMatchName(candidate)
-		if candidate == "" {
-			continue
-		}
-		score := 0
-		switch {
-		case candidate == rawTitle:
-			score = 700
-		case len(candidate) >= 4 && (strings.Contains(candidate, rawTitle) || strings.Contains(rawTitle, candidate)):
-			score = 300
-		}
-		if score == 0 {
-			continue
-		}
-		rawYear := bueiRawInt(raw["ProductionYear"])
-		if item.Year != nil && rawYear > 0 {
-			if *item.Year == rawYear {
-				score += 150
-			} else {
-				score -= 200
-			}
-		}
-		if score > best {
-			best = score
-		}
-	}
-	return best
-}
-
-func bueiNormalizeMatchName(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var out strings.Builder
-	for _, r := range value {
-		if unicode.IsLetter(r) || unicode.IsNumber(r) {
-			out.WriteRune(r)
-		}
-	}
-	return out.String()
-}
-
-func bueiRawProviderID(raw map[string]any, wanted string) string {
-	for key, value := range raw {
-		if !strings.EqualFold(key, "ProviderIds") && !strings.EqualFold(key, "ProviderIDs") {
-			continue
-		}
-		providers, ok := value.(map[string]any)
-		if !ok {
-			continue
-		}
-		for key, value := range providers {
-			key = strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "_", ""), "-", ""))
-			if key == wanted || strings.Contains(key, wanted) {
-				return strings.TrimSpace(fmt.Sprint(value))
-			}
-		}
-	}
-	return ""
-}
-
-func bueiRawString(raw map[string]any, key string) string {
-	for name, value := range raw {
-		if strings.EqualFold(name, key) && value != nil {
-			return strings.TrimSpace(fmt.Sprint(value))
-		}
-	}
-	return ""
-}
-
-func bueiRawInt(value any) int {
-	switch value := value.(type) {
-	case int:
-		return value
-	case int64:
-		return int(value)
-	case float64:
-		return int(value)
-	case json.Number:
-		parsed, _ := strconv.Atoi(value.String())
-		return parsed
-	case string:
-		parsed, _ := strconv.Atoi(strings.TrimSpace(value))
-		return parsed
-	default:
-		return 0
-	}
-}
-
-func itemDisplayName(item strmscrape.Item) string {
-	if name := strings.TrimSpace(item.Title); name != "" {
-		return name
-	}
-	if name := strings.TrimSpace(item.FolderName); name != "" {
-		return name
-	}
-	return item.ID
-}
-
 func (h *Handler) bueiResolveEmbyItemID(ctx context.Context, itemKey string) (string, error) {
 	itemKey = strings.TrimSpace(itemKey)
 	parts := strings.SplitN(itemKey, ":", 2)
@@ -603,7 +384,7 @@ func (h *Handler) bueiResolveEmbyItemID(ctx context.Context, itemKey string) (st
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return "", domain.Errorf(domain.CodeDriverError, "读取 Emby 项目信息失败")
 	}
-	embyID := strings.TrimSpace(bueiRawString(raw, "Id"))
+	embyID := strings.TrimSpace(embyarchive.RawString(raw, "Id"))
 	if embyID == "" {
 		return "", domain.Errorf(domain.CodeValidation, "Emby 项目信息中缺少项目 ID，请重新同步")
 	}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"litepan/internal/buei/embyarchive"
 	"litepan/internal/buei/guangyashare"
 	"litepan/internal/buei/quarkingest"
 )
@@ -9,4 +10,5 @@ import (
 type BueiDeps struct {
 	GuangyaShare *guangyashare.Service
 	QuarkIngest  *quarkingest.Service
+	EmbyArchive  *embyarchive.Service
 }

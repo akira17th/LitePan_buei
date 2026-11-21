@@ -1,6 +1,7 @@
 package app
 
 import (
+	"litepan/internal/buei/embyarchive"
 	"litepan/internal/buei/guangyashare"
 	"litepan/internal/buei/quarkingest"
 	"litepan/internal/cache"
@@ -12,6 +13,7 @@ import (
 type bueiServices struct {
 	guangyaShare *guangyashare.Service
 	quarkIngest  *quarkingest.Service
+	embyArchive  *embyarchive.Service
 }
 
 func wireBueiServices(st *storeBundle, core *coreBundle, logs *logx.Manager) *bueiServices {

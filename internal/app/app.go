@@ -13,6 +13,7 @@ import (
 	"litepan/internal/auth"
 	"litepan/internal/automation"
 	"litepan/internal/backuprestore"
+	"litepan/internal/buei/embyarchive"
 	"litepan/internal/cache"
 	"litepan/internal/cacheretention"
 	"litepan/internal/config"
@@ -61,6 +62,7 @@ type App struct {
 	cacheRetention   *cacheretention.Service
 	embyProxy        *embyproxy.Service
 	fnosProxy        *fnosproxy.Service
+	bueiEmbyArchive  *embyarchive.Service // buei: emby auto archive
 	httpSrv          *http.Server
 	httpBaseCancel   context.CancelFunc
 	restartCh        <-chan struct{}
@@ -145,6 +147,7 @@ func New(ctx context.Context, opts Options) (*App, error) {
 		cacheRetention:   svc.cacheRetention,
 		embyProxy:        svc.embyProxy,
 		fnosProxy:        svc.fnosProxy,
+		bueiEmbyArchive:  svc.buei.embyArchive, // buei: emby auto archive
 		httpSrv:          httpSrv,
 		httpBaseCancel:   httpBaseCancel,
 		restartCh:        restartCh,
@@ -186,6 +189,9 @@ func (a *App) Run(ctx context.Context) error {
 	if a.fnosProxy != nil {
 		a.fnosProxy.Start(ctx)
 	}
+	if a.bueiEmbyArchive != nil {
+		a.bueiEmbyArchive.Start(ctx) // buei: emby auto archive
+	}
 	errCh := make(chan error, 1)
 	go func() {
 		a.log.Info("HTTP 服务已监听", "addr", a.cfg.ListenAddr)
@@ -219,6 +225,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.log.Info("正在优雅关闭各组件")
 	if a.sched != nil {
 		a.sched.Stop()
+	}
+	if a.bueiEmbyArchive != nil {
+		a.bueiEmbyArchive.Stop(ctx) // buei: emby auto archive
 	}
 	if a.httpBaseCancel != nil {
 		a.httpBaseCancel()

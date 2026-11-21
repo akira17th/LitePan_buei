@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"litepan/internal/buei/embyarchive"
 	"litepan/internal/domain"
 	"litepan/internal/embyproxy"
 	"litepan/internal/strm"
@@ -159,7 +160,7 @@ func bueiReadStoredEmbyProject(path string) (map[string]any, []embyproxy.Library
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	if rawTotal := bueiRawInt(raw["RecursiveItemCount"]); rawTotal > total {
+	if rawTotal := embyarchive.RawInt(raw["RecursiveItemCount"]); rawTotal > total {
 		total = rawTotal
 	}
 	return raw, users, total, nil

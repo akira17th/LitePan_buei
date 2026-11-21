@@ -53,6 +53,7 @@ export interface BueiEmbyLibraryItem {
   ep_tmdb?: number;
   ep_scraped?: number;
   tv_state?: string;
+  tmdb_id?: string;
 }
 
 export interface BueiEmbyLibraryState {
@@ -164,9 +165,6 @@ export function fetchBueiEmbyLibraryDetail(itemId: string, configId = "") {
   return http.get<BueiEmbyLibraryDetail>(`${basePath}/items/${encodeURIComponent(itemId)}`, configId ? { config_id: configId } : undefined);
 }
 
-export function deleteBueiEmbyLibraryItem(itemId: string, configId = "") {
-  return http.del<{ deleted: boolean }>(`${basePath}/items/${encodeURIComponent(itemId)}`, undefined, configId ? { config_id: configId } : undefined);
-}
 
 export function syncBueiEmbyLibrary(input: { config_id?: string; library_id: string; library_name?: string }) {
   return http.postWithTimeout<BueiEmbyLibrarySyncResult>(`${basePath}/sync`, input, 10 * 60 * 1000);
@@ -186,6 +184,19 @@ export function restoreBueiEmbyLibraryItem(itemId: string, configId = "") {
     { item_id: itemId, config_id: configId || undefined },
     5 * 60 * 1000,
   );
+}
+
+export function setBueiEmbyLibraryTVState(input: { item_id: string; ended: boolean }) {
+  return http.post<{ item_id: string; tv_state: string }>(`${basePath}/tv-state`, input);
+}
+
+export function setBueiEmbyLibraryUserPlayed(input: {
+  item_id: string;
+  user_id: string;
+  played: boolean;
+  config_id?: string;
+}) {
+  return http.post<{ user: BueiEmbyUserStatus }>(`${basePath}/played`, input);
 }
 
 export function fetchBueiEmbyLibrarySyncState(libraryId: string, configId = "") {
