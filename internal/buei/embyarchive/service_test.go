@@ -183,3 +183,54 @@ func TestIsNotFound(t *testing.T) {
 		t.Fatal("普通错误不应被识别为 NOT_FOUND")
 	}
 }
+
+func TestRuleSummaryDoesNotTouchEmby(t *testing.T) {
+	repo := &fakeRuleRepo{rules: []*domain.BueiEmbyArchiveRule{
+		{ArchiveLibraryID: "arch", ArchiveLibraryName: "归档 · 电影", IntervalHours: 6, NextRunAt: time.Unix(100, 0).UTC()},
+	}}
+	svc := &Service{rules: repo, log: newLogger(nil)}
+	rule, err := svc.RuleSummary(context.Background(), "arch")
+	if err != nil || rule == nil || rule.IntervalHours != 6 {
+		t.Fatalf("应直接读取配置：rule=%+v err=%v", rule, err)
+	}
+	rule, err = svc.RuleSummary(context.Background(), "missing")
+	if err != nil || rule != nil {
+		t.Fatalf("未配置时应返回空配置：rule=%+v err=%v", rule, err)
+	}
+}
+
+func TestSaveRuleEnableSwitch(t *testing.T) {
+	emby := &fakeEmby{libraries: []embyproxy.Library{
+		{ID: "lib-tv", Name: "剧集", CollectionType: "tvshows"},
+		{ID: "archive-tv", Name: "归档 · 剧集", CollectionType: "tvshows"},
+	}}
+	svc := newRuleTestService(&fakeRuleRepo{}, emby)
+	input := SaveRuleInput{ArchiveLibraryID: "archive-tv", SourceLibraryIDs: []string{"lib-tv"}, IntervalHours: 6}
+
+	saved, err := svc.SaveRule(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saved.Enabled {
+		t.Fatal("新配置默认应启用自动执行")
+	}
+
+	disabled := false
+	input.Enabled = &disabled
+	saved, err = svc.SaveRule(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Enabled {
+		t.Fatal("显式关闭后应保持关闭")
+	}
+
+	input.Enabled = nil
+	saved, err = svc.SaveRule(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Enabled {
+		t.Fatal("未传 enabled 时应保留上次的关闭状态")
+	}
+}

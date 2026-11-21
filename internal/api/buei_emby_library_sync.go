@@ -52,6 +52,8 @@ type bueiEmbyLibrarySyncResultDTO struct {
 	SavedItems     int                          `json:"saved_items"`
 	UnmatchedItems int                          `json:"unmatched_items"`
 	FailedItems    []string                     `json:"failed_items,omitempty"`
+	// LastSyncedAt 是本次同步成功后的时间（RFC3339），前端据此更新按钮提示。
+	LastSyncedAt string `json:"last_synced_at,omitempty"`
 }
 
 type bueiEmbyLibrarySyncStateDTO struct {
@@ -96,10 +98,15 @@ func (h *Handler) bueiEmbyLibrarySync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	libraryName, err := embyarchive.ResolveLibraryName(r.Context(), h.embyProxy, configID, libraryID)
-	if err != nil {
-		writeErr(w, err)
-		return
+	// 前端已知媒体库名称时直接使用，避免每次加载都调用一次 Emby 接口。
+	libraryName := strings.TrimSpace(r.URL.Query().Get("library_name"))
+	if libraryName == "" {
+		resolved, err := embyarchive.ResolveLibraryName(r.Context(), h.embyProxy, configID, libraryID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		libraryName = resolved
 	}
 	tasks, err := h.strm.ListTasks(r.Context())
 	if err != nil {
@@ -161,6 +168,18 @@ func (h *Handler) bueiEmbyLibrarySync(w http.ResponseWriter, r *http.Request) {
 	if result.UnmatchedItems < 0 {
 		result.UnmatchedItems = 0
 	}
+	// 同步成功后记录最近同步时间，用于“超过 12 小时自动同步”和按钮悬停提示。
+	syncedAt := time.Now().UTC()
+	result.LastSyncedAt = syncedAt.Format(time.RFC3339)
+	if h.buei.EmbyLibrarySync != nil {
+		if err := h.buei.EmbyLibrarySync.Save(r.Context(), &domain.BueiEmbyLibrarySync{
+			LibraryID:    libraryID,
+			LibraryName:  libraryName,
+			LastSyncedAt: syncedAt,
+		}); err != nil && h.log != nil {
+			h.log.Warn("保存 Emby 媒体库最近同步时间失败", "library_id", libraryID, "err", err)
+		}
+	}
 	writeOK(w, result)
 }
 
@@ -179,10 +198,15 @@ func (h *Handler) bueiEmbyLibrarySyncState(w http.ResponseWriter, r *http.Reques
 		writeErr(w, domain.Errf(domain.CodeNotImplement))
 		return
 	}
-	libraryName, err := embyarchive.ResolveLibraryName(r.Context(), h.embyProxy, configID, libraryID)
-	if err != nil {
-		writeErr(w, err)
-		return
+	// 前端已知媒体库名称时直接使用，避免每次加载都调用一次 Emby 接口。
+	libraryName := strings.TrimSpace(r.URL.Query().Get("library_name"))
+	if libraryName == "" {
+		resolved, err := embyarchive.ResolveLibraryName(r.Context(), h.embyProxy, configID, libraryID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		libraryName = resolved
 	}
 	tasks, err := h.strm.ListTasks(r.Context())
 	if err != nil {

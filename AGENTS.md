@@ -361,7 +361,7 @@ HTTP
 - 迁移文件在 `internal/store/migrations/NNNN_name.sql`，按版本号顺序执行，记录在 `schema_migrations`。
 - 迁移 SQL 按分号拆分执行，**字符串字面量里不要出现分号**。
 - 已执行的迁移绝不能修改或改编号；只能新增后续迁移。
-- 当前最新迁移为 `0036_buei_guangya_share_links_by_id.sql`；buei 新迁移从 `0037` 起。
+- 当前最新迁移为 `0039_buei_emby_archive_enabled.sql`；buei 新迁移从 `0040` 起。
 - 说明：`0033_buei_guangya_share_provider.sql`（夸克分享 provider）已随功能回撤删除，但部分已有数据库仍记录该版本；恢复夸克功能时沿用原文件即可，新迁移不要复用 0033。
 
 ### 4.8 全局设置
@@ -657,6 +657,8 @@ web/src/composables/useBueiXxx.ts
 
 - **数据来源**：左侧媒体库来自 Emby 的全部可选媒体库；选中媒体库后读取 STRM 任务列表，再访问 `/api/admin/strm-scrape/items` 展示 STRM 刮削项目。刷新按钮对所有匹配任务调用 `/api/admin/strm-scrape/refresh-index` 后重新读取。
 - **任务匹配**：已禁用（`status=paused`）的 STRM 任务不参与匹配；普通媒体库名称匹配任务名称时排除含「归档」的任务。含「归档」的媒体库先去掉「归档」及其两侧常见分隔符，用剩余名称匹配同类归档任务；例如「归档 · 剧集」只匹配名称同时含「剧集」和「归档」的任务，找不到时不回退到普通任务，避免把普通任务的项目当成归档内容。前后端规则分别位于 `web/src/utils/bueiEmbyLibraryTasks.ts` 和 `internal/api/buei_emby_library_sync.go`，修改时必须同步。
+- **同步时间与自动同步**：同步成功后在 `buei_emby_library_syncs`（迁移 `0038`）按媒体库记录 `last_synced_at`；进入媒体库或在后台 tab 激活时检查该时间，超过 12 小时自动执行一次「Emby 同步」（同一媒体库单次会话只尝试一次，自动同步不加 toast）；`/state` 返回 `syncs`（library_id → RFC3339），标题下方一行显示「上次 Emby 同步 <时间> │ 超过 12 小时自动同步」（未同步时提示尚无记录），归档媒体库在同一行用竖线分隔追加执行计划，宽度不足时自动换行（字号 11px）。
+- **加载性能**：`GET /sync-state` 支持传 `library_name`，前端已知媒体库名称时直接使用，避免每次加载都调用一次 Emby `ListLibraries`；`GET /archive-rule?summary=1` 同样不访问 Emby。前端按 STRM 任务并行读取项目，单个任务失败（如归档目录尚未创建）不影响其它任务；`输出目录不存在` 按“暂无项目”处理。
 - **Emby 同步**：`POST /api/admin/buei/emby-library/sync` 查询媒体库完整项目及所有用户的 `UserData`。普通项目目录保存 `emby.json`；用户信息按用户名保存为 `emby_users/<用户名>.json`，平铺 STRM 项目使用项目专属用户目录。卡片显示完整用户名、观看状态；剧集的「未看集数 / 总集数」取所有用户剩余集数的最小值 / 精确总集数。
 - **观看状态快捷切换**：点击卡片上的用户名，会在 Emby 中标记 / 取消该用户的「已看完」（`POST` / `DELETE /Users/{userId}/PlayedItems/{itemId}`），并同步更新本地 `emby_users/<用户名>.json`（剧集按总集数换算已看 / 剩余，电影用 1/0），卡片状态与「未看集数」立即刷新；接口为 `POST /api/admin/buei/emby-library/played`。
 - **完结状态快捷切换**：点击卡片徽标上的「已完结 / 未完结」直接切换，不弹确认框；接口 `POST /api/admin/buei/emby-library/tv-state` 调用 `strmscrape.SetTVState`——设为完结按「刮削页 → 设为完结」写 `pending=ended`（根元数据不全时写手动完成标记），取消完结清除手动完成并置 `pending=updating`（下一轮刮削继续追更），切换后立即更新索引，自动归档的「剧集已完结」规则随之生效。
@@ -667,9 +669,11 @@ web/src/composables/useBueiXxx.ts
 - **索引空结果**：归档可能导致源任务索引为空，`internal/strmscrape/index.go` 的统计查询必须用 `COALESCE(SUM(...), 0)`，否则 SQLite 空表会将 `NULL` 扫描到 `int` 时报错。
 - **自动归档**：名称含「归档」的媒体库在「Emby 同步」右侧多一个「自动归档」下拉，依次为「立即执行」「配置」「日志」。
   - 配置存 `buei_emby_archive_rules`（迁移 `0037`），同一来源媒体库只能被一个归档媒体库占用；保存接口与配置弹窗都会校验并禁用已占用来源。
+  - 配置含「启用」开关（`enabled`，迁移 `0039`，默认开启）：关闭后 `runDue` 不再自动执行，只能手动「立即执行」；页面执行计划行显示「已停用（可在「配置」中开启）」。
+  - 执行日志按触发方式各保留最新一条：创建新记录后用 `PruneByTrigger` 删除同库同触发方式（`manual` / `auto`）的旧记录，日志弹窗标签显示「手动 / 自动 · 时间」。
   - 规则固定、不做配置：剧集必须 `tv_state=ended`（电影不需要这一条），且任一 Emby 用户 `played=true`；两个条件同时满足才会归档。观看状态在每轮执行时直接查询 Emby（`ListLibraryItemsRaw` + `ListLibraryItemUserStatuses`），不依赖是否点过「Emby 同步」。
   - 保存后写入 `next_run_at`（当前时间 + 频率），`internal/buei/embyarchive` 的循环每分钟检查一次；「立即执行」异步启动并立即返回日志记录。
-  - 页面标题下方展示执行计划：`自动归档 每 N 小时 检查一次 · 下次执行 <时间> · 来源 N 个媒体库`（数据来自 `GET /archive-rule`，保存配置与执行结束后自动刷新）；未配置时提示去「配置」选择来源。
+  - 页面标题下方与同步信息同一行展示执行计划：`自动归档 每 N 小时 检查一次 · 下次执行 <时间> · 来源 N 个媒体库`（数据来自 `GET /archive-rule?summary=1`，只读配置、不访问 Emby；保存配置与执行结束后自动刷新）；未配置时提示去「配置」选择来源。
   - 归档执行复用媒体卡片「… → 归档」的步骤（网盘移动 + STRM 移动 + 写 `buei_archive.json` + 刷新索引/媒体库），批量执行时 `SkipRefresh` 只在整轮结束后统一刷新一次。
   - **执行后刷新**：整轮只要有项目归档成功（`archived > 0`），结束前立即依次刷新源任务索引 → 归档任务索引 → 源媒体库 → 归档媒体库（单个任务索引刷新失败只记警告，不影响其余刷新）；日志弹窗观察到最新一次执行结束且有归档时，会通知页面重新读取当前媒体库项目。
   - 每次执行写 `buei_emby_archive_runs`，日志弹窗展示最新记录的扫描/归档/跳过/失败统计与项目明细，状态为 `running` 时每 2 秒轮询。
@@ -717,6 +721,7 @@ web/src/composables/useBueiXxx.ts
 - 网络请求统一走 `web/src/api/*` 和 `http` 封装；错误用 `getApiErrorMessage` 转文案。
 - 确认/提示使用 `showConfirm` / `toast`；不要用浏览器原生弹窗。
 - **成功提示要克制**：开关、勾选、切换、收藏这类“极其简单且单一”的操作，界面状态本身就是反馈，不要额外 `toast.success`；只有耗时、破坏性、批量或表单提交类操作才提示成功。失败提示仍应保留，避免操作静默失败。
+- **文案克制**：提示只说明状态或结果，不要写“可在 xx 中开启 / 去哪里配置”这类操作指引——用过的人自然知道入口；确需引导时只在空态或首次使用处说明。
 - 样式优先 CSS 变量与 scoped style；不要硬编码主题色。
 - 文案中文；变量名英文。
 

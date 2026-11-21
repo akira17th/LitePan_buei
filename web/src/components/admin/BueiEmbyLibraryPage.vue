@@ -2,7 +2,7 @@
 import { computed, onActivated, onBeforeUnmount, onMounted, ref } from "vue";
 import { getApiErrorMessage } from "@/api/client";
 import {
-  fetchBueiEmbyArchiveRule,
+  fetchBueiEmbyArchiveRuleSummary,
   runBueiEmbyArchiveNow,
   type BueiEmbyArchiveRuleView,
   type BueiEmbyArchiveRun,
@@ -62,7 +62,14 @@ const archiveLogOpen = ref(false);
 const userPlayedPending = ref<Set<string>>(new Set());
 const tvStatePending = ref<Set<string>>(new Set());
 const archiveRule = ref<BueiEmbyArchiveRuleView | null>(null);
+// 各媒体库最近一次「Emby 同步」成功时间；超过 12 小时会在进入媒体库时自动同步。
+const syncTimes = ref<Record<string, string>>({});
+const autoSyncedLibraryIDs = ref<Set<string>>(new Set());
 const archiveRuleLoaded = ref(false);
+
+const autoSyncIntervalMs = 12 * 60 * 60 * 1000;
+
+const selectedSyncTime = computed(() => syncTimes.value[selectedLibraryId.value] || "");
 
 const archiveSchedule = computed(() => {
   const rule = archiveRule.value?.rule;
@@ -73,6 +80,7 @@ const archiveSchedule = computed(() => {
     interval: hours === 24 ? "每 24 小时" : hours === 6 ? "每 6 小时" : "每小时",
     next: archiveRule.value?.next_run_at || rule.next_run_at || "",
     sources,
+    enabled: rule.enabled !== false,
   };
 });
 
@@ -238,11 +246,15 @@ async function loadState(showLoading = true) {
     configId.value = state.config.id;
     hasConfig.value = true;
     libraries.value = state.libraries || [];
+    syncTimes.value = state.syncs || {};
     if (!selectedLibraryId.value || !libraries.value.some((library) => library.id === selectedLibraryId.value)) {
       selectedLibraryId.value = libraries.value[0]?.id || "";
     }
     loaded.value = true;
-    if (selectedLibraryId.value) await loadItems(selectedLibraryId.value);
+    if (selectedLibraryId.value) {
+      await loadItems(selectedLibraryId.value);
+      void maybeAutoSync(selectedLibraryId.value);
+    }
   } catch (error) {
     errorMessage.value = getApiErrorMessage(error, "读取 Emby 媒体库失败");
     configId.value = "";
@@ -318,7 +330,7 @@ async function loadArchiveRule(libraryId: string) {
     return;
   }
   try {
-    archiveRule.value = await fetchBueiEmbyArchiveRule(libraryId, configId.value);
+    archiveRule.value = await fetchBueiEmbyArchiveRuleSummary(libraryId);
   } catch {
     archiveRule.value = null;
   } finally {
@@ -346,12 +358,32 @@ async function loadItems(libraryId: string, refresh = false) {
       items.value = [];
       return;
     }
+    // 同步状态属于附加信息，与项目列表并行读取，读取失败时仍展示 STRM 项目本身。
+    const syncStatePromise = fetchBueiEmbyLibrarySyncState(libraryId, configId.value, library?.name || "").catch(() => null);
     const allItems: BueiEmbyLibraryItem[] = [];
-    for (const task of matchedTasks.value) {
-      allItems.push(...(await fetchAllTaskItems(task, refresh)));
+    const taskErrors: string[] = [];
+    // 每个任务单独、并行读取：归档目录可能尚未创建（还没归档过），
+    // 一个任务读取失败不能影响其它任务的项目展示。
+    const batches = await Promise.all(
+      matchedTasks.value.map(async (task) => {
+        try {
+          return { items: await fetchAllTaskItems(task, refresh), error: "" };
+        } catch (error) {
+          const message = getApiErrorMessage(error, `读取任务「${task.name}」失败`);
+          // 归档目录尚未创建（还没归档过）时按“暂无项目”处理，不当作错误提示。
+          return { items: [] as BueiEmbyLibraryItem[], error: message.includes("输出目录不存在") ? "" : message };
+        }
+      }),
+    );
+    for (const batch of batches) {
+      allItems.push(...batch.items);
+      if (batch.error) taskErrors.push(batch.error);
     }
-    try {
-      const syncState = await fetchBueiEmbyLibrarySyncState(libraryId, configId.value);
+    if (!allItems.length && taskErrors.length) {
+      errorMessage.value = taskErrors[0];
+    }
+    const syncState = await syncStatePromise;
+    if (syncState) {
       const syncedByKey = new Map(syncState.items.map((item) => [item.key, item]));
       items.value = allItems.map((item) => {
         const synced = syncedByKey.get(item.id);
@@ -361,8 +393,7 @@ async function loadItems(libraryId: string, refresh = false) {
           users: synced?.users || [],
         };
       });
-    } catch {
-      // 同步状态属于附加信息；读取失败时仍展示 STRM 项目本身。
+    } else {
       items.value = allItems;
     }
   } catch (error) {
@@ -381,6 +412,7 @@ async function chooseLibrary(library: BueiEmbyLibrary) {
   archiveMenuOpen.value = false;
   selectedLibraryId.value = library.id;
   await loadItems(library.id);
+  void maybeAutoSync(library.id);
 }
 
 async function refreshCurrentLibrary() {
@@ -388,23 +420,49 @@ async function refreshCurrentLibrary() {
   await loadItems(selectedLibrary.value.id, true);
 }
 
-async function syncCurrentLibrary() {
+async function syncCurrentLibrary(auto = false) {
   if (!selectedLibrary.value || syncingEmby.value) return;
+  if (!matchedTasks.value.length) return;
+  const libraryId = selectedLibrary.value.id;
+  const libraryName = selectedLibrary.value.name;
   syncingEmby.value = true;
   try {
     const result = await syncBueiEmbyLibrary({
       config_id: configId.value || undefined,
-      library_id: selectedLibrary.value.id,
-      library_name: selectedLibrary.value.name,
+      library_id: libraryId,
+      library_name: libraryName,
     });
+    if (result.last_synced_at) {
+      syncTimes.value = { ...syncTimes.value, [libraryId]: result.last_synced_at };
+    }
     const failed = result.failed_items?.length || 0;
-    await loadItems(selectedLibrary.value.id);
-    toast.success(`Emby 同步完成：已匹配 ${result.matched_items} 项，保存 ${result.saved_items} 项${failed ? `，失败 ${failed} 项` : ""}`);
+    await loadItems(libraryId);
+    if (!auto) {
+      toast.success(`Emby 同步完成：已匹配 ${result.matched_items} 项，保存 ${result.saved_items} 项${failed ? `，失败 ${failed} 项` : ""}`);
+    }
   } catch (error) {
-    toast.error(getApiErrorMessage(error, "Emby 同步失败"));
+    if (!auto) toast.error(getApiErrorMessage(error, "Emby 同步失败"));
   } finally {
     syncingEmby.value = false;
   }
+}
+
+function shouldAutoSync(libraryId: string) {
+  const last = syncTimes.value[libraryId];
+  if (!last) return true;
+  const time = Date.parse(last);
+  if (!Number.isFinite(time)) return true;
+  return Date.now() - time > autoSyncIntervalMs;
+}
+
+// 进入媒体库时检查最近同步时间，超过 12 小时自动同步一次；同一媒体库本次会话只尝试一次。
+async function maybeAutoSync(libraryId: string) {
+  if (!libraryId || libraryId !== selectedLibraryId.value) return;
+  if (autoSyncedLibraryIDs.value.has(libraryId)) return;
+  if (!matchedTasks.value.length || loadingItems.value || syncingEmby.value) return;
+  if (!shouldAutoSync(libraryId)) return;
+  autoSyncedLibraryIDs.value = new Set([...autoSyncedLibraryIDs.value, libraryId]);
+  await syncCurrentLibrary(true);
 }
 
 function closeDetail() {
@@ -574,7 +632,13 @@ onActivated(() => {
                 <SvgIcon name="rotate" :size="15" />
                 <span>刷新</span>
               </button>
-              <AppButton class="emby-library-sync" variant="secondary" size="sm" :disabled="syncingEmby || loadingItems || !matchedTasks.length" @click="syncCurrentLibrary">
+              <AppButton
+                class="emby-library-sync"
+                variant="secondary"
+                size="sm"
+                :disabled="syncingEmby || loadingItems || !matchedTasks.length"
+                @click="syncCurrentLibrary()"
+              >
                 <BusySpinner v-if="syncingEmby" variant="notch" :size="13" />
                 <SvgIcon v-else name="cloud-arrow-down" :size="14" />
                 <span>Emby 同步</span>
@@ -605,16 +669,31 @@ onActivated(() => {
               </AppDropdown>
             </div>
           </div>
-          <p v-if="isArchiveLibrary && archiveRuleLoaded" class="emby-library-schedule">
-            <SvgIcon name="clock-rotate-left" :size="13" />
-            <template v-if="archiveSchedule">
-              <span>自动归档 <strong>{{ archiveSchedule.interval }}</strong> 检查一次</span>
-              <span class="emby-library-schedule__sep" aria-hidden="true" />
-              <span>下次执行 <strong>{{ formatTimeShort(archiveSchedule.next) || "未排期" }}</strong></span>
-              <span class="emby-library-schedule__sep" aria-hidden="true" />
-              <span>来源 {{ archiveSchedule.sources }} 个媒体库</span>
+          <p v-if="selectedLibrary" class="emby-library-meta">
+            <span class="emby-library-meta__group">
+              <SvgIcon name="cloud-arrow-down" :size="12" />
+              <template v-if="selectedSyncTime">
+                <span>上次 Emby 同步 <strong>{{ formatTimeShort(selectedSyncTime) }}</strong></span>
+                <span class="emby-library-meta__sep" aria-hidden="true" />
+                <span>超过 12 小时自动同步</span>
+              </template>
+              <span v-else>尚无 Emby 同步记录 · 进入媒体库超过 12 小时会自动同步</span>
+            </span>
+            <template v-if="isArchiveLibrary && archiveRuleLoaded">
+              <span class="emby-library-meta__divider" aria-hidden="true" />
+              <span class="emby-library-meta__group">
+                <SvgIcon name="clock-rotate-left" :size="12" />
+                <template v-if="archiveSchedule">
+                  <span>自动归档 <strong>{{ archiveSchedule.interval }}</strong> 检查一次</span>
+                  <span class="emby-library-meta__sep" aria-hidden="true" />
+                  <span v-if="archiveSchedule.enabled">下次执行 <strong>{{ formatTimeShort(archiveSchedule.next) || "未排期" }}</strong></span>
+                  <span v-else>已停用</span>
+                  <span class="emby-library-meta__sep" aria-hidden="true" />
+                  <span>来源 {{ archiveSchedule.sources }} 个媒体库</span>
+                </template>
+                <span v-else>自动归档未配置，可在「自动归档 → 配置」选择来源媒体库</span>
+              </span>
             </template>
-            <span v-else>自动归档未配置，可在「自动归档 → 配置」选择来源媒体库</span>
           </p>
         </header>
 
@@ -899,9 +978,11 @@ onActivated(() => {
 .emby-library-breadcrumb { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; color: var(--text-muted); font-size: 11px; letter-spacing: .02em; }
 .emby-library-breadcrumb__sep { width: 1px; height: 10px; background: color-mix(in srgb, var(--text-muted) 42%, transparent); transform: rotate(16deg); }
 .emby-library-breadcrumb strong { color: var(--brand); font-weight: 650; }
-.emby-library-schedule { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
-.emby-library-schedule strong { color: var(--text); font-weight: 700; }
-.emby-library-schedule__sep { width: 1px; height: 10px; background: color-mix(in srgb, var(--text-muted) 42%, transparent); }
+.emby-library-content__head p.emby-library-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 9px 12px; font-size: 11px; line-height: 1.5; }
+.emby-library-meta__group { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 3px 8px; }
+.emby-library-meta strong { color: var(--text); font-weight: 700; }
+.emby-library-meta__sep { width: 1px; height: 9px; background: color-mix(in srgb, var(--text-muted) 42%, transparent); }
+.emby-library-meta__divider { width: 1px; height: 12px; background: color-mix(in srgb, var(--text-muted) 58%, transparent); }
 .emby-library-title-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .emby-library-title-row h2 { min-width: 0; }
 .emby-library-content h2 { margin: 0; font-size: clamp(24px, 3vw, 33px); line-height: 1.1; letter-spacing: -.05em; }

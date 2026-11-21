@@ -36,6 +36,7 @@ type BueiEmbyArchiveRule struct {
 	ConfigID           string
 	SourceLibraries    []BueiEmbyArchiveSourceLibrary
 	IntervalHours      int
+	Enabled            bool
 	LastRunAt          time.Time
 	NextRunAt          time.Time
 	CreatedAt          time.Time
@@ -83,6 +84,8 @@ type BueiEmbyArchiveRunRepository interface {
 	Create(ctx context.Context, run *BueiEmbyArchiveRun) (*BueiEmbyArchiveRun, error)
 	Finish(ctx context.Context, run *BueiEmbyArchiveRun) error
 	ListByLibrary(ctx context.Context, archiveLibraryID string, limit int) ([]*BueiEmbyArchiveRun, error)
+	// PruneByTrigger 只保留同一触发方式（手动/自动）的最新一条记录，keepID 为刚创建的那条。
+	PruneByTrigger(ctx context.Context, archiveLibraryID, trigger string, keepID int64) error
 	// FailInterrupted 把进程退出时仍为 running 的记录标记为失败，避免日志一直显示执行中。
 	FailInterrupted(ctx context.Context, archiveLibraryID string) error
 }

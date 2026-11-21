@@ -24,6 +24,7 @@ type bueiEmbyArchiveRuleDTO struct {
 	SourceLibraryIDs   []string                   `json:"source_library_ids"`
 	SourceLibraries    []bueiEmbyArchiveSourceDTO `json:"source_libraries"`
 	IntervalHours      int                        `json:"interval_hours"`
+	Enabled            bool                       `json:"enabled"`
 	LastRunAt          string                     `json:"last_run_at,omitempty"`
 	NextRunAt          string                     `json:"next_run_at,omitempty"`
 }
@@ -47,6 +48,8 @@ type bueiEmbyArchiveRuleRequest struct {
 	ArchiveLibraryID string   `json:"archive_library_id"`
 	SourceLibraryIDs []string `json:"source_library_ids"`
 	IntervalHours    int      `json:"interval_hours"`
+	// Enabled 缺省时按启用处理。
+	Enabled *bool `json:"enabled"`
 }
 
 type bueiEmbyArchiveRunRequest struct {
@@ -90,6 +93,24 @@ func (h *Handler) bueiEmbyArchiveRuleView(w http.ResponseWriter, r *http.Request
 		writeErr(w, domain.Errorf(domain.CodeValidation, "请选择归档媒体库"))
 		return
 	}
+	// summary=1：只读取已保存的配置，不访问 Emby（页面标题展示执行计划用）。
+	if r.URL.Query().Get("summary") == "1" {
+		rule, err := h.buei.EmbyArchive.RuleSummary(r.Context(), libraryID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		nextRunAt := time.Time{}
+		if rule != nil {
+			nextRunAt = rule.NextRunAt
+		}
+		writeOK(w, bueiEmbyArchiveRuleViewDTO{
+			Rule:            bueiEmbyArchiveRuleDTOFrom(rule),
+			SourceLibraries: []bueiEmbyArchiveSourceOptionDTO{},
+			NextRunAt:       bueiEmbyArchiveTime(nextRunAt),
+		})
+		return
+	}
 	view, err := h.buei.EmbyArchive.RuleView(r.Context(), strings.TrimSpace(r.URL.Query().Get("config_id")), libraryID)
 	if err != nil {
 		writeErr(w, err)
@@ -113,6 +134,7 @@ func (h *Handler) bueiEmbyArchiveRuleSave(w http.ResponseWriter, r *http.Request
 		ArchiveLibraryID: strings.TrimSpace(req.ArchiveLibraryID),
 		SourceLibraryIDs: req.SourceLibraryIDs,
 		IntervalHours:    req.IntervalHours,
+		Enabled:          req.Enabled,
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -206,6 +228,7 @@ func bueiEmbyArchiveRuleDTOFrom(rule *domain.BueiEmbyArchiveRule) bueiEmbyArchiv
 		SourceLibraryIDs:   ids,
 		SourceLibraries:    sources,
 		IntervalHours:      rule.IntervalHours,
+		Enabled:            rule.Enabled,
 		LastRunAt:          bueiEmbyArchiveTime(rule.LastRunAt),
 		NextRunAt:          bueiEmbyArchiveTime(rule.NextRunAt),
 	}

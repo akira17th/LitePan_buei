@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -45,6 +46,8 @@ type bueiEmbyLibraryStateDTO struct {
 	Config    embyproxy.LibraryBrowseConfig `json:"config"`
 	Libraries []embyproxy.Library           `json:"libraries"`
 	Users     []bueiEmbyLibraryUserDTO      `json:"users"`
+	// Syncs 记录各媒体库最近一次「Emby 同步」成功时间（library_id → RFC3339）。
+	Syncs map[string]string `json:"syncs"`
 }
 
 type bueiEmbyLibraryPageDTO struct {
@@ -99,7 +102,18 @@ func (h *Handler) bueiEmbyLibraryState(w http.ResponseWriter, r *http.Request) {
 			PrimaryImageTag: user.PrimaryImageTag,
 		})
 	}
-	writeOK(w, bueiEmbyLibraryStateDTO{Config: state.Config, Libraries: state.Libraries, Users: users})
+	syncs := make(map[string]string, len(state.Libraries))
+	if h.buei.EmbyLibrarySync != nil {
+		if records, err := h.buei.EmbyLibrarySync.List(r.Context()); err == nil {
+			for _, record := range records {
+				if record == nil || record.LastSyncedAt.IsZero() {
+					continue
+				}
+				syncs[record.LibraryID] = record.LastSyncedAt.UTC().Format(time.RFC3339)
+			}
+		}
+	}
+	writeOK(w, bueiEmbyLibraryStateDTO{Config: state.Config, Libraries: state.Libraries, Users: users, Syncs: syncs})
 }
 
 func (h *Handler) bueiEmbyLibraryItems(w http.ResponseWriter, r *http.Request) {

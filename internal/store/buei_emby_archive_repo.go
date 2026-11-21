@@ -20,7 +20,7 @@ func NewBueiEmbyArchiveRuleRepo(db *DB) domain.BueiEmbyArchiveRuleRepository {
 	return &bueiEmbyArchiveRuleRepo{db: db}
 }
 
-const bueiEmbyArchiveRuleColumns = `id, archive_library_id, archive_library_name, config_id, source_libraries, interval_hours, last_run_at, next_run_at, created_at, updated_at`
+const bueiEmbyArchiveRuleColumns = `id, archive_library_id, archive_library_name, config_id, source_libraries, interval_hours, enabled, last_run_at, next_run_at, created_at, updated_at`
 
 func (r *bueiEmbyArchiveRuleRepo) List(ctx context.Context) ([]*domain.BueiEmbyArchiveRule, error) {
 	rows, err := r.db.read.QueryContext(ctx,
@@ -77,17 +77,19 @@ func (r *bueiEmbyArchiveRuleRepo) Save(ctx context.Context, rule *domain.BueiEmb
 	_, err = r.db.write.ExecContext(ctx,
 		`INSERT INTO buei_emby_archive_rules
 		   (archive_library_id, archive_library_name, config_id, source_libraries, interval_hours,
-		    last_run_at, next_run_at, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?)
+		    enabled, last_run_at, next_run_at, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(archive_library_id) DO UPDATE SET
 		   archive_library_name=excluded.archive_library_name,
 		   config_id=excluded.config_id,
 		   source_libraries=excluded.source_libraries,
 		   interval_hours=excluded.interval_hours,
+		   enabled=excluded.enabled,
 		   next_run_at=excluded.next_run_at,
 		   updated_at=excluded.updated_at`,
 		strings.TrimSpace(rule.ArchiveLibraryID), strings.TrimSpace(rule.ArchiveLibraryName),
 		strings.TrimSpace(rule.ConfigID), string(sources), normalizeBueiArchiveInterval(rule.IntervalHours),
+		bueiBoolInt(rule.Enabled),
 		bueiTSValueNullable(rule.LastRunAt), bueiTSValueNullable(rule.NextRunAt),
 		tsValue(createdAt), tsValue(now),
 	)
@@ -127,6 +129,7 @@ func scanBueiEmbyArchiveRule(row rowScanner) (*domain.BueiEmbyArchiveRule, error
 		createdAt  sql.NullString
 		updatedAt  sql.NullString
 		interval   int
+		enabled    int
 		configID   string
 		archiveLib string
 		libraryID  string
@@ -138,6 +141,7 @@ func scanBueiEmbyArchiveRule(row rowScanner) (*domain.BueiEmbyArchiveRule, error
 		&configID,
 		&sources,
 		&interval,
+		&enabled,
 		&lastRunAt,
 		&nextRunAt,
 		&createdAt,
@@ -149,6 +153,7 @@ func scanBueiEmbyArchiveRule(row rowScanner) (*domain.BueiEmbyArchiveRule, error
 	rule.ArchiveLibraryName = archiveLib
 	rule.ConfigID = configID
 	rule.IntervalHours = normalizeBueiArchiveInterval(interval)
+	rule.Enabled = enabled != 0
 	if strings.TrimSpace(sources) != "" {
 		if err := json.Unmarshal([]byte(sources), &rule.SourceLibraries); err != nil {
 			return nil, err
@@ -159,6 +164,13 @@ func scanBueiEmbyArchiveRule(row rowScanner) (*domain.BueiEmbyArchiveRule, error
 	rule.CreatedAt = parseTS(createdAt)
 	rule.UpdatedAt = parseTS(updatedAt)
 	return &rule, nil
+}
+
+func bueiBoolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func normalizeBueiArchiveInterval(hours int) int {
@@ -185,6 +197,14 @@ func NewBueiEmbyArchiveRunRepo(db *DB) domain.BueiEmbyArchiveRunRepository {
 }
 
 const bueiEmbyArchiveRunColumns = `id, archive_library_id, archive_library_name, trigger, status, started_at, finished_at, scanned, archived, skipped, failed, message, items`
+
+func (r *bueiEmbyArchiveRunRepo) PruneByTrigger(ctx context.Context, archiveLibraryID, trigger string, keepID int64) error {
+	_, err := r.db.write.ExecContext(ctx,
+		`DELETE FROM buei_emby_archive_runs
+		 WHERE archive_library_id=? AND trigger=? AND id<>?`,
+		strings.TrimSpace(archiveLibraryID), strings.TrimSpace(trigger), keepID)
+	return wrapDB(err)
+}
 
 func (r *bueiEmbyArchiveRunRepo) Create(ctx context.Context, run *domain.BueiEmbyArchiveRun) (*domain.BueiEmbyArchiveRun, error) {
 	if run == nil {

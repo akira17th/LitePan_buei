@@ -40,6 +40,7 @@ const errorMessage = ref("");
 const sourceLibraries = ref<BueiEmbyArchiveSourceOption[]>([]);
 const selectedIDs = ref<Set<string>>(new Set());
 const intervalHours = ref(1);
+const enabled = ref(true);
 const lastRunAt = ref("");
 const nextRunAt = ref("");
 const loadedLibraryId = ref("");
@@ -59,6 +60,7 @@ function reset() {
   sourceLibraries.value = [];
   selectedIDs.value = new Set();
   intervalHours.value = 1;
+  enabled.value = true;
   lastRunAt.value = "";
   nextRunAt.value = "";
   loadedLibraryId.value = "";
@@ -74,6 +76,7 @@ async function load() {
     sourceLibraries.value = view.source_libraries || [];
     selectedIDs.value = new Set((view.rule?.source_library_ids || []).filter((id) => sourceLibraries.value.some((item) => item.id === id)));
     intervalHours.value = intervals.some((item) => item.hours === view.rule?.interval_hours) ? (view.rule?.interval_hours ?? 1) : 1;
+    enabled.value = view.rule?.enabled !== false;
     lastRunAt.value = view.rule?.last_run_at || "";
     nextRunAt.value = view.next_run_at || view.rule?.next_run_at || "";
     loadedLibraryId.value = props.libraryId;
@@ -114,6 +117,7 @@ async function submit() {
       archive_library_id: props.libraryId,
       source_library_ids: [...selectedIDs.value],
       interval_hours: intervalHours.value,
+      enabled: enabled.value,
     });
     nextRunAt.value = rule.next_run_at || "";
     lastRunAt.value = rule.last_run_at || "";
@@ -207,6 +211,26 @@ watch(
         <section class="archive-rule__section">
           <header class="archive-rule__head">
             <div>
+              <h4>启用自动归档</h4>
+              <p>关闭后不会按频率自动执行，仍可随时“立即执行”。</p>
+            </div>
+            <button
+              type="button"
+              class="archive-switch"
+              :class="{ 'is-on': enabled }"
+              role="switch"
+              :aria-checked="enabled"
+              :aria-label="enabled ? '关闭自动执行' : '开启自动执行'"
+              @click="enabled = !enabled"
+            >
+              <span class="archive-switch__knob" />
+            </button>
+          </header>
+        </section>
+
+        <section class="archive-rule__section">
+          <header class="archive-rule__head">
+            <div>
               <h4>执行频率</h4>
               <p>保存后按所选频率自动执行，也可以随时“立即执行”。</p>
             </div>
@@ -259,6 +283,11 @@ watch(
 .archive-rule__lead strong { color: var(--text); }
 .archive-rule__state { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 120px; color: var(--text-muted); font-size: 12px; }
 .archive-rule__section { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface-sunken); }
+.archive-switch { position: relative; flex: none; width: 40px; height: 22px; margin-top: 2px; padding: 0; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-sunken); cursor: pointer; transition: background .18s ease, border-color .18s ease; }
+.archive-switch.is-on { border-color: var(--brand); background: var(--brand); }
+.archive-switch__knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 2px rgba(15,23,42,.28); transition: transform .18s ease; }
+.archive-switch.is-on .archive-switch__knob { transform: translateX(18px); }
+.archive-switch:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 .archive-rule__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .archive-rule__head h4 { margin: 0; font-size: 13px; }
 .archive-rule__head p { margin: 4px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.5; }

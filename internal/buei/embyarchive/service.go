@@ -89,6 +89,8 @@ type SaveRuleInput struct {
 	ArchiveLibraryID string
 	SourceLibraryIDs []string
 	IntervalHours    int
+	// Enabled 为 nil 时默认启用（兼容旧前端）。
+	Enabled *bool
 }
 
 // NormalizeInterval 把执行频率限定在允许的 1/6/24 小时。
@@ -128,6 +130,7 @@ func (s *Service) RuleView(ctx context.Context, configID, archiveLibraryID strin
 			ConfigID:           strings.TrimSpace(configID),
 			SourceLibraries:    []domain.BueiEmbyArchiveSourceLibrary{},
 			IntervalHours:      1,
+			Enabled:            true,
 		}
 	}
 	if rule.ConfigID == "" {
@@ -151,6 +154,19 @@ func (s *Service) RuleView(ctx context.Context, configID, archiveLibraryID strin
 		options = append(options, option)
 	}
 	return RuleView{Rule: rule, SourceLibraries: options, NextRunAt: rule.NextRunAt}, nil
+}
+
+// RuleSummary 只读取已保存的自动归档配置，不访问 Emby，
+// 供页面标题下方展示执行计划使用；未配置时返回 nil。
+func (s *Service) RuleSummary(ctx context.Context, archiveLibraryID string) (*domain.BueiEmbyArchiveRule, error) {
+	rule, err := s.rules.Get(ctx, strings.TrimSpace(archiveLibraryID))
+	if err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return rule, nil
 }
 
 // SaveRule 校验并保存自动归档配置；同一来源媒体库不能被多个归档媒体库占用。
@@ -215,9 +231,14 @@ func (s *Service) SaveRule(ctx context.Context, input SaveRuleInput) (*domain.Bu
 		return nil, err
 	}
 	var lastRunAt, createdAt time.Time
+	enabled := true
 	if previous != nil {
 		lastRunAt = previous.LastRunAt
 		createdAt = previous.CreatedAt
+		enabled = previous.Enabled
+	}
+	if input.Enabled != nil {
+		enabled = *input.Enabled
 	}
 	interval := NormalizeInterval(input.IntervalHours)
 	nextRunAt := nowUTC(s.now).Add(time.Duration(interval) * time.Hour)
@@ -227,6 +248,7 @@ func (s *Service) SaveRule(ctx context.Context, input SaveRuleInput) (*domain.Bu
 		ConfigID:           configID,
 		SourceLibraries:    sources,
 		IntervalHours:      interval,
+		Enabled:            enabled,
 		LastRunAt:          lastRunAt,
 		NextRunAt:          nextRunAt,
 		CreatedAt:          createdAt,
@@ -238,6 +260,7 @@ func (s *Service) SaveRule(ctx context.Context, input SaveRuleInput) (*domain.Bu
 		"archive_library", archiveLibrary.Name,
 		"sources", len(sources),
 		"interval_hours", interval,
+		"enabled", enabled,
 		"next_run_at", nextRunAt.Format(time.RFC3339),
 	)
 	return saved, nil
@@ -343,7 +366,8 @@ func (s *Service) runDue(ctx context.Context) {
 	}
 	now := nowUTC(s.now)
 	for _, rule := range rules {
-		if rule == nil || rule.NextRunAt.IsZero() || now.Before(rule.NextRunAt) {
+		// 关闭“启用”后不再自动执行，只能手动「立即执行」。
+		if rule == nil || !rule.Enabled || rule.NextRunAt.IsZero() || now.Before(rule.NextRunAt) {
 			continue
 		}
 		if ctx.Err() != nil {
@@ -394,6 +418,10 @@ func (s *Service) launch(ctx context.Context, rule *domain.BueiEmbyArchiveRule, 
 	if err != nil {
 		s.endRun(rule.ArchiveLibraryID)
 		return nil, err
+	}
+	// 每种触发方式（手动 / 自动）只保留最新一条执行日志。
+	if err := s.runs.PruneByTrigger(ctx, rule.ArchiveLibraryID, trigger, created.ID); err != nil {
+		s.log.Warn("清理旧的自动归档执行日志失败", "err", err)
 	}
 	return created, nil
 }

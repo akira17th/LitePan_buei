@@ -5,15 +5,17 @@ import (
 	"litepan/internal/buei/guangyashare"
 	"litepan/internal/buei/quarkingest"
 	"litepan/internal/cache"
+	"litepan/internal/domain"
 	"litepan/internal/logx"
 	"litepan/internal/store"
 )
 
 // bueiServices 汇总 buei 定制服务，避免上游 servicesBundle 导入具体功能包。
 type bueiServices struct {
-	guangyaShare *guangyashare.Service
-	quarkIngest  *quarkingest.Service
-	embyArchive  *embyarchive.Service
+	guangyaShare    *guangyashare.Service
+	quarkIngest     *quarkingest.Service
+	embyArchive     *embyarchive.Service
+	embyLibrarySync domain.BueiEmbyLibrarySyncRepository
 }
 
 func wireBueiServices(st *storeBundle, core *coreBundle, logs *logx.Manager) *bueiServices {
@@ -35,5 +37,6 @@ func wireBueiServices(st *storeBundle, core *coreBundle, logs *logx.Manager) *bu
 			Favorites: store.NewQuarkIngestFavoriteRepo(st.db),
 			Log:       logs.For(logx.ModuleSystem),
 		}),
+		embyLibrarySync: store.NewBueiEmbyLibrarySyncRepo(st.db),
 	}
 }

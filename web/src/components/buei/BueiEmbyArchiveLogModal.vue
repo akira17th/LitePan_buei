@@ -172,7 +172,7 @@ onBeforeUnmount(clearPoll);
             @click="selectedRunId = run.id; schedulePoll()"
           >
             <i aria-hidden="true" />
-            {{ formatTime(run.started_at) }}
+            {{ run.trigger === "manual" ? "手动" : "自动" }} · {{ formatTime(run.started_at) }}
           </button>
         </div>
 

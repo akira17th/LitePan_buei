@@ -60,6 +60,8 @@ export interface BueiEmbyLibraryState {
   config: BueiEmbyLibraryConfig;
   libraries: BueiEmbyLibrary[];
   users: BueiEmbyLibraryUser[];
+  /** library_id → 最近一次「Emby 同步」成功时间（RFC3339）。 */
+  syncs?: Record<string, string>;
 }
 
 export interface BueiEmbyLibraryPage {
@@ -92,6 +94,7 @@ export interface BueiEmbyLibrarySyncResult {
   saved_items: number;
   unmatched_items: number;
   failed_items?: string[];
+  last_synced_at?: string;
 }
 
 export interface BueiEmbyLibraryArchiveResult {
@@ -199,9 +202,10 @@ export function setBueiEmbyLibraryUserPlayed(input: {
   return http.post<{ user: BueiEmbyUserStatus }>(`${basePath}/played`, input);
 }
 
-export function fetchBueiEmbyLibrarySyncState(libraryId: string, configId = "") {
+export function fetchBueiEmbyLibrarySyncState(libraryId: string, configId = "", libraryName = "") {
   return http.get<BueiEmbyLibrarySyncState>(`${basePath}/sync-state`, {
     config_id: configId || undefined,
     library_id: libraryId,
+    library_name: libraryName || undefined,
   });
 }

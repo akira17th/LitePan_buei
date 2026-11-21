@@ -14,6 +14,7 @@ export interface BueiEmbyArchiveRule {
   source_library_ids: string[];
   source_libraries: BueiEmbyArchiveSource[];
   interval_hours: number;
+  enabled: boolean;
   last_run_at?: string;
   next_run_at?: string;
 }
@@ -69,11 +70,20 @@ export function fetchBueiEmbyArchiveRule(libraryId: string, configId = "") {
   });
 }
 
+// 只读取已保存的配置，不访问 Emby，用于页面标题展示执行计划。
+export function fetchBueiEmbyArchiveRuleSummary(libraryId: string) {
+  return http.get<BueiEmbyArchiveRuleView>(`${basePath}/archive-rule`, {
+    library_id: libraryId,
+    summary: 1,
+  });
+}
+
 export function saveBueiEmbyArchiveRule(input: {
   config_id?: string;
   archive_library_id: string;
   source_library_ids: string[];
   interval_hours: number;
+  enabled: boolean;
 }) {
   return http.put<BueiEmbyArchiveRule>(`${basePath}/archive-rule`, input);
 }
