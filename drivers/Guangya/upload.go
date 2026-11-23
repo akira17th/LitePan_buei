@@ -92,6 +92,19 @@ func (d *Driver) UploadLocalFile(ctx context.Context, req driver.LocalUploadRequ
 		}
 	}
 
+	// #region buei:guangya-local-flash
+	// 光鸭的秒传判定不在上传初始化接口里，需要单独用 gcid/cid 询问（见 buei_hash.go）；续传时跳过（已确认过）。
+	if resume == nil {
+		flashFileID, hit, err := d.tryLocalFlashUpload(ctx, taskID, parentID, targetName, localPath, fileSize, req.OnProgress)
+		if err != nil {
+			return nil, err
+		}
+		if hit {
+			return d.buildUploadResult(parentID, targetName, fileSize, flashFileID, true), nil
+		}
+	}
+	// #endregion buei:guangya-local-flash
+
 	if resume == nil || !resume.ossCompleted {
 		resume, err = d.uploadToOSS(ctx, localPath, parentID, targetName, fileSize, taskID, tokenData, resume, req.OnProgress, req.OnResumeState)
 		if err != nil {
