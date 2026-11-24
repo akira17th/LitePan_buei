@@ -75,6 +75,21 @@
   color: var(--danger);
 }
 
+/* #region buei:dropdown-danger —— 修正危险项颜色被变体的常态色覆盖 */
+.menu-panel--compact .menu-panel__item--danger,
+.menu-panel--comfortable .menu-panel__item--danger,
+.menu-panel--context .menu-panel__item--danger {
+  color: var(--danger);
+}
+
+.menu-panel--compact .menu-panel__item--danger:hover:not(:disabled),
+.menu-panel--comfortable .menu-panel__item--danger:hover:not(:disabled),
+.menu-panel--context .menu-panel__item--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+/* #endregion buei:dropdown-danger */
+
 .menu-panel__item:disabled {
   opacity: 0.55;
   cursor: not-allowed;

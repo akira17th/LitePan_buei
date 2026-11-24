@@ -48,18 +48,40 @@ func bueiUserStatusDTOs(statuses []embyproxy.LibraryUserItemStatus) []bueiEmbyLi
 	return out
 }
 
-func bueiEmbyUserInfoDir(projectPath string) string {
-	if filepath.Base(projectPath) == bueiEmbyProjectInfoFileName {
-		return filepath.Join(filepath.Dir(projectPath), bueiEmbyUserInfoDirName)
+// bueiEmbyUserInfoLocation 返回用户信息 JSON 所在的目录与文件名前缀：
+// 项目目录下直接存为 emby_users_<用户名>.json；
+// 平铺 STRM 项目（<项目>.emby.json）与其它项目共用目录，前缀带上项目名避免冲突。
+func bueiEmbyUserInfoLocation(projectPath string) (dir, prefix string) {
+	dir = filepath.Dir(projectPath)
+	base := filepath.Base(projectPath)
+	if base == bueiEmbyProjectInfoFileName {
+		return dir, bueiEmbyUserInfoPrefix + "_"
 	}
-	base := strings.TrimSuffix(filepath.Base(projectPath), ".emby.json")
-	return filepath.Join(filepath.Dir(projectPath), base+"."+bueiEmbyUserInfoDirName)
+	base = strings.TrimSuffix(base, ".emby.json")
+	return dir, base + "." + bueiEmbyUserInfoPrefix + "_"
+}
+
+func bueiMatchEmbyUserInfoFile(prefix, name string) bool {
+	return strings.HasPrefix(name, prefix) && strings.EqualFold(filepath.Ext(name), ".json")
 }
 
 func bueiWriteEmbyUserItems(projectPath string, users []embyproxy.LibraryUserItemStatus) error {
-	dir := bueiEmbyUserInfoDir(projectPath)
-	if err := os.RemoveAll(dir); err != nil {
+	dir, prefix := bueiEmbyUserInfoLocation(projectPath)
+	// 清理旧版 emby_users/ 目录与本项目之前的用户文件，避免残留已移除的用户。
+	if err := os.RemoveAll(filepath.Join(dir, strings.TrimSuffix(prefix, "_"))); err != nil {
 		return fmt.Errorf("清理旧用户信息：%w", err)
+	}
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || !bueiMatchEmbyUserInfoFile(prefix, entry.Name()) {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+				return fmt.Errorf("清理用户信息“%s”：%w", entry.Name(), err)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("读取用户信息目录：%w", err)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("创建用户信息目录：%w", err)
@@ -91,7 +113,7 @@ func bueiWriteEmbyUserItems(projectPath string, users []embyproxy.LibraryUserIte
 		if name == "" || name == "_" {
 			return fmt.Errorf("用户名称无效：%s", userName)
 		}
-		path := filepath.Join(dir, name+".json")
+		path := filepath.Join(dir, prefix+name+".json")
 		if err := os.WriteFile(path, body, 0o644); err != nil {
 			return fmt.Errorf("写入用户“%s”信息：%w", user.UserName, err)
 		}
@@ -100,7 +122,7 @@ func bueiWriteEmbyUserItems(projectPath string, users []embyproxy.LibraryUserIte
 }
 
 func bueiReadEmbyUserItems(projectPath string) ([]embyproxy.LibraryUserItemStatus, int, error) {
-	dir := bueiEmbyUserInfoDir(projectPath)
+	dir, prefix := bueiEmbyUserInfoLocation(projectPath)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -111,7 +133,7 @@ func bueiReadEmbyUserItems(projectPath string) ([]embyproxy.LibraryUserItemStatu
 	statuses := make([]embyproxy.LibraryUserItemStatus, 0, len(entries))
 	total := 0
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
+		if entry.IsDir() || !bueiMatchEmbyUserInfoFile(prefix, entry.Name()) {
 			continue
 		}
 		body, err := os.ReadFile(filepath.Join(dir, entry.Name()))

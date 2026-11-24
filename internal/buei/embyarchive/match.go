@@ -33,6 +33,7 @@ type FileOps interface {
 	List(ctx context.Context, accountID int64, parentID string, forceRefresh bool) ([]domain.FileItem, error)
 	CreateFolder(ctx context.Context, accountID int64, parentID, name string) (*domain.FileItem, error)
 	MoveFiles(ctx context.Context, accountID int64, fileIDs []string, targetParentID, sourceParentID string) error
+	DeleteFiles(ctx context.Context, accountID int64, fileIDs []string, parentID string) error
 }
 
 // StrmOps 是 STRM 任务相关的依赖子集。
@@ -524,7 +525,7 @@ func (s *Service) lockTasks(sourceID, targetID int64) (func(), error) {
 			for i := len(releases) - 1; i >= 0; i-- {
 				releases[i]()
 			}
-			return nil, domain.Errorf(domain.CodeValidation, "相关 STRM 任务正在运行，请稍后再归档")
+			return nil, domain.Errorf(domain.CodeValidation, "相关 STRM 任务正在运行，请稍后再试")
 		}
 		releases = append(releases, release)
 	}

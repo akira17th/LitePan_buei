@@ -10,6 +10,7 @@ import {
 import { fetchEmbyConfigs } from "@/api/emby";
 import {
   archiveBueiEmbyLibraryItem,
+  deleteBueiEmbyLibraryItem,
   fetchBueiEmbyLibraryState,
   fetchBueiEmbyLibrarySyncState,
   restoreBueiEmbyLibraryItem,
@@ -51,6 +52,7 @@ const loadingItems = ref(false);
 const loadingDetail = ref(false);
 const syncingEmby = ref(false);
 const archivingItemID = ref("");
+const deletingItemID = ref("");
 const errorMessage = ref("");
 const menuOpenID = ref("");
 const loaded = ref(false);
@@ -122,10 +124,28 @@ const archiveMenu = computed<DropdownMenuItem[]>(() => [
 
 const itemMenu = (itemID = ""): DropdownMenuItem[] => {
   const loading = archivingItemID.value === itemID;
+  const removing = deletingItemID.value === itemID;
+  const deleteItem: DropdownMenuItem = {
+    key: "delete",
+    label: removing ? "删除中…" : "删除",
+    icon: "trash",
+    danger: true,
+    disabled: loading || removing,
+    type: "action",
+  };
+  const divider: DropdownMenuItem = { key: "divider", label: "", type: "divider" };
   if (isArchiveLibrary.value) {
-    return [{ key: "restore", label: loading ? "移回中…" : "移回原处", icon: "box-archive", disabled: loading, type: "action" }];
+    return [
+      { key: "restore", label: loading ? "移回中…" : "移回原处", icon: "box-archive", disabled: loading || removing, type: "action" },
+      divider,
+      deleteItem,
+    ];
   }
-  return [{ key: "archive", label: loading ? "归档中…" : "归档", icon: "box-archive", disabled: loading, type: "action" }];
+  return [
+    { key: "archive", label: loading ? "归档中…" : "归档", icon: "box-archive", disabled: loading || removing, type: "action" },
+    divider,
+    deleteItem,
+  ];
 };
 
 function imageURL(path: string | undefined) {
@@ -432,9 +452,12 @@ async function syncCurrentLibrary(auto = false) {
       syncTimes.value = { ...syncTimes.value, [libraryId]: result.last_synced_at };
     }
     const failed = result.failed_items?.length || 0;
+    const skipped = result.skipped_tasks?.length || 0;
     await loadItems(libraryId);
     if (!auto) {
-      toast.success(`Emby 同步完成：已匹配 ${result.matched_items} 项，保存 ${result.saved_items} 项${failed ? `，失败 ${failed} 项` : ""}`);
+      toast.success(
+        `Emby 同步完成：已匹配 ${result.matched_items} 项，保存 ${result.saved_items} 项${skipped ? `，跳过 ${skipped} 个任务` : ""}${failed ? `，失败 ${failed} 项` : ""}`,
+      );
     }
   } catch (error) {
     if (!auto) toast.error(getApiErrorMessage(error, "Emby 同步失败"));
@@ -507,9 +530,32 @@ async function restoreItem(item: BueiEmbyLibraryItem) {
   }
 }
 
+async function deleteItem(item: BueiEmbyLibraryItem) {
+  menuOpenID.value = "";
+  const ok = await confirm({
+    title: "删除媒体项目？",
+    message: `将删除「${item.name}」在网盘中的源文件夹和已生成的 STRM 文件夹，删除后不可恢复。`,
+    confirmText: "确认删除",
+    cancelText: "取消",
+    danger: true,
+  }).catch(() => false);
+  if (!ok || deletingItemID.value) return;
+  deletingItemID.value = item.id;
+  try {
+    const result = await deleteBueiEmbyLibraryItem(item.id, configId.value, selectedLibraryId.value);
+    if (selectedLibrary.value) await loadItems(selectedLibrary.value.id);
+    toast.success(`已删除「${result.item_name}」，并已刷新索引与媒体库`);
+  } catch (error) {
+    toast.error(getApiErrorMessage(error, "删除媒体项目失败"));
+  } finally {
+    deletingItemID.value = "";
+  }
+}
+
 function handleMenuSelect(item: BueiEmbyLibraryItem, key: string) {
   if (key === "archive") void archiveItem(item);
   else if (key === "restore") void restoreItem(item);
+  else if (key === "delete") void deleteItem(item);
 }
 
 function handleArchiveMenu(key: string) {
@@ -800,8 +846,8 @@ onActivated(() => {
                     @select="handleMenuSelect(item, $event)"
                   >
                     <template #trigger="{ open, toggle }">
-                      <button type="button" class="emby-media-card__more" :aria-expanded="open" :disabled="archivingItemID === item.id" aria-label="更多操作" @click.stop="menuOpenID = open ? '' : item.id; toggle()">
-                        <BusySpinner v-if="archivingItemID === item.id" variant="notch" :size="15" />
+                      <button type="button" class="emby-media-card__more" :aria-expanded="open" :disabled="archivingItemID === item.id || deletingItemID === item.id" aria-label="更多操作" @click.stop="menuOpenID = open ? '' : item.id; toggle()">
+                        <BusySpinner v-if="archivingItemID === item.id || deletingItemID === item.id" variant="notch" :size="15" />
                         <svg v-else viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
                       </button>
                     </template>

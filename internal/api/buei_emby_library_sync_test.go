@@ -1,43 +1,46 @@
 package api
 
 import (
-	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"litepan/internal/domain"
-	"litepan/internal/strmscrape"
+	"litepan/internal/strm"
 )
 
-func TestBueiEmbyProjectInfoPathUsesUniqueFileForFlatStrm(t *testing.T) {
-	root := t.TempDir()
-	task := &domain.StrmTask{ID: 1, OutputFolder: "电影"}
-	path, err := bueiEmbyProjectInfoPath(root, task, strmscrape.Item{RelDir: "", StrmName: "测试电影.strm"})
-	if err != nil {
-		t.Fatal(err)
+func TestBueiTaskOutputDirExists(t *testing.T) {
+	strmDir := t.TempDir()
+	task := &domain.StrmTask{ID: 1, Name: "剧集", OutputFolder: "剧集"}
+	root := strm.TaskOutputDir(strmDir, strm.TaskRelDir(task.GroupDir, task.OutputFolder))
+	if bueiTaskOutputDirExists(strmDir, task) {
+		t.Fatalf("目录不存在时应返回 false: %s", root)
 	}
-	want := filepath.Join(root, "电影", "测试电影.emby.json")
-	if path != want {
-		t.Fatalf("平铺 STRM 信息路径=%q，期望=%q", path, want)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("创建输出目录失败: %v", err)
+	}
+	if !bueiTaskOutputDirExists(strmDir, task) {
+		t.Fatal("目录存在时应返回 true")
+	}
+	if bueiTaskOutputDirExists(strmDir, nil) {
+		t.Fatal("任务为空时应返回 false")
 	}
 }
 
-func TestBueiWriteEmbyProjectInfoWritesRawJSON(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "project", "emby.json")
-	raw := map[string]any{"Id": "emby-1", "Name": "测试电影", "ProviderIds": map[string]any{"Tmdb": "123"}}
-	if err := bueiWriteEmbyProjectInfo(path, raw); err != nil {
-		t.Fatal(err)
+func TestBueiIsStrmOutputDirMissing(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{domain.Errorf(domain.CodeValidation, "STRM 输出目录不存在：%s", filepath.Join("/tmp", "剧集")), true},
+		{domain.Errorf(domain.CodeValidation, "STRM 输出目录无效：/tmp/x"), true},
+		{errors.New("其它错误"), false},
 	}
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got map[string]any
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got["Id"] != "emby-1" || got["Name"] != "测试电影" {
-		t.Fatalf("写入的 Emby 信息异常：%s", body)
+	for _, tc := range cases {
+		if got := bueiIsStrmOutputDirMissing(tc.err); got != tc.want {
+			t.Fatalf("bueiIsStrmOutputDirMissing(%v) = %v，期望 %v", tc.err, got, tc.want)
+		}
 	}
 }

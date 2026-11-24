@@ -20,7 +20,8 @@ import (
 
 const (
 	bueiEmbyProjectInfoFileName = "emby.json"
-	bueiEmbyUserInfoDirName     = "emby_users"
+	// bueiEmbyUserInfoPrefix 是用户信息 JSON 的文件名前缀：<前缀>_<用户名>.json。
+	bueiEmbyUserInfoPrefix = "emby_users"
 )
 
 type bueiEmbyLibrarySyncRequest struct {
@@ -52,6 +53,8 @@ type bueiEmbyLibrarySyncResultDTO struct {
 	SavedItems     int                          `json:"saved_items"`
 	UnmatchedItems int                          `json:"unmatched_items"`
 	FailedItems    []string                     `json:"failed_items,omitempty"`
+	// SkippedTasks 记录输出目录不存在而被跳过的 STRM 任务名称。
+	SkippedTasks []string `json:"skipped_tasks,omitempty"`
 	// LastSyncedAt 是本次同步成功后的时间（RFC3339），前端据此更新按钮提示。
 	LastSyncedAt string `json:"last_synced_at,omitempty"`
 }
@@ -119,6 +122,7 @@ func (h *Handler) bueiEmbyLibrarySync(w http.ResponseWriter, r *http.Request) {
 		LibraryName:  libraryName,
 		MatchedTasks: bueiEmbyLibrarySyncTaskDTOs(matchedTasks),
 		FailedItems:  []string{},
+		SkippedTasks: []string{},
 	}
 	if len(matchedTasks) == 0 {
 		writeErr(w, domain.Errorf(domain.CodeValidation, "没有找到名称包含“%s”的 STRM 任务", libraryName))
@@ -138,7 +142,20 @@ func (h *Handler) bueiEmbyLibrarySync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 输出目录不存在的任务（例如目录被删除或尚未生成）直接跳过，不影响其它任务同步。
+	syncTasks := make([]*domain.StrmTask, 0, len(matchedTasks))
 	for _, task := range matchedTasks {
+		if !bueiTaskOutputDirExists(h.strmDir, task) {
+			result.SkippedTasks = append(result.SkippedTasks, task.Name)
+			if h.log != nil {
+				h.log.Warn("跳过输出目录不存在的 STRM 任务", "task_id", task.ID, "task", task.Name)
+			}
+			continue
+		}
+		syncTasks = append(syncTasks, task)
+	}
+
+	for _, task := range syncTasks {
 		if err := r.Context().Err(); err != nil {
 			writeErr(w, err)
 			return
@@ -149,6 +166,14 @@ func (h *Handler) bueiEmbyLibrarySync(w http.ResponseWriter, r *http.Request) {
 			Limit:  200,
 			Sort:   strmscrape.ItemListSortTitleAsc,
 		}); err != nil {
+			// 索引刷新期间目录被移走时同样跳过该任务，避免整次同步失败。
+			if bueiIsStrmOutputDirMissing(err) {
+				result.SkippedTasks = append(result.SkippedTasks, task.Name)
+				if h.log != nil {
+					h.log.Warn("跳过输出目录不存在的 STRM 任务", "task_id", task.ID, "task", task.Name)
+				}
+				continue
+			}
 			writeErr(w, err)
 			return
 		}
@@ -296,6 +321,28 @@ func bueiSyncTaskItems(ctx context.Context, strmDir string, task *domain.StrmTas
 		saved++
 	}
 	return matched, saved, failed, synced
+}
+
+// bueiTaskOutputDirExists 判断 STRM 任务的输出目录是否存在。
+func bueiTaskOutputDirExists(strmDir string, task *domain.StrmTask) bool {
+	if task == nil {
+		return false
+	}
+	root := strm.TaskOutputDir(strmDir, strm.TaskRelDir(task.GroupDir, task.OutputFolder))
+	if root == "" {
+		return false
+	}
+	info, err := os.Stat(root)
+	return err == nil && info.IsDir()
+}
+
+// bueiIsStrmOutputDirMissing 识别刮削索引刷新时的“输出目录不存在/无效”错误。
+func bueiIsStrmOutputDirMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "输出目录不存在") || strings.Contains(msg, "输出目录无效")
 }
 
 func bueiEmbyProjectInfoPath(strmDir string, task *domain.StrmTask, item strmscrape.Item) (string, error) {

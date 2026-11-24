@@ -94,6 +94,7 @@ export interface BueiEmbyLibrarySyncResult {
   saved_items: number;
   unmatched_items: number;
   failed_items?: string[];
+  skipped_tasks?: string[];
   last_synced_at?: string;
 }
 
@@ -185,6 +186,25 @@ export function restoreBueiEmbyLibraryItem(itemId: string, configId = "") {
   return http.postWithTimeout<BueiEmbyLibraryRestoreResult>(
     `${basePath}/restore`,
     { item_id: itemId, config_id: configId || undefined },
+    5 * 60 * 1000,
+  );
+}
+
+export interface BueiEmbyLibraryDeleteResult {
+  deleted: boolean;
+  item_name: string;
+  task_id: number;
+  task_name: string;
+  cloud_path: string;
+  strm_path: string;
+  index_refreshed: boolean;
+  emby_refreshed: boolean;
+}
+
+export function deleteBueiEmbyLibraryItem(itemId: string, configId = "", libraryId = "") {
+  return http.postWithTimeout<BueiEmbyLibraryDeleteResult>(
+    `${basePath}/delete`,
+    { item_id: itemId, config_id: configId || undefined, library_id: libraryId || undefined },
     5 * 60 * 1000,
   );
 }
