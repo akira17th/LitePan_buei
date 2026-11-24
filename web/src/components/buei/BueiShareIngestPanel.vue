@@ -788,11 +788,21 @@ const filteredItems = computed(() => {
   return sourceItems.value.filter((item) => item.name.toLowerCase().includes(query));
 });
 
+// 分组顺序（自上而下）：普通文件 → 已入库 → 文件夹 → 已丢弃；组内再按选定字段排序。
+const ITEM_GROUP = { normal: 0, transferred: 1, folder: 2, discarded: 3 } as const;
+
+function itemGroup(item: GuangyaShareItem): number {
+  const record = processedMap.value.get(item.id);
+  if (record?.status === "discarded") return ITEM_GROUP.discarded;
+  if (item.is_dir) return ITEM_GROUP.folder;
+  if (record) return ITEM_GROUP.transferred;
+  return ITEM_GROUP.normal;
+}
+
 const sortedItems = computed(() => {
-  // 已入库 / 已丢弃的文件始终排在最后；其余项按当前排序规则排列。
   return [...filteredItems.value].sort((a, b) => {
-    const processedDiff = Number(isProcessed(a)) - Number(isProcessed(b));
-    if (processedDiff !== 0) return processedDiff;
+    const groupDiff = itemGroup(a) - itemGroup(b);
+    if (groupDiff !== 0) return groupDiff;
     if (!sortKey.value) return 0;
     const direction = sortDir.value === "asc" ? 1 : -1;
     let diff = 0;
