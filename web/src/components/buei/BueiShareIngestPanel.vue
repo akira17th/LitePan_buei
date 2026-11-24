@@ -18,6 +18,9 @@ import {
   type QuarkIngestFavorite,
   type QuarkIngestPayload,
   type QuarkIngestPreset,
+  type QuarkIngestProgress,
+  type QuarkIngestProgressFile,
+  type QuarkIngestStagedFile,
 } from "@/api/bueiQuarkIngest";
 import { ApiError, getApiErrorMessage } from "@/api/client";
 import { filesApi } from "@/api/files";
@@ -202,6 +205,16 @@ const sourceSubtitle = computed(() =>
     : result.value?.owner || "光鸭用户",
 );
 
+// #region buei:quark-favorite-path
+// 夸克收藏文件夹在账号内的路径：根目录 → 来自：分享 → 收藏文件夹。
+const quarkFavoritePath = computed(() => {
+  if (provider.value !== "quark") return "";
+  const name = String(activeQuarkFavorite.value?.folder_name || "").trim();
+  const parts = ["全部文件", "来自：分享", name].filter(Boolean);
+  return parts.join(" / ");
+});
+// #endregion buei:quark-favorite-path
+
 // 当前收藏的原始链接，标题旁提供新窗口快捷跳转。
 const activeFavoriteLink = computed(() => {
   if (provider.value === "quark") {
@@ -273,6 +286,12 @@ const page = ref(1);
 const pageSize = 100;
 
 const destination = ref<DestinationBase>({ accountId: 0, accountName: "", parentId: "", path: "", dirs: [] });
+// #region buei:quark ingest flash to guangya
+// 秒传到光鸭：仅夸克收藏可用，默认关闭；打开后保存位置改为光鸭账号内的目录。
+const flashToGuangya = ref(false);
+// 已下载到服务器临时目录的源文件（秒传未命中时保留，下一次入库无需重新下载）。
+const quarkStagedFiles = ref<Map<string, QuarkIngestStagedFile>>(new Map());
+// #endregion buei:quark ingest flash to guangya
 const folderTitle = ref("");
 const isSeries = ref(true);
 const season = ref(1);
@@ -328,6 +347,11 @@ const pendingTransfer = ref<PendingTransfer | null>(null);
 // 入库完成后的结果直接展示在同一个确认弹窗里。
 const transferDone = ref(false);
 const targetFilesRefreshKey = ref(0);
+// #region buei:quark ingest flash to guangya
+// 弹窗里每个文件一行下载进度（key 为夸克文件 id），以及取消状态。
+const transferFiles = ref<Record<string, QuarkIngestProgressFile>>({});
+const ingestCanceling = ref(false);
+// #endregion buei:quark ingest flash to guangya
 const transferResult = ref({
   renamed: 0,
   renameSkipped: 0,
@@ -551,7 +575,11 @@ watch(autoStrm, (on) => {
   if (on) autoScrape.value = true;
 });
 // 入库阶段进度：由后端记录，前端轮询展示「入库中 → 重命名 → 生成 STRM」。
-const transferPhase = ref<GuangyaShareTransferPhase>("");
+// #region buei:quark ingest flash to guangya
+// 夸克入库多了「下载」「秒传」两个阶段，这里统一成超集。
+type TransferPhase = GuangyaShareTransferPhase | "download" | "flash";
+const transferPhase = ref<TransferPhase>("");
+// #endregion buei:quark ingest flash to guangya
 let progressTimer: number | undefined;
 let progressIdRef = "";
 
@@ -586,6 +614,10 @@ interface PendingTransfer {
   quarkSourceParentId?: string;
   quarkSourceFolderParentId?: string;
   quarkSourceFolderName?: string;
+  // #region buei:quark ingest flash to guangya
+  flashToGuangya?: boolean;
+  flashAccountId?: number;
+  // #endregion buei:quark ingest flash to guangya
 }
 
 const quickKinds: { key: GuangyaShareKind; label: string; icon: string }[] = [
@@ -846,14 +878,23 @@ const pickerAccountId = computed(() => destination.value?.accountId || null);
 const pickerInitialPath = computed(() => destination.value?.path || "/");
 const pickerAccounts = computed(() => {
   if (provider.value === "quark") {
+    // #region buei:quark ingest flash to guangya
+    if (flashToGuangya.value) return guangyaAccounts.value;
+    // #endregion buei:quark ingest flash to guangya
     const accountId = activeQuarkFavorite.value?.account_id;
     return quarkAccounts.value.filter((account) => account.id === accountId);
   }
   return guangyaAccounts.value;
 });
-const pickerTitle = computed(() =>
-  provider.value === "quark" ? "选择当前夸克账号内的目录" : "选择入库目录",
-);
+const pickerTitle = computed(() => {
+  if (provider.value === "quark") {
+    // #region buei:quark ingest flash to guangya
+    if (flashToGuangya.value) return "选择光鸭账号内的目录";
+    // #endregion buei:quark ingest flash to guangya
+    return "选择当前夸克账号内的目录";
+  }
+  return "选择入库目录";
+});
 
 
 
@@ -1369,6 +1410,18 @@ const interactionBusy = computed(
 
 const canTransfer = computed(() => {
   if (provider.value === "quark") {
+    // #region buei:quark ingest flash to guangya
+    // 秒传模式下保存位置属于光鸭账号，不能再用"与收藏账号相同"作为条件。
+    if (flashToGuangya.value) {
+      return (
+        !!activeQuarkFavorite.value &&
+        selectedFileCount.value > 0 &&
+        guangyaAccounts.value.some((account) => account.id === destination.value.accountId) &&
+        !!sanitizedFolderTitle.value &&
+        !interactionBusy.value
+      );
+    }
+    // #endregion buei:quark ingest flash to guangya
     return (
       !!activeQuarkFavorite.value &&
       selectedFileCount.value > 0 &&
@@ -1400,8 +1453,34 @@ function selectDestination(accountID: number, accountName: string) {
   destination.value = { accountId: accountID, accountName, parentId: "", path: "/", dirs: [] };
 }
 
+// #region buei:quark ingest flash to guangya
+// 切换「秒传到光鸭」：保存位置所属账号变了，需要重新选择目录。
+function setFlashToGuangya(on: boolean) {
+  if (provider.value !== "quark" || transferring.value) return;
+  if (on && !guangyaAccounts.value.length) {
+    toast.info("请先在「存储管理」添加光鸭云盘账号");
+    return;
+  }
+  flashToGuangya.value = on;
+  destination.value = { accountId: 0, accountName: "", parentId: "", path: "/", dirs: [] };
+  ensureDestination();
+}
+// #endregion buei:quark ingest flash to guangya
+
 function ensureDestination() {
   if (provider.value === "quark") {
+    // #region buei:quark ingest flash to guangya
+    if (flashToGuangya.value) {
+      if (guangyaAccounts.value.some((account) => account.id === destination.value.accountId)) return;
+      const firstGuangya = guangyaAccounts.value[0];
+      if (firstGuangya) {
+        selectDestination(firstGuangya.id, firstGuangya.name);
+      } else {
+        destination.value = { accountId: 0, accountName: "", parentId: "", path: "/", dirs: [] };
+      }
+      return;
+    }
+    // #endregion buei:quark ingest flash to guangya
     const favorite = activeQuarkFavorite.value;
     if (!favorite) return;
     if (destination.value.accountId === favorite.account_id) return;
@@ -1420,6 +1499,16 @@ function ensureDestination() {
 function openPicker() {
   if (interactionBusy.value) return;
   if (provider.value === "quark") {
+    // #region buei:quark ingest flash to guangya
+    if (flashToGuangya.value) {
+      if (!guangyaAccounts.value.length) {
+        toast.info("请先在「存储管理」添加光鸭云盘账号");
+        return;
+      }
+      pickerOpen.value = true;
+      return;
+    }
+    // #endregion buei:quark ingest flash to guangya
     if (!activeQuarkFavorite.value) {
       toast.info("请先从左侧选择夸克收藏");
       return;
@@ -1443,13 +1532,24 @@ function onFolderResolved(payload: {
 }) {
   if (
     provider.value === "quark" &&
+    // #region buei:quark ingest flash to guangya
+    !flashToGuangya.value &&
+    // #endregion buei:quark ingest flash to guangya
     payload.accountId !== activeQuarkFavorite.value?.account_id
   ) {
     toast.error("夸克入库只能在收藏所属账号内进行");
     return;
   }
+  // #region buei:quark ingest flash to guangya
+  if (provider.value === "quark" && flashToGuangya.value) {
+    if (!guangyaAccounts.value.some((account) => account.id === payload.accountId)) {
+      toast.error("秒传目标必须是光鸭云盘账号");
+      return;
+    }
+  }
+  // #endregion buei:quark ingest flash to guangya
   const accountName =
-    provider.value === "quark"
+    provider.value === "quark" && !flashToGuangya.value
       ? activeQuarkFavorite.value?.accountName || payload.accountName
       : payload.accountName;
   destination.value = {
@@ -1524,6 +1624,10 @@ function resetQuarkSource() {
   quarkSourceItems.value = [];
   quarkSourceLoading.value = false;
   quarkSourceError.value = "";
+  // #region buei:quark ingest flash to guangya
+  flashToGuangya.value = false;
+  quarkStagedFiles.value = new Map();
+  // #endregion buei:quark ingest flash to guangya
 }
 
 async function selectGuangyaFavorite(link: GuangyaShareSavedLink) {
@@ -1543,6 +1647,25 @@ function applyQuarkPreset(preset: QuarkIngestPreset | null, favorite: QuarkFavor
     path: preset?.base_path || "/",
     dirs: Array.isArray(preset?.base_dirs) ? [...(preset?.base_dirs ?? [])] : [],
   };
+  // #region buei:quark ingest flash to guangya
+  flashToGuangya.value = !!preset?.flash_to_guangya;
+  if (flashToGuangya.value) {
+    const flashAccount = guangyaAccounts.value.find(
+      (account) => account.id === Number(preset?.flash_account_id || 0),
+    );
+    if (flashAccount) {
+      destination.value = {
+        accountId: flashAccount.id,
+        accountName: flashAccount.name,
+        parentId: preset?.flash_parent_id || "",
+        path: preset?.flash_base_path || "/",
+        dirs: Array.isArray(preset?.flash_base_dirs) ? [...(preset?.flash_base_dirs ?? [])] : [],
+      };
+    } else {
+      flashToGuangya.value = false;
+    }
+  }
+  // #endregion buei:quark ingest flash to guangya
   folderTitle.value = sanitizeFolderName(
     toHalfWidthBrackets(preset?.title || favorite.folder_name || ""),
   );
@@ -1624,6 +1747,7 @@ async function selectQuarkFavorite(favorite: QuarkFavoriteEntry) {
     if (seq !== quarkSourceSeq || activeQuarkFavorite.value?.id !== favorite.id) return;
     applyQuarkPreset(preset, favorite);
     quarkSourceItems.value = listing.items;
+    void loadQuarkStaged();
   } catch (error) {
     if (seq !== quarkSourceSeq) return;
     quarkSourceItems.value = [];
@@ -1632,6 +1756,42 @@ async function selectQuarkFavorite(favorite: QuarkFavoriteEntry) {
     if (seq === quarkSourceSeq) quarkSourceLoading.value = false;
   }
 }
+
+async function loadQuarkStaged() {
+  const favorite = activeQuarkFavorite.value;
+  if (!favorite) {
+    quarkStagedFiles.value = new Map();
+    return;
+  }
+  try {
+    const res = await bueiQuarkIngestApi.staged(favorite.account_id, favorite.id);
+    const map = new Map<string, QuarkIngestStagedFile>();
+    for (const item of res.items) {
+      if (item?.file_id) map.set(item.file_id, item);
+    }
+    quarkStagedFiles.value = map;
+  } catch {
+    quarkStagedFiles.value = new Map();
+  }
+}
+
+function isFlashStaged(item: GuangyaShareItem) {
+  return !item.is_dir && provider.value === "quark" && quarkStagedFiles.value.has(item.id);
+}
+
+// 已暂存文件的本地文件名（与源文件名不同时才有意义）。
+function stagedLocalName(item: GuangyaShareItem) {
+  if (!isFlashStaged(item)) return "";
+  const name = String(quarkStagedFiles.value.get(item.id)?.file_name || "").trim();
+  return name && name !== item.name ? name : "";
+}
+
+// #region buei:quark ingest flash to guangya
+// 已下载的文件把计算出的新文件名单独占一行，放在「已下载」标记上方。
+function showNewNameAbove(item: GuangyaShareItem) {
+  return isFlashStaged(item) && !!itemNewName(item);
+}
+// #endregion buei:quark ingest flash to guangya
 
 async function refreshQuarkFavoriteFiles() {
   const favorite = activeQuarkFavorite.value;
@@ -2427,10 +2587,21 @@ function submitQuarkTransfer() {
     toast.info("请先勾选要入库的文件");
     return;
   }
-  if (destination.value.accountId !== favorite.account_id) {
+  // #region buei:quark ingest flash to guangya
+  if (flashToGuangya.value) {
+    if (!destination.value.accountId) {
+      toast.info("请选择秒传目标光鸭账号内的保存位置");
+      return;
+    }
+    if (!guangyaAccounts.value.some((account) => account.id === destination.value.accountId)) {
+      toast.info("秒传目标必须是光鸭云盘账号");
+      return;
+    }
+  } else if (destination.value.accountId !== favorite.account_id) {
     toast.info("请选择当前夸克账号内的保存位置");
     return;
   }
+  // #endregion buei:quark ingest flash to guangya
   if (!sanitizedFolderTitle.value) {
     toast.info("请填写目标文件夹名称");
     return;
@@ -2483,6 +2654,10 @@ function submitQuarkTransfer() {
     quarkSourceParentId: favorite.folder_id,
     quarkSourceFolderParentId: favorite.parent_folder_id,
     quarkSourceFolderName: favorite.folder_name,
+    // #region buei:quark ingest flash to guangya
+    flashToGuangya: flashToGuangya.value,
+    flashAccountId: flashToGuangya.value ? destination.value.accountId : 0,
+    // #endregion buei:quark ingest flash to guangya
   };
   transferDone.value = false;
   transferConfirmOpen.value = true;
@@ -2498,7 +2673,103 @@ function resetTransferDialog() {
   progressIdRef = "";
   transferPhase.value = "";
   scrapeWatchId = 0;
+  // #region buei:quark ingest flash to guangya
+  resetTransferFiles();
+  ingestCanceling.value = false;
+  // #endregion buei:quark ingest flash to guangya
 }
+
+// #region buei:quark ingest flash to guangya
+function resetTransferFiles() {
+  transferFiles.value = {};
+}
+
+// 按后端进度更新逐文件状态（后端每次都返回完整 files 表）。
+function applyQuarkProgress(progress: QuarkIngestProgress) {
+  if (progress.files) transferFiles.value = progress.files;
+}
+
+// 入库请求结束后再取一次进度，确保「已秒传」/未命中提示一定展示出来。
+async function syncQuarkTransferRows(id: string) {
+  if (!id) return;
+  try {
+    const progress = await bueiQuarkIngestApi.progress(id);
+    if (progress.found) applyQuarkProgress(progress);
+  } catch {
+    // 忽略：轮询或本地状态兜底
+  }
+}
+
+type TransferDownloadRow = {
+  id: string;
+  name: string;
+  detail: string;
+  percent: number;
+  tone: "active" | "done" | "failed";
+};
+
+// 每个文件一行：等待下载 / 下载中 / 100% 等待秒传 / 已秒传 / 未命中提示。
+const transferDownloadRows = computed<TransferDownloadRow[]>(() => {
+  const pending = pendingTransfer.value;
+  if (!pending?.flashToGuangya) return [];
+  return pending.files.map((file) => {
+    const state = transferFiles.value[file.fileId];
+    const stage = state?.stage || "queued";
+    const name = state?.name || file.newName || file.originalName;
+    const total = state?.total || 0;
+    const downloaded = state?.downloaded || 0;
+    const speed = state?.speed || 0;
+
+    let percent = 0;
+    if (stage === "flashed" || stage === "failed" || stage === "downloaded") {
+      percent = 100;
+    } else if (total > 0) {
+      percent = Math.min(100, Math.max(0, Math.round((downloaded / total) * 100)));
+    }
+
+    let detail = "等待下载";
+    if (stage === "flashed") {
+      detail = "已秒传";
+    } else if (stage === "failed") {
+      detail = state?.message || "入库失败";
+    } else if (stage === "downloaded") {
+      detail = "100% · 等待秒传";
+    } else if (stage === "downloading") {
+      const parts: string[] = [];
+      if (total > 0) {
+        parts.push(`${formatSize(downloaded)} / ${formatSize(total)}`);
+      } else if (downloaded > 0) {
+        parts.push(formatSize(downloaded));
+      }
+      if (speed > 0) parts.push(`${formatSize(speed)}/s`);
+      detail = parts.join(" · ") || "下载中…";
+    }
+
+    const tone: TransferDownloadRow["tone"] =
+      stage === "flashed" ? "done" : stage === "failed" ? "failed" : "active";
+    return { id: file.fileId, name, detail, percent, tone };
+  });
+});
+
+const canCancelTransfer = computed(
+  () =>
+    transferDownloadRows.value.length > 0 &&
+    transferPhase.value === "download" &&
+    !ingestCanceling.value,
+);
+
+async function cancelQuarkIngest() {
+  const id = progressIdRef;
+  if (!id || ingestCanceling.value) return;
+  ingestCanceling.value = true;
+  try {
+    await bueiQuarkIngestApi.cancel(id);
+  } catch (error) {
+    toast.error(getApiErrorMessage(error, "取消入库失败"));
+    ingestCanceling.value = false;
+  }
+}
+// #endregion buei:quark ingest flash to guangya
 
 function cancelTransferConfirm() {
   if (transferring.value) return;
@@ -2521,6 +2792,12 @@ const transferPhaseLabel = computed(() => {
   switch (transferPhase.value) {
     case "rename":
       return "重命名中…";
+    // #region buei:quark ingest flash to guangya
+    case "download":
+      return "下载中…";
+    case "flash":
+      return "秒传中…";
+    // #endregion buei:quark ingest flash to guangya
     case "strm":
       return "生成 STRM 中…";
     case "scrape":
@@ -2564,7 +2841,13 @@ async function pollTransferProgress(id: string, source: Provider) {
     if (progressIdRef !== id) return;
     if (progress.found && progress.phase) {
       transferPhase.value = progress.phase;
-      if (progress.error) transferResult.value.embyError = progress.error;
+      // 只有刷库阶段的错误才落到 Emby 步骤；未命中秒传的长文案留在下载行里。
+      if (progress.error && progress.phase === "emby") {
+        transferResult.value.embyError = progress.error;
+      }
+      // #region buei:quark ingest flash to guangya
+      if (source === "quark") applyQuarkProgress(progress as QuarkIngestProgress);
+      // #endregion buei:quark ingest flash to guangya
     }
   } catch {
     // 忽略单次失败，下一轮继续。
@@ -2726,12 +3009,17 @@ async function confirmQuarkTransfer(pending: PendingTransfer) {
   if (!pending.quarkFavoriteId || !pending.quarkAccountId || !pending.quarkSourceParentId) return;
   transferring.value = true;
   transferPhase.value = "transfer";
+  // #region buei:quark ingest flash to guangya
+  resetTransferFiles();
+  ingestCanceling.value = false;
+  // #endregion buei:quark ingest flash to guangya
   const progressId = newProgressId();
   progressIdRef = progressId;
   void pollTransferProgress(progressId, "quark");
   try {
     const payload: QuarkIngestPayload = {
-      account_id: pending.base.accountId,
+      // 源账号始终是收藏所属的夸克账号；秒传模式下 base 指向光鸭账号。
+      account_id: pending.quarkAccountId || pending.base.accountId,
       favorite_id: pending.quarkFavoriteId,
       source_parent_id: pending.quarkSourceParentId,
       source_folder_parent_id: pending.quarkSourceFolderParentId || "",
@@ -2767,6 +3055,10 @@ async function confirmQuarkTransfer(pending: PendingTransfer) {
       emby_mode: pending.embyMode,
       emby_library_id: pending.embyLibraryId,
       progress_id: progressId,
+      // #region buei:quark ingest flash to guangya
+      flash_to_guangya: pending.flashToGuangya === true,
+      flash_account_id: pending.flashToGuangya ? pending.flashAccountId || 0 : 0,
+      // #endregion buei:quark ingest flash to guangya
     };
     const res = await bueiQuarkIngestApi.transfer(payload);
     transferResult.value = {
@@ -2788,7 +3080,10 @@ async function confirmQuarkTransfer(pending: PendingTransfer) {
     clearSelection();
     transferDone.value = true;
     targetFilesRefreshKey.value += 1;
+    // 入库成功的源文件已从收藏文件夹删除，刷新后列表里只会剩下未入库的文件。
     await refreshQuarkAfterIngest();
+    void loadQuarkStaged();
+    void syncQuarkTransferRows(progressId);
     const asyncPending = !!(transferResult.value.scrapeStarted || transferResult.value.embyScheduled);
     if (!asyncPending) {
       stopProgressPolling();
@@ -2796,10 +3091,20 @@ async function confirmQuarkTransfer(pending: PendingTransfer) {
       transferPhase.value = "";
     }
   } catch (error) {
-    toast.error(getApiErrorMessage(error, "入库失败"));
+    // #region buei:quark ingest flash to guangya
+    // 未命中秒传的详细原因已经显示在弹窗的下载行里，这里不再重复弹长文案。
+    const message = getApiErrorMessage(error, "入库失败");
+    if (!message.includes("未命中")) toast.error(message);
+    // #endregion buei:quark ingest flash to guangya
     stopProgressPolling();
     progressIdRef = "";
     transferPhase.value = "failed";
+    // 秒传未命中时后端保留了已下载文件，重新读取标记再重试可省去下载。
+    void loadQuarkStaged();
+    void syncQuarkTransferRows(progressId);
+    // #region buei:quark ingest flash to guangya
+    ingestCanceling.value = false;
+    // #endregion buei:quark ingest flash to guangya
   } finally {
     transferring.value = false;
   }
@@ -2969,6 +3274,17 @@ onBeforeUnmount(() => {
               <SvgIcon name="arrow-up-right-from-square" :size="13" />
             </a>
           </div>
+
+          <!-- #region buei:quark-favorite-path -->
+          <div
+            v-if="hasSource && provider === 'quark' && quarkFavoritePath"
+            class="gys__favpath"
+            :title="quarkFavoritePath"
+          >
+            <SvgIcon name="folder" :size="12" />
+            <span class="gys__favpath-text">{{ quarkFavoritePath }}</span>
+          </div>
+          <!-- #endregion buei:quark-favorite-path -->
 
           <div v-if="hasSource && provider === 'guangya'" class="gys__crumbs">
             <button
@@ -3200,12 +3516,47 @@ onBeforeUnmount(() => {
                           <span class="gys__name-stem">{{ displayNameParts(item.name, item.is_dir).stem }}</span>
                           <span class="gys__name-ext">{{ displayNameParts(item.name, item.is_dir).ext }}</span>
                         </span>
-                        <span v-if="itemNewName(item) || isProcessed(item)" class="gys__name-sub">
+                        <!-- #region buei:quark ingest flash to guangya -->
+                        <span
+                          v-if="showNewNameAbove(item)"
+                          class="gys__name-new gys__name-new--solo"
+                          :title="itemNewName(item)"
+                        >
+                          <span class="gys__name-stem">{{ splitFileName(itemNewName(item)).stem }}</span>
+                          <span class="gys__name-ext">{{ splitFileName(itemNewName(item)).ext }}</span>
+                        </span>
+                        <!-- #endregion buei:quark ingest flash to guangya -->
+                        <span
+                          v-if="
+                            itemNewName(item) ||
+                            isProcessed(item) ||
+                            isFlashStaged(item) ||
+                            stagedLocalName(item)
+                          "
+                          class="gys__name-sub"
+                        >
                           <span v-if="isProcessed(item)" class="gys__transferred-tag">
                             {{ processedStatus(item) === "discarded" ? "已丢弃" : "已入库" }}
                           </span>
+                          <!-- #region buei:quark ingest flash to guangya -->
                           <span
-                            v-if="itemNewName(item)"
+                            v-if="isFlashStaged(item)"
+                            class="gys__staged-tag"
+                            title="已下载到服务器临时目录，再次入库无需重新下载"
+                          >
+                            已下载
+                          </span>
+                          <span
+                            v-if="stagedLocalName(item)"
+                            class="gys__localname"
+                            :title="`服务器临时文件名：${stagedLocalName(item)}`"
+                          >
+                            <SvgIcon name="server" :size="10" />
+                            <span class="gys__localname-text">{{ stagedLocalName(item) }}</span>
+                          </span>
+                          <!-- #endregion buei:quark ingest flash to guangya -->
+                          <span
+                            v-if="itemNewName(item) && !showNewNameAbove(item)"
                             class="gys__name-new"
                             :class="{ 'is-done': isProcessed(item) && !selectedIds.has(item.id) }"
                             :title="itemNewName(item)"
@@ -3262,10 +3613,40 @@ onBeforeUnmount(() => {
                 <h4>保存位置</h4>
                 <span class="gys__panel-hint">不存在时自动创建</span>
               </div>
+              <!-- #region buei:quark ingest flash to guangya -->
+              <div
+                v-if="provider === 'quark'"
+                class="gys__switch-row"
+                :class="{ 'is-disabled': !guangyaAccounts.length }"
+              >
+                <span class="gys__switch-text">
+                  <span class="gys__switch-title">秒传到光鸭</span>
+                  <span class="gys__switch-desc">先下载到服务器，再仅秒传入库到光鸭</span>
+                </span>
+                <button
+                  type="button"
+                  class="gys__switch"
+                  :class="{ 'is-on': flashToGuangya }"
+                  role="switch"
+                  :aria-checked="flashToGuangya"
+                  aria-label="秒传到光鸭"
+                  :disabled="transferring"
+                  @click="setFlashToGuangya(!flashToGuangya)"
+                >
+                  <span class="gys__switch-knob" />
+                </button>
+              </div>
+              <!-- #endregion buei:quark ingest flash to guangya -->
               <AccountFolderField
                 class="gys__basefield"
                 :display="destinationDisplay"
-                :placeholder="provider === 'quark' ? '选择当前夸克账号内的目录' : '选择入库账号和目录'"
+                :placeholder="
+                  provider === 'quark'
+                    ? flashToGuangya
+                      ? '选择光鸭账号内的目录'
+                      : '选择当前夸克账号内的目录'
+                    : '选择入库账号和目录'
+                "
                 browse-label="选择"
                 :title="destinationDisplay || '选择入库账号和目录'"
                 @browse="openPicker"
@@ -3284,7 +3665,10 @@ onBeforeUnmount(() => {
                 />
               </label>
               <p v-if="provider === 'quark'" class="gys__field-tip">
-                入库时会同步重命名「来自：分享」中的收藏文件夹。
+                <template v-if="flashToGuangya">
+                  勾选的文件先下载到服务器临时目录，未命中秒传会中止并保留临时文件。
+                </template>
+                <template v-else>入库时会同步重命名「来自：分享」中的收藏文件夹。</template>
               </p>
               <div class="gys__field-row">
                 <div class="gys__type-toggle" role="group" aria-label="内容类型">
@@ -3719,9 +4103,15 @@ onBeforeUnmount(() => {
     :emby-error="transferResult.embyError"
     :hint="
       pendingTransfer?.provider === 'quark'
-        ? '仅移动勾选的文件，收藏文件夹会同步改名。'
+        ? pendingTransfer?.flashToGuangya
+          ? '勾选的文件先下载到服务器，再仅秒传到光鸭目标目录；未命中会中止并保留临时文件。'
+          : '仅移动勾选的文件，收藏文件夹会同步改名。'
         : '勾选的文件会移动到目标文件夹。'
     "
+    :download-rows="transferDownloadRows"
+    :can-cancel="canCancelTransfer"
+    :canceling="ingestCanceling"
+    @cancel-task="cancelQuarkIngest"
     @confirm="confirmTransfer"
     @cancel="cancelTransferConfirm"
     @stay="stayAfterTransfer"
@@ -4036,6 +4426,27 @@ onBeforeUnmount(() => {
   min-width: 0;
   padding: 0 0 4px;
 }
+
+/* #region buei:quark-favorite-path */
+/* 夸克收藏文件夹路径：只展示、不可点，超长省略 */
+.gys__favpath {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 0 0 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.gys__favpath-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* #endregion buei:quark-favorite-path */
 
 .gys__up {
   display: grid;
@@ -4543,6 +4954,14 @@ onBeforeUnmount(() => {
   color: var(--text-muted);
 }
 
+/* #region buei:quark ingest flash to guangya */
+/* 已下载文件的新文件名独占一行，位于「已下载」标记上方 */
+.gys__name-new--solo {
+  font-size: 10px;
+  line-height: 1.4;
+}
+/* #endregion buei:quark ingest flash to guangya */
+
 .gys__transferred-tag {
   flex-shrink: 0;
   padding: 1px 6px;
@@ -4551,6 +4970,36 @@ onBeforeUnmount(() => {
   color: var(--text-muted);
   font-size: 10px;
 }
+
+/* #region buei:quark ingest flash to guangya */
+/* 已暂存文件的服务器临时文件名：与「已下载」同行的弱化提示 */
+.gys__localname {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.gys__localname-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gys__staged-tag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  color: var(--brand);
+  font-size: 10px;
+}
+/* #endregion buei:quark ingest flash to guangya */
 
 .gys__enter {
   flex-shrink: 0;

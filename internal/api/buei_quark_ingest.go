@@ -37,6 +37,13 @@ type bueiQuarkIngestPresetDTO struct {
 	EmbyLibraryID string                           `json:"emby_library_id"`
 	RenameReplace *bueiQuarkIngestRenameReplaceDTO `json:"rename_replace,omitempty"`
 	UpdatedAt     string                           `json:"updated_at,omitempty"`
+	// #region buei:quark ingest flash to guangya
+	FlashToGuangya bool     `json:"flash_to_guangya"`
+	FlashAccountID int64    `json:"flash_account_id"`
+	FlashParentID  string   `json:"flash_parent_id"`
+	FlashBasePath  string   `json:"flash_base_path"`
+	FlashBaseDirs  []string `json:"flash_base_dirs,omitempty"`
+	// #endregion buei:quark ingest flash to guangya
 }
 
 func bueiQuarkIngestRenameReplaceToDTO(rule quarkingest.RenameReplace) *bueiQuarkIngestRenameReplaceDTO {
@@ -77,6 +84,13 @@ func bueiQuarkIngestPresetToDTO(preset *quarkingest.Preset) *bueiQuarkIngestPres
 		EmbyLibraryID: preset.EmbyLibraryID,
 		RenameReplace: bueiQuarkIngestRenameReplaceToDTO(preset.RenameReplace),
 		UpdatedAt:     FormatAPITime(preset.UpdatedAt),
+		// #region buei:quark ingest flash to guangya
+		FlashToGuangya: preset.FlashToGuangya,
+		FlashAccountID: preset.FlashAccountID,
+		FlashParentID:  preset.FlashParentID,
+		FlashBasePath:  preset.FlashBasePath,
+		FlashBaseDirs:  preset.FlashBaseDirs,
+		// #endregion buei:quark ingest flash to guangya
 	}
 	return dto
 }
@@ -128,7 +142,11 @@ func (h *Handler) bueiQuarkIngestTransfer(w http.ResponseWriter, r *http.Request
 		EmbyMode             string   `json:"emby_mode"`
 		EmbyLibraryID        string   `json:"emby_library_id"`
 		ProgressID           string   `json:"progress_id"`
-		Files                []struct {
+		// #region buei:quark ingest flash to guangya
+		FlashToGuangya bool  `json:"flash_to_guangya"`
+		FlashAccountID int64 `json:"flash_account_id"`
+		// #endregion buei:quark ingest flash to guangya
+		Files []struct {
 			FileID       string `json:"file_id"`
 			OriginalName string `json:"original_name"`
 			NewName      string `json:"new_name"`
@@ -194,6 +212,10 @@ func (h *Handler) bueiQuarkIngestTransfer(w http.ResponseWriter, r *http.Request
 		EmbyLibraryID:        in.EmbyLibraryID,
 		RenameReplace:        renameReplace,
 		ProgressID:           in.ProgressID,
+		// #region buei:quark ingest flash to guangya
+		FlashToGuangya: in.FlashToGuangya,
+		FlashAccountID: in.FlashAccountID,
+		// #endregion buei:quark ingest flash to guangya
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -203,6 +225,9 @@ func (h *Handler) bueiQuarkIngestTransfer(w http.ResponseWriter, r *http.Request
 		"moved":          res.Moved,
 		"renamed":        res.Renamed,
 		"rename_skipped": res.RenameSkipped,
+		"flashed":        res.Flashed,     // buei:quark ingest flash to guangya
+		"missed":         res.Missed,      // buei:quark ingest flash to guangya
+		"miss_message":   res.MissMessage, // buei:quark ingest flash to guangya
 		"strm_generated": res.StrmGenerated,
 		"strm_matched":   res.StrmMatched,
 		"strm_error":     res.StrmError,
@@ -212,6 +237,38 @@ func (h *Handler) bueiQuarkIngestTransfer(w http.ResponseWriter, r *http.Request
 		"emby_scheduled": res.EmbyScheduled,
 		"emby_error":     res.EmbyError,
 	})
+}
+
+func (h *Handler) bueiQuarkIngestStaged(w http.ResponseWriter, r *http.Request) {
+	if !ensureServiceReady(w, h.buei.QuarkIngest != nil) {
+		return
+	}
+	accountID, err := parseQueryInt64(r, "account_id")
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	favoriteID, err := parseQueryInt64(r, "favorite_id")
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	items, err := h.buei.QuarkIngest.FlashStaged(r.Context(), accountID, favoriteID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"file_id":       item.FileID,
+			"file_name":     item.FileName,
+			"original_name": item.OriginalName,
+			"size":          item.Size,
+			"updated_at":    FormatAPITime(item.UpdatedAt),
+		})
+	}
+	writeOK(w, map[string]any{"items": out})
 }
 
 func (h *Handler) bueiQuarkIngestProgress(w http.ResponseWriter, r *http.Request) {
@@ -228,8 +285,38 @@ func (h *Handler) bueiQuarkIngestProgress(w http.ResponseWriter, r *http.Request
 		"found": ok,
 		"phase": progress.Phase,
 		"error": progress.Error,
+		// #region buei:quark ingest flash to guangya
+		"file":       progress.File,
+		"downloaded": progress.Downloaded,
+		"total":      progress.Total,
+		"speed":      progress.Speed,
+		"files":      progress.Files,
+		"file_id":    progress.FileID,
+		// #endregion buei:quark ingest flash to guangya
 	})
 }
+
+// #region buei:quark ingest flash to guangya
+func (h *Handler) bueiQuarkIngestCancel(w http.ResponseWriter, r *http.Request) {
+	if !ensureServiceReady(w, h.buei.QuarkIngest != nil) {
+		return
+	}
+	var in struct {
+		ProgressID string `json:"progress_id"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	id := strings.TrimSpace(in.ProgressID)
+	if id == "" {
+		writeErr(w, domain.Errorf(domain.CodeValidation, "缺少进度标识"))
+		return
+	}
+	writeOK(w, map[string]bool{"canceled": h.buei.QuarkIngest.CancelIngest(id)})
+}
+
+// #endregion buei:quark ingest flash to guangya
 
 type bueiQuarkIngestFavoriteDTO struct {
 	ID             int64  `json:"id"`

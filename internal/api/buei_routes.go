@@ -45,5 +45,8 @@ func (h *Handler) registerBueiRoutes(r chi.Router) {
 		r.Post("/flatten", h.bueiQuarkIngestFlatten)
 		r.Post("/transfer", h.bueiQuarkIngestTransfer)
 		r.Get("/progress", h.bueiQuarkIngestProgress)
+		// buei:quark ingest flash to guangya
+		r.Get("/staged", h.bueiQuarkIngestStaged)
+		r.Post("/cancel", h.bueiQuarkIngestCancel)
 	})
 }

@@ -48,11 +48,26 @@ const props = withDefaults(
     /** 动作名称：光鸭与夸克入库均使用「入库」。 */
     actionLabel?: string;
     hint?: string;
+    // #region buei:quark ingest flash to guangya
+    /** 逐文件下载进度；传入即展示下载进度列表。 */
+    downloadRows?: { id: string; name: string; detail: string; percent: number; tone: string }[];
+    /** 是否显示取消按钮（仅下载中可取消）。 */
+    canCancel?: boolean;
+    canceling?: boolean;
+    // #endregion buei:quark ingest flash to guangya
   }>(),
   { actionLabel: "入库", hint: "" },
 );
 
-const emit = defineEmits<{ confirm: []; cancel: []; stay: []; open: [] }>();
+const emit = defineEmits<{
+  confirm: [];
+  cancel: [];
+  stay: [];
+  open: [];
+  // #region buei:quark ingest flash to guangya
+  cancelTask: [];
+  // #endregion buei:quark ingest flash to guangya
+}>();
 
 type StepState = "pending" | "active" | "done" | "skipped";
 
@@ -231,6 +246,39 @@ const phaseText = computed(() => {
         </div>
       </div>
 
+      <!-- #region buei:quark ingest flash to guangya -->
+      <div v-if="downloadRows && downloadRows.length" class="gysc__dl">
+        <div class="gysc__dl-head">
+          <span class="gysc__dl-title">下载进度</span>
+          <AppButton
+            v-if="canCancel"
+            size="sm"
+            variant="cancel"
+            :disabled="canceling"
+            @click="emit('cancelTask')"
+          >
+            {{ canceling ? "取消中…" : "取消" }}
+          </AppButton>
+        </div>
+        <div class="gysc__dl-list">
+          <div
+            v-for="row in downloadRows"
+            :key="row.id"
+            class="gysc__dl-item"
+            :class="`is-${row.tone || 'active'}`"
+          >
+            <div class="gysc__dl-line">
+              <span class="gysc__dl-name" :title="row.name">{{ row.name }}</span>
+              <span class="gysc__dl-meta" :title="row.detail">{{ row.detail }}</span>
+            </div>
+            <span class="gysc__dl-bar">
+              <span :style="{ width: `${row.percent}%` }" />
+            </span>
+          </div>
+        </div>
+      </div>
+      <!-- #endregion buei:quark ingest flash to guangya -->
+
       <section class="gysc__preview">
         <header class="gysc__preview-head">
           <span class="gysc__preview-title">
@@ -376,6 +424,107 @@ const phaseText = computed(() => {
   background: var(--brand);
   transition: width 0.3s ease;
 }
+
+/* #region buei:quark ingest flash to guangya */
+/* 逐文件下载进度：每个文件一行（文件名 + 状态/速度 + 进度条） */
+.gysc__dl {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: -4px 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+}
+
+.gysc__dl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.gysc__dl-title {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.gysc__dl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.gysc__dl-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.gysc__dl-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.gysc__dl-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.gysc__dl-meta {
+  flex: 0 0 auto;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gysc__dl-bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+}
+
+.gysc__dl-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+  transition: width 0.3s ease;
+}
+
+.gysc__dl-item.is-done .gysc__dl-bar span {
+  background: var(--success, var(--brand));
+}
+
+.gysc__dl-item.is-done .gysc__dl-meta {
+  color: var(--brand);
+}
+
+.gysc__dl-item.is-failed .gysc__dl-bar span {
+  background: var(--danger, #d9534f);
+}
+
+.gysc__dl-item.is-failed .gysc__dl-meta {
+  color: var(--danger, #d9534f);
+}
+/* #endregion buei:quark ingest flash to guangya */
 
 .gysc__step-msg {
   padding-left: 22px;

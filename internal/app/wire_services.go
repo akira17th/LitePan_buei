@@ -210,6 +210,9 @@ func wireServices(cfg config.Config, logs *logx.Manager, st *storeBundle, core *
 	bueiSvc.quarkIngest.SetStrmGenerator(bueiStrmDirectoryGenerator(core.exec, strmSvc))
 	bueiSvc.quarkIngest.SetScrapeRunner(rebuildScrape, startScrape, waitScrape)
 	bueiSvc.quarkIngest.SetEmbyRefresher(bueiEmbyRefresher(embyProxySvc))
+	// #region buei:quark ingest flash to guangya
+	bueiSvc.quarkIngest.SetFlash(newBueiQuarkFlashDeps(core.exec, playbackSvc, cfg.DataDir))
+	// #endregion buei:quark ingest flash to guangya
 	// #endregion buei:quark ingest linked actions
 	fnosProxySvc := fnosproxy.New(fnosproxy.Options{
 		Settings:       st.settings,

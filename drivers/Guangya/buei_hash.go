@@ -11,8 +11,10 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"litepan/internal/domain"
@@ -161,5 +163,57 @@ func (d *Driver) tryLocalFlashUpload(ctx context.Context, taskID, parentID, file
 	uploadutil.NotifyProgress(onProgress, fileSize, fileSize, "秒传成功")
 	return fileID, true, nil
 }
+
+// FlashUploadLocalFile 只做秒传：创建上传任务 → 用 gcid/cid 询问光鸭 → 命中才落文件。
+// 未命中返回 driver.ErrFlashMiss，由调用方决定提示与中止。
+func (d *Driver) FlashUploadLocalFile(ctx context.Context, req driver.FlashUploadRequest) (*driver.FlashUploadResult, error) {
+	localFile, err := uploadutil.StatLocalFile(strings.TrimSpace(req.LocalPath))
+	if err != nil {
+		return nil, err
+	}
+	targetName := strings.TrimSpace(filepath.Base(strings.TrimSpace(req.FileName)))
+	if targetName == "" || targetName == "." {
+		return nil, domain.Errorf(domain.CodeValidation, "上传文件名不能为空")
+	}
+	if err := uploadutil.ValidateFileName(targetName); err != nil {
+		return nil, err
+	}
+	parentID := d.resolveParent(req.ParentID)
+	tokenData, code, err := d.requestUploadToken(ctx, parentID, targetName, localFile.Size)
+	if err != nil {
+		return nil, err
+	}
+	taskID := strings.TrimSpace(tokenData.TaskID)
+	if taskID == "" {
+		return nil, domain.Errorf(domain.CodeDriverError, "光鸭上传缺少 taskId")
+	}
+
+	isFlash := code == 156
+	if !isFlash {
+		gcid, cid, err := computeGuangyaHashes(ctx, localFile.Path)
+		if err != nil {
+			return nil, err
+		}
+		canFlash, err := d.checkCanFlashUploadByHashes(ctx, taskID, gcid, cid)
+		if err != nil {
+			return nil, err
+		}
+		if !canFlash {
+			return nil, fmt.Errorf("%w：%s", driver.ErrFlashMiss, targetName)
+		}
+	}
+
+	fileID, err := d.waitUploadTaskInfo(ctx, taskID, parentID, targetName, localFile.Size)
+	if err != nil {
+		return nil, err
+	}
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return nil, fmt.Errorf("%w：%s", driver.ErrFlashMiss, targetName)
+	}
+	return &driver.FlashUploadResult{FileID: fileID, ParentID: parentID, FileName: targetName, Size: localFile.Size}, nil
+}
+
+var _ driver.LocalFlashUploader = (*Driver)(nil)
 
 // #endregion buei:guangya-local-flash

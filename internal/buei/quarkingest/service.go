@@ -109,6 +109,13 @@ type Preset struct {
 	EmbyLibraryID string        `json:"emby_library_id"`
 	RenameReplace RenameReplace `json:"rename_replace"`
 	UpdatedAt     time.Time     `json:"updated_at"`
+	// #region buei:quark ingest flash to guangya
+	FlashToGuangya bool     `json:"flash_to_guangya"`
+	FlashAccountID int64    `json:"flash_account_id"`
+	FlashParentID  string   `json:"flash_parent_id"`
+	FlashBasePath  string   `json:"flash_base_path"`
+	FlashBaseDirs  []string `json:"flash_base_dirs,omitempty"`
+	// #endregion buei:quark ingest flash to guangya
 }
 
 // IngestFile 是本次入库的一个文件或文件夹。
@@ -155,6 +162,13 @@ type IngestInput struct {
 
 	RenameReplace *RenameReplace
 	ProgressID    string
+
+	// #region buei:quark ingest flash to guangya
+	// FlashToGuangya 打开时：先把文件下载到服务器临时目录（用重命名后的文件名），
+	// 再仅做秒传写入光鸭账号；ParentID / TargetPath / BasePath / BaseDirs 此时描述光鸭账号内的位置。
+	FlashToGuangya bool
+	FlashAccountID int64
+	// #endregion buei:quark ingest flash to guangya
 }
 
 // Result 是入库结果。
@@ -172,6 +186,15 @@ type Result struct {
 	EmbyRefreshed bool   `json:"emby_refreshed"`
 	EmbyScheduled bool   `json:"emby_scheduled"`
 	EmbyError     string `json:"emby_error,omitempty"`
+
+	// #region buei:quark ingest flash to guangya
+	// Flashed 是本次通过秒传入库的文件数。
+	Flashed int `json:"flashed"`
+	// Missed 是未命中秒传而被跳过的文件数；有文件秒传成功时入库仍算部分成功。
+	Missed int `json:"missed"`
+	// MissMessage 是未命中/中断的提示文案（有成功文件时会返回给前端）。
+	MissMessage string `json:"miss_message,omitempty"`
+	// #endregion buei:quark ingest flash to guangya
 }
 
 // RenamePair 描述一次入库后的重命名。
@@ -194,6 +217,10 @@ type Service struct {
 	startScrape        func(ctx context.Context, strmTaskID int64, remoteDirs []string) error
 	waitScrapeDone     func(ctx context.Context, strmTaskID int64) error
 	refreshEmby        func(ctx context.Context, configID, mode, libraryID string) error
+
+	// #region buei:quark ingest flash to guangya
+	flash FlashDeps
+	// #endregion buei:quark ingest flash to guangya
 
 	progress *progressTracker
 }
@@ -333,6 +360,8 @@ func (s *Service) Ingest(ctx context.Context, in IngestInput) (out *Result, err 
 
 	progressID := strings.TrimSpace(in.ProgressID)
 	s.progress.start(progressID)
+	// 入库成功与否都保存本次选项与配置，便于失败后直接用相同参数重试。
+	s.savePreset(ctx, in, targetPath)
 	// 刮削/刷库是后台异步动作：它们结束前不要把进度标记为完成。
 	asyncPending := false
 	defer func() {
@@ -345,6 +374,12 @@ func (s *Service) Ingest(ctx context.Context, in IngestInput) (out *Result, err 
 		}
 		s.progress.finish(progressID, "")
 	}()
+
+	// #region buei:quark ingest flash to guangya
+	if in.FlashToGuangya {
+		return s.ingestFlash(ctx, in, files, targetPath, progressID, &asyncPending)
+	}
+	// #endregion buei:quark ingest flash to guangya
 
 	targetParentID, err := s.ensureTargetFolder(ctx, in.AccountID, in.ParentID, targetPath)
 	if err != nil {
@@ -392,18 +427,34 @@ func (s *Service) Ingest(ctx context.Context, in IngestInput) (out *Result, err 
 		s.progress.setPhase(progressID, PhaseRename)
 		result.Renamed, result.RenameSkipped = s.applyRenames(ctx, in.AccountID, targetParentID, plan)
 	}
-	s.savePreset(ctx, in, targetPath)
 
+	asyncPending = s.runIngestFollowUps(ctx, in, in.AccountID, targetParentID, targetPath, progressID, result)
+	s.logger().Info("夸克入库完成", "account_id", in.AccountID, "source", sourceParentID, "target", targetParentID, "count", result.Moved, "renamed", result.Renamed)
+	return result, nil
+}
+
+// runIngestFollowUps 执行入库后的联动动作（STRM / 刮削 / Emby），返回是否还有后台异步动作。
+// targetAccountID 是文件实际所在账号：普通入库是夸克账号，秒传到光鸭时是光鸭账号。
+func (s *Service) runIngestFollowUps(
+	ctx context.Context,
+	in IngestInput,
+	targetAccountID int64,
+	targetParentID string,
+	targetPath []string,
+	progressID string,
+	result *Result,
+) bool {
 	strmDirs := targetDirectorySegments(ingestBaseDirs(in), targetPath)
 	if in.AutoStrm {
 		s.progress.setPhase(progressID, PhaseStrm)
-		result.StrmGenerated, result.StrmMatched, result.StrmError = s.generateStrm(ctx, in.AccountID, targetParentID, strmDirs)
+		result.StrmGenerated, result.StrmMatched, result.StrmError = s.generateStrm(ctx, targetAccountID, targetParentID, strmDirs)
 	}
 	emby := in.embyAction()
 	if scrapeEnabled(in) {
 		s.progress.setPhase(progressID, PhaseScrape)
 		result.ScrapeStarted, result.ScrapeError = s.scrapeAfterTransfer(ctx, in.ScrapeTaskID, strmDirs)
 	}
+	asyncPending := false
 	if result.ScrapeStarted {
 		asyncPending = true
 		if emby.enabled {
@@ -416,12 +467,10 @@ func (s *Service) Ingest(ctx context.Context, in IngestInput) (out *Result, err 
 		s.progress.setPhase(progressID, PhaseEmby)
 		result.EmbyRefreshed, result.EmbyError = s.refreshEmbyNow(ctx, emby)
 	}
-
 	if result.StrmGenerated > 0 {
-		s.logger().Info("夸克入库后自动生成 STRM", "account_id", in.AccountID, "parent_id", targetParentID, "dirs", strmDirs, "count", result.StrmGenerated)
+		s.logger().Info("夸克入库后自动生成 STRM", "account_id", targetAccountID, "parent_id", targetParentID, "dirs", strmDirs, "count", result.StrmGenerated)
 	}
-	s.logger().Info("夸克入库完成", "account_id", in.AccountID, "source", sourceParentID, "target", targetParentID, "count", result.Moved, "renamed", result.Renamed)
-	return result, nil
+	return asyncPending
 }
 
 func presetKey(accountID int64) string {
@@ -497,11 +546,33 @@ func (s *Service) savePreset(ctx context.Context, in IngestInput, targetPath []s
 	if in.RenameReplace != nil {
 		renameReplace = normalizeRenameReplace(*in.RenameReplace)
 	}
+	// #region buei:quark ingest flash to guangya
+	// 秒传模式下 ParentID / BasePath / BaseDirs 描述的是光鸭账号内的位置，
+	// 不能写进夸克的保存位置预设，否则下次普通入库会跨账号。
+	parentID := strings.TrimSpace(in.ParentID)
+	basePath := normalizeDestinationBasePath(in.BasePath)
+	baseDirs := cleanDirs(in.BaseDirs)
+	flashAccountID := in.FlashAccountID
+	flashParentID := strings.TrimSpace(in.ParentID)
+	flashBasePath := normalizeDestinationBasePath(in.BasePath)
+	flashBaseDirs := cleanDirs(in.BaseDirs)
+	if prev, err := s.LoadPreset(ctx, in.AccountID); err == nil && prev != nil {
+		flashAccountID = prev.FlashAccountID
+		flashParentID = prev.FlashParentID
+		flashBasePath = prev.FlashBasePath
+		flashBaseDirs = prev.FlashBaseDirs
+		if in.FlashToGuangya {
+			parentID, basePath, baseDirs = prev.ParentID, prev.BasePath, prev.BaseDirs
+			flashAccountID = in.FlashAccountID
+			flashParentID, flashBasePath, flashBaseDirs = strings.TrimSpace(in.ParentID), normalizeDestinationBasePath(in.BasePath), cleanDirs(in.BaseDirs)
+		}
+	}
+	// #endregion buei:quark ingest flash to guangya
 	preset := Preset{
 		AccountID:     in.AccountID,
-		ParentID:      strings.TrimSpace(in.ParentID),
-		BasePath:      normalizeDestinationBasePath(in.BasePath),
-		BaseDirs:      cleanDirs(in.BaseDirs),
+		ParentID:      parentID,
+		BasePath:      basePath,
+		BaseDirs:      baseDirs,
 		Title:         title,
 		Season:        clampSeason(in.Season),
 		IsSeries:      in.IsSeries,
@@ -514,6 +585,13 @@ func (s *Service) savePreset(ctx context.Context, in IngestInput, targetPath []s
 		EmbyLibraryID: strings.TrimSpace(in.EmbyLibraryID),
 		RenameReplace: renameReplace,
 		UpdatedAt:     time.Now().UTC(),
+		// #region buei:quark ingest flash to guangya
+		FlashToGuangya: in.FlashToGuangya,
+		FlashAccountID: flashAccountID,
+		FlashParentID:  flashParentID,
+		FlashBasePath:  flashBasePath,
+		FlashBaseDirs:  flashBaseDirs,
+		// #endregion buei:quark ingest flash to guangya
 	}
 	data, err := json.Marshal(preset)
 	if err != nil {
