@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	// presetConfigPrefix 按夸克账号保存入库预设，避免不同账号互相覆盖。
+	// presetConfigPrefix 按「夸克账号 + 收藏」保存入库预设，收藏之间互不继承。
 	presetConfigPrefix = "buei_quark_ingest_preset_"
 
 	// 入库后生成 STRM 的超时；失败只记录日志，不影响入库结果。
@@ -287,12 +287,13 @@ func (s *Service) TransferProgress(id string) (Progress, bool) {
 	return s.progress.get(id)
 }
 
-// LoadPreset 读取指定账号上次成功入库的预设；不存在时返回 nil, nil。
-func (s *Service) LoadPreset(ctx context.Context, accountID int64) (*Preset, error) {
+// LoadPreset 读取指定收藏上次入库的预设；不存在时返回 nil, nil。
+// 新收藏（还没有自己的预设）返回 nil，前端因此完全使用默认值。
+func (s *Service) LoadPreset(ctx context.Context, accountID, favoriteID int64) (*Preset, error) {
 	if s == nil || s.configs == nil || accountID <= 0 {
 		return nil, nil
 	}
-	raw, ok, err := s.configs.Get(ctx, presetKey(accountID))
+	raw, ok, err := s.configs.Get(ctx, presetKey(accountID, favoriteID))
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +474,11 @@ func (s *Service) runIngestFollowUps(
 	return asyncPending
 }
 
-func presetKey(accountID int64) string {
+// presetKey 按账号 + 收藏隔离预设，避免新收藏继承上一个收藏的保存位置/规则/联动动作。
+func presetKey(accountID, favoriteID int64) string {
+	if favoriteID > 0 {
+		return fmt.Sprintf("%s%d_%d", presetConfigPrefix, accountID, favoriteID)
+	}
 	return fmt.Sprintf("%s%d", presetConfigPrefix, accountID)
 }
 
@@ -556,7 +561,7 @@ func (s *Service) savePreset(ctx context.Context, in IngestInput, targetPath []s
 	flashParentID := strings.TrimSpace(in.ParentID)
 	flashBasePath := normalizeDestinationBasePath(in.BasePath)
 	flashBaseDirs := cleanDirs(in.BaseDirs)
-	if prev, err := s.LoadPreset(ctx, in.AccountID); err == nil && prev != nil {
+	if prev, err := s.LoadPreset(ctx, in.AccountID, in.FavoriteID); err == nil && prev != nil {
 		flashAccountID = prev.FlashAccountID
 		flashParentID = prev.FlashParentID
 		flashBasePath = prev.FlashBasePath
@@ -598,7 +603,7 @@ func (s *Service) savePreset(ctx context.Context, in IngestInput, targetPath []s
 		s.logger().Warn("序列化夸克入库预设失败", "account_id", in.AccountID, "error", err)
 		return
 	}
-	if err := s.configs.Set(ctx, presetKey(in.AccountID), string(data)); err != nil {
+	if err := s.configs.Set(ctx, presetKey(in.AccountID, in.FavoriteID), string(data)); err != nil {
 		s.logger().Warn("保存夸克入库预设失败", "account_id", in.AccountID, "error", err)
 	}
 }

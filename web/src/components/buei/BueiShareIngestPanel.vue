@@ -210,8 +210,9 @@ const sourceSubtitle = computed(() =>
 const quarkFavoritePath = computed(() => {
   if (provider.value !== "quark") return "";
   const name = String(activeQuarkFavorite.value?.folder_name || "").trim();
-  const parts = ["全部文件", "来自：分享", name].filter(Boolean);
-  return parts.join(" / ");
+  // 根目录直接用「/」表示，不再写「全部文件」。
+  const parts = ["来自：分享", name].filter(Boolean);
+  return parts.length ? `/${parts.join("/")}` : "/";
 });
 // #endregion buei:quark-favorite-path
 
@@ -1741,7 +1742,7 @@ async function selectQuarkFavorite(favorite: QuarkFavoriteEntry) {
   quarkSourceItems.value = [];
   try {
     const [preset, listing] = await Promise.all([
-      bueiQuarkIngestApi.preset(favorite.account_id).catch(() => null),
+      bueiQuarkIngestApi.preset(favorite.account_id, favorite.id).catch(() => null),
       filesApi.list(favorite.account_id, favorite.folder_id, { forceRefresh: true }),
     ]);
     if (seq !== quarkSourceSeq || activeQuarkFavorite.value?.id !== favorite.id) return;
@@ -5870,8 +5871,10 @@ onBeforeUnmount(() => {
   height: clamp(380px, 52vh, 520px);
 }
 
+/* 保存位置随内容撑开，不再限制高度；高度上限只作用在右侧目标文件夹浏览。 */
 .gys__pair--dest {
-  height: clamp(260px, 38vh, 360px);
+  height: auto;
+  align-items: start;
 }
 
 .gys__savedcol {
@@ -6017,7 +6020,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   padding: 10px 12px;
-  overflow-y: auto;
+  overflow: visible;
   border-right: 1px solid var(--border-soft);
 }
 
@@ -6037,6 +6040,8 @@ onBeforeUnmount(() => {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  /* 目标文件夹浏览保持原有可视高度，超出时自己滚动。 */
+  max-height: clamp(260px, 38vh, 360px);
   padding: 10px 12px;
   overflow: auto;
 }
@@ -6461,6 +6466,11 @@ onBeforeUnmount(() => {
 
   .gys__destcol {
     overflow: visible;
+  }
+
+  /* 窄屏由 grid-template-rows 的第二行固定高度控制，不再叠加 max-height。 */
+  .gys__targetcol {
+    max-height: none;
   }
 
   .gys__side {

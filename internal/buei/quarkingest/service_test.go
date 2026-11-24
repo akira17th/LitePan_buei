@@ -207,7 +207,7 @@ func TestIngestMovesAndRenames(t *testing.T) {
 		t.Fatalf("unexpected rename: %+v", rename)
 	}
 
-	raw := configs.values[presetKey(7)]
+	raw := configs.values[presetKey(7, 0)]
 	if raw == "" {
 		t.Fatal("expected preset to be saved")
 	}
@@ -345,9 +345,9 @@ func TestPresetRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	configs.values = map[string]string{presetKey(9): string(data)}
+	configs.values = map[string]string{presetKey(9, 5): string(data)}
 
-	got, err := svc.LoadPreset(context.Background(), 9)
+	got, err := svc.LoadPreset(context.Background(), 9, 5)
 	if err != nil {
 		t.Fatalf("LoadPreset() error = %v", err)
 	}
@@ -359,6 +359,28 @@ func TestPresetRoundTrip(t *testing.T) {
 	}
 	if got.RenameReplace.Find != `\s+` || !got.RenameReplace.Enabled {
 		t.Fatalf("unexpected rename replace: %+v", got.RenameReplace)
+	}
+}
+
+// 预设按收藏隔离：新收藏读不到别人的预设，因此页面完全使用默认值。
+func TestPresetIsolatedPerFavorite(t *testing.T) {
+	configs := &fakeConfigStore{}
+	svc := New(Options{Configs: configs})
+	raw, err := json.Marshal(Preset{AccountID: 9, ParentID: "parent", Title: "旧剧", Season: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configs.values = map[string]string{presetKey(9, 5): string(raw)}
+
+	if got, err := svc.LoadPreset(context.Background(), 9, 5); err != nil || got == nil {
+		t.Fatalf("同一收藏应读到预设: got=%+v err=%v", got, err)
+	}
+	got, err := svc.LoadPreset(context.Background(), 9, 6)
+	if err != nil {
+		t.Fatalf("LoadPreset() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("新收藏不应继承其它收藏的预设: %+v", got)
 	}
 }
 
@@ -507,6 +529,8 @@ func TestFavoriteCRUDAndValidation(t *testing.T) {
 func TestDeleteFavoriteKeepsRecordWhenFolderDeleteFails(t *testing.T) {
 	favorites := &fakeFavoriteRepo{}
 	files := newFakeFileOps()
+	// 文件夹仍在网盘上，此时删除失败必须保留收藏记录。
+	files.items["inbox"] = []domain.FileItem{{ID: "folder-1", Name: "作品", IsDir: true}}
 	files.deleteErr = errors.New("network down")
 	svc := New(Options{
 		Files:     files,
@@ -528,6 +552,34 @@ func TestDeleteFavoriteKeepsRecordWhenFolderDeleteFails(t *testing.T) {
 	}
 	if len(favorites.favorites) != 1 {
 		t.Fatalf("favorite should remain after folder delete failure, got %+v", favorites.favorites)
+	}
+}
+
+// 收藏文件夹已被手动删除时，网盘删除会报错；此时应忽略报错并删除收藏记录。
+func TestDeleteFavoriteIgnoresMissingFolderError(t *testing.T) {
+	favorites := &fakeFavoriteRepo{}
+	files := newFakeFileOps()
+	files.deleteErr = domain.Errorf(domain.CodeDriverError, "夸克接口错误(41004)：文件不存在")
+	svc := New(Options{
+		Files:     files,
+		Accounts:  &fakeAccountReader{account: quarkAccount()},
+		Favorites: favorites,
+	})
+	created, err := svc.CreateFavorite(context.Background(), FavoriteInput{
+		AccountID:      7,
+		Link:           "https://example.com/s/abc",
+		FolderID:       "folder-1",
+		ParentFolderID: "inbox",
+		FolderName:     "作品",
+	})
+	if err != nil {
+		t.Fatalf("CreateFavorite() error = %v", err)
+	}
+	if err := svc.DeleteFavorite(context.Background(), created.ID, 7); err != nil {
+		t.Fatalf("文件夹已不存在时不应报错: %v", err)
+	}
+	if len(favorites.favorites) != 0 {
+		t.Fatalf("收藏记录应被删除, got %+v", favorites.favorites)
 	}
 }
 

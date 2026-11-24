@@ -165,8 +165,12 @@ export interface QuarkIngestProgress {
 }
 
 export const bueiQuarkIngestApi = {
-  preset: (accountId: number) =>
-    http.get<QuarkIngestPreset | null>("/admin/tools/quark-ingest/preset", { account_id: accountId }),
+  // 预设按收藏隔离：新收藏没有自己的预设时返回 null，页面完全使用默认值。
+  preset: (accountId: number, favoriteId: number) =>
+    http.get<QuarkIngestPreset | null>("/admin/tools/quark-ingest/preset", {
+      account_id: accountId,
+      favorite_id: favoriteId,
+    }),
   favorites: (accountId: number) =>
     http.get<{ items: QuarkIngestFavorite[] }>("/admin/tools/quark-ingest/favorites", {
       account_id: accountId,

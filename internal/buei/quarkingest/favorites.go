@@ -93,11 +93,15 @@ func (s *Service) DeleteFavorite(ctx context.Context, id, accountID int64) error
 		return domain.Errorf(domain.CodeInternal, "文件服务未初始化")
 	}
 	if err := s.files.DeleteFiles(ctx, accountID, []string{favorite.FolderID}, favorite.ParentFolderID); err != nil {
-		if appErr, ok := domain.AsAppError(err); !ok || appErr.Code != domain.CodeNotFound {
+		// 收藏文件夹可能已被用户手动删除，此时网盘接口报错也应忽略，继续删除收藏记录。
+		if appErr, ok := domain.AsAppError(err); ok && appErr.Code == domain.CodeNotFound {
+			s.logger().Warn("夸克入库收藏文件夹已不存在，继续删除收藏记录", "account_id", accountID, "favorite_id", id, "folder_id", favorite.FolderID)
+		} else if !s.favoriteFolderExists(ctx, accountID, favorite) {
+			s.logger().Warn("夸克入库收藏文件夹已不存在，继续删除收藏记录", "account_id", accountID, "favorite_id", id, "folder_id", favorite.FolderID, "error", err)
+		} else {
 			s.logger().Warn("删除夸克入库收藏文件夹失败", "account_id", accountID, "favorite_id", id, "folder_id", favorite.FolderID, "error", err)
 			return err
 		}
-		s.logger().Warn("夸克入库收藏文件夹已不存在，继续删除收藏记录", "account_id", accountID, "favorite_id", id, "folder_id", favorite.FolderID)
 	}
 
 	if err := s.favorites.Delete(ctx, id, accountID); err != nil {
@@ -105,6 +109,24 @@ func (s *Service) DeleteFavorite(ctx context.Context, id, accountID int64) error
 	}
 	s.logger().Info("已删除夸克入库收藏及文件夹", "account_id", accountID, "favorite_id", id, "folder_id", favorite.FolderID)
 	return nil
+}
+
+// favoriteFolderExists 判断收藏文件夹是否还在网盘上。
+// 列表本身失败时按「仍存在」处理，避免把网络/认证错误当成不存在而误删收藏记录。
+func (s *Service) favoriteFolderExists(ctx context.Context, accountID int64, favorite *domain.QuarkIngestFavorite) bool {
+	if s == nil || s.files == nil || favorite == nil {
+		return true
+	}
+	items, err := s.files.List(ctx, accountID, favorite.ParentFolderID, true)
+	if err != nil {
+		return true
+	}
+	for _, item := range items {
+		if item.ID == favorite.FolderID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) validateQuarkAccount(ctx context.Context, accountID int64) error {

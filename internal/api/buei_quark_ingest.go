@@ -108,7 +108,16 @@ func (h *Handler) bueiQuarkIngestPreset(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, domain.Errorf(domain.CodeValidation, "account_id 不能为空"))
 		return
 	}
-	preset, err := h.buei.QuarkIngest.LoadPreset(r.Context(), accountID)
+	// 预设按收藏隔离：新收藏不传或传 0 时读该账号的历史键，通常为空 → 前端用默认值。
+	var favoriteID int64
+	if raw := strings.TrimSpace(r.URL.Query().Get("favorite_id")); raw != "" {
+		favoriteID, err = parseQueryInt64(r, "favorite_id")
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	preset, err := h.buei.QuarkIngest.LoadPreset(r.Context(), accountID, favoriteID)
 	if err != nil {
 		writeErr(w, err)
 		return
