@@ -35,7 +35,7 @@ export const PROJECT_ENTRY_KIND_LABELS: Record<ProjectEntryKind, string> = {
 
 export const PROJECT_ENTRY_KIND_ICONS: Record<ProjectEntryKind, string> = {
   dir: "folder",
-  strm: "play",
+  strm: "film",
   video: "film",
   audio: "music",
   subtitle: "closed-captioning-regular",

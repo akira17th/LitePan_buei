@@ -15,7 +15,9 @@ const props = withDefaults(
     minWidth?: number;
     teleported?: boolean;
     hoverBridge?: boolean;
-    density?: "compact" | "comfortable";
+    // #region buei:menu-card
+    density?: "compact" | "comfortable" | "card";
+    // #endregion buei:menu-card
     variant?: "default" | "context";
     menuHeight?: number;
   }>(),

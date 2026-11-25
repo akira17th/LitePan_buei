@@ -203,6 +203,9 @@ export interface BueiEmbyLibraryProjectFiles {
   path: string;
   strm_entries: BueiEmbyLibraryProjectEntry[];
   cloud_entries: BueiEmbyLibraryProjectEntry[];
+  strm_path?: string;
+  cloud_name?: string;
+  cloud_path?: string;
   strm_error?: string;
   cloud_error?: string;
 }
@@ -218,10 +221,180 @@ export interface BueiEmbyLibraryDeleteResult {
   emby_refreshed: boolean;
 }
 
-export function fetchBueiEmbyLibraryProjectFiles(itemId: string, path = "") {
+export interface BueiEmbyLibraryProjectDeleteResult {
+  deleted: boolean;
+  deleted_names: string[];
+  cloud_names: string[];
+  strm_names: string[];
+  index_refreshed: boolean;
+  emby_refreshed: boolean;
+  project_removed: boolean;
+  project_path?: string;
+}
+
+export function deleteBueiEmbyLibraryProjectFiles(input: {
+  itemId: string;
+  path?: string;
+  names: string[];
+  side: "strm" | "cloud";
+  configId?: string;
+  libraryId?: string;
+}) {
+  return http.postWithTimeout<BueiEmbyLibraryProjectDeleteResult>(
+    `${basePath}/project-delete`,
+    {
+      item_id: input.itemId,
+      path: input.path || undefined,
+      names: input.names,
+      side: input.side,
+      config_id: input.configId || undefined,
+      library_id: input.libraryId || undefined,
+    },
+    5 * 60 * 1000,
+  );
+}
+
+export interface BueiTMDBResult {
+  id: number;
+  media_type: string;
+  title: string;
+  original_title?: string;
+  year?: number;
+  overview?: string;
+  poster_url?: string;
+  rating?: number;
+}
+
+export interface BueiTMDBMatchResult {
+  matched: boolean;
+  item_id: string;
+  tmdb_id: string;
+  index_refreshed: boolean;
+  emby_refreshed: boolean;
+}
+
+export function searchBueiTMDB(query: string, mediaType = "auto", year?: number) {
+  return http.get<{ results: BueiTMDBResult[] }>(`${basePath}/tmdb-search`, {
+    query,
+    media_type: mediaType || undefined,
+    year: year || undefined,
+  });
+}
+
+export function matchBueiTMDBItem(input: {
+  itemId: string;
+  tmdbId: string;
+  mediaType?: string;
+  title?: string;
+  year?: number;
+  configId?: string;
+  libraryId?: string;
+}) {
+  return http.postWithTimeout<BueiTMDBMatchResult>(
+    `${basePath}/tmdb-match`,
+    {
+      item_id: input.itemId,
+      tmdb_id: input.tmdbId,
+      media_type: input.mediaType || undefined,
+      title: input.title || undefined,
+      year: input.year || undefined,
+      config_id: input.configId || undefined,
+      library_id: input.libraryId || undefined,
+    },
+    30 * 60 * 1000,
+  );
+}
+
+export interface BueiProjectStrmStatus {
+  pending_strm: number;
+  pending_metadata: number;
+  orphan_strm: number;
+  orphan_names?: string[];
+}
+
+export interface BueiProjectStrmCleanupResult {
+  deleted: number;
+  deleted_names: string[];
+  index_refreshed: boolean;
+  emby_refreshed: boolean;
+}
+
+export function cleanupBueiProjectStrm(input: {
+  itemId: string;
+  path?: string;
+  names?: string[];
+  configId?: string;
+  libraryId?: string;
+}) {
+  return http.postWithTimeout<BueiProjectStrmCleanupResult>(
+    `${basePath}/project-strm-cleanup`,
+    {
+      item_id: input.itemId,
+      path: input.path || undefined,
+      names: input.names,
+      config_id: input.configId || undefined,
+      library_id: input.libraryId || undefined,
+    },
+    10 * 60 * 1000,
+  );
+}
+
+export interface BueiProjectStrmGenerateResult {
+  created: number;
+  updated: number;
+  media_count: number;
+  metadata_created: number;
+  metadata_uploaded: number;
+  metadata_deleted: number;
+  scraped: boolean;
+  scrape_error?: string;
+  index_refreshed: boolean;
+  emby_refreshed: boolean;
+  emby_error?: string;
+}
+
+export function fetchBueiProjectStrmStatus(itemId: string, path = "") {
+  return http.get<BueiProjectStrmStatus>(`${basePath}/project-strm-status`, {
+    item_id: itemId,
+    path: path || undefined,
+  });
+}
+
+export function generateBueiProjectStrm(input: {
+  itemId: string;
+  path?: string;
+  configId?: string;
+  libraryId?: string;
+}) {
+  return http.postWithTimeout<BueiProjectStrmGenerateResult>(
+    `${basePath}/project-strm-generate`,
+    {
+      item_id: input.itemId,
+      path: input.path || undefined,
+      config_id: input.configId || undefined,
+      library_id: input.libraryId || undefined,
+    },
+    30 * 60 * 1000,
+  );
+}
+
+export function rescrapeBueiProjectItem(input: { itemId: string; configId?: string; libraryId?: string }) {
+  return http.postWithTimeout<BueiTMDBMatchResult>(
+    `${basePath}/project-rescrape`,
+    {
+      item_id: input.itemId,
+      config_id: input.configId || undefined,
+      library_id: input.libraryId || undefined,
+    },
+    30 * 60 * 1000,
+  );
+}
+
+export function fetchBueiEmbyLibraryProjectFiles(itemId: string, path = "", force = false) {
   return http.get<BueiEmbyLibraryProjectFiles>(`${basePath}/project-files`, {
     item_id: itemId,
     path: path || undefined,
+    force: force ? 1 : undefined,
   });
 }
 

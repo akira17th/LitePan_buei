@@ -20,21 +20,23 @@ const props = withDefaults(
   defineProps<{
     title: string;
     icon: string;
+    path?: string;
     entries: BueiEmbyLibraryProjectEntry[];
     loading?: boolean;
     error?: string;
     sortField: ProjectSortField;
     sortDir: ProjectSortDir;
     selected: Set<string>;
+    deleting?: boolean;
   }>(),
-  { loading: false, error: "" },
+  { loading: false, error: "", deleting: false, path: "" },
 );
 
 const emit = defineEmits<{
   sort: [field: ProjectSortField];
   "open-dir": [name: string];
   "update:selected": [value: Set<string>];
-  delete: [];
+  delete: [names: string[]];
 }>();
 
 type TypeFilter = "all" | ProjectEntryKind;
@@ -136,8 +138,16 @@ const rows = computed(() =>
   <section class="project-pane">
     <header class="project-pane__head">
       <span class="project-pane__title"><span class="project-pane__title-icon"><SvgIcon :name="icon" :size="12" /></span>{{ title }}</span>
-      <button type="button" class="project-pane__delete" :disabled="!selected.size" @click="emit('delete')">
-        <SvgIcon name="trash" :size="11" />删除
+      <span class="project-pane__path" :title="path">{{ path || "根目录" }}</span>
+      <button
+        type="button"
+        class="project-pane__delete"
+        :disabled="!selected.size || deleting"
+        :aria-busy="deleting"
+        @click="emit('delete', [...selected])"
+      >
+        <BusySpinner v-if="deleting" variant="notch" :size="11" />
+        <SvgIcon v-else name="trash" :size="11" />{{ deleting ? "删除中…" : "删除" }}
       </button>
     </header>
 
@@ -287,9 +297,21 @@ const rows = computed(() =>
   border-bottom: 1px solid var(--border);
   background: var(--surface-sunken);
 }
-.project-pane__title { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--text); }
+.project-pane__title { display: inline-flex; align-items: center; gap: 7px; min-width: 0; flex-shrink: 0; font-size: 12.5px; font-weight: 600; color: var(--text); }
 .project-pane__title-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; color: var(--brand); background: color-mix(in srgb, var(--brand) 12%, transparent); }
+.project-pane__path {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 11px;
+}
 .project-pane__delete {
+  margin-left: auto;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -435,7 +457,7 @@ const rows = computed(() =>
 
 .project-table__name-inner {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 7px;
   min-width: 0;
   width: 100%;
@@ -447,7 +469,7 @@ const rows = computed(() =>
   text-align: left;
 }
 .project-table__name-inner.is-link { cursor: pointer; }
-.project-table__name-inner :deep(.lp-svg-icon) { flex-shrink: 0; margin-top: 2px; }
+.project-table__name-inner :deep(.lp-svg-icon) { flex-shrink: 0; align-self: center; }
 .project-table__name-inner :deep(.is-kind-dir) { color: color-mix(in srgb, var(--brand) 78%, var(--text-muted)); }
 .project-table__name-inner :deep(.is-kind-strm) { color: color-mix(in srgb, var(--brand) 62%, var(--text-muted)); }
 .project-table__name-inner :deep(.is-kind-video) { color: color-mix(in srgb, var(--success) 62%, var(--text-muted)); }

@@ -18,6 +18,15 @@ func (h *Handler) registerBueiRoutes(r chi.Router) {
 		r.Post("/delete", h.bueiEmbyLibraryDeleteProject)
 		// buei:emby-project —— 项目 STRM 目录 / 网盘目录对照浏览。
 		r.Get("/project-files", h.bueiEmbyLibraryProjectFiles)
+		r.Post("/project-delete", h.bueiEmbyLibraryProjectDelete)
+		// buei:emby-tmdb —— 项目目录里的 TMDB 搜索与手动匹配刮削。
+		r.Get("/tmdb-search", h.bueiEmbyLibraryTMDBSearch)
+		r.Post("/tmdb-match", h.bueiEmbyLibraryTMDBMatch)
+		r.Post("/project-rescrape", h.bueiEmbyLibraryProjectRescrape)
+		// buei:emby-strm —— 检测缺失的 STRM，并按需生成 + 自动刮削。
+		r.Get("/project-strm-status", h.bueiEmbyLibraryProjectStrmStatus)
+		r.Post("/project-strm-generate", h.bueiEmbyLibraryProjectStrmGenerate)
+		r.Post("/project-strm-cleanup", h.bueiEmbyLibraryProjectStrmCleanup)
 		r.Get("/sync-state", h.bueiEmbyLibrarySyncState)
 		r.Get("/images/{itemID}", h.bueiEmbyLibraryImage)
 		// buei:emby-archive —— 归档媒体库的自动归档配置、立即执行与执行日志。

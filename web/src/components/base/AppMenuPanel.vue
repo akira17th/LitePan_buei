@@ -5,7 +5,9 @@ import type { DropdownMenuItem } from "@/types/menu";
 withDefaults(
   defineProps<{
     items: DropdownMenuItem[];
-    density?: "compact" | "comfortable";
+    // #region buei:menu-card
+    density?: "compact" | "comfortable" | "card";
+    // #endregion buei:menu-card
     variant?: "default" | "context";
     minWidth?: number;
   }>(),

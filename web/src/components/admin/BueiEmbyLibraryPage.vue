@@ -555,6 +555,17 @@ async function deleteItem(item: BueiEmbyLibraryItem) {
   }
 }
 
+function handleProjectRemoved() {
+  projectOpen.value = false;
+  projectItem.value = null;
+  if (selectedLibrary.value) void loadItems(selectedLibrary.value.id);
+}
+
+// TMDB 匹配会改写项目名称 / 海报，重新读取项目列表。
+function handleProjectRefreshed() {
+  if (selectedLibrary.value) void loadItems(selectedLibrary.value.id);
+}
+
 function openProject(item: BueiEmbyLibraryItem) {
   projectItem.value = item;
   projectOpen.value = true;
@@ -807,7 +818,6 @@ onActivated(() => {
         <template v-else-if="!loadingItems && hasVisibleItems">
           <div class="emby-library-list-head">
             <span>{{ selectedTaskFilter === 'all' ? `${matchedTasks.length} 个 STRM 任务 · ` : `${activeTask?.name || '当前任务'} · ` }}{{ visibleItems.length }} 个项目</span>
-            <span class="emby-library-list-head__hint">可勾选项目进行批量操作</span>
           </div>
           <section class="emby-media-grid" aria-label="媒体项目列表">
             <article
@@ -854,6 +864,8 @@ onActivated(() => {
                     :open="menuOpenID === item.id"
                     trigger="click"
                     align="right"
+                    density="card"
+                    :min-width="124"
                     :items="itemMenu(item.id)"
                     @update:open="menuOpenID = $event ? item.id : ''"
                     @select="handleMenuSelect(item, $event)"
@@ -952,7 +964,15 @@ onActivated(() => {
       </div>
     </Teleport>
 
-    <BueiEmbyLibraryProjectModal :open="projectOpen" :item="projectItem" @close="projectOpen = false" />
+    <BueiEmbyLibraryProjectModal
+      :open="projectOpen"
+      :item="projectItem"
+      :config-id="configId"
+      :library-id="selectedLibraryId"
+      @close="projectOpen = false"
+      @removed="handleProjectRemoved"
+      @refreshed="handleProjectRefreshed"
+    />
     <BueiEmbyArchiveRuleModal
       :open="archiveRuleOpen"
       :library-id="selectedLibraryId"
@@ -1071,7 +1091,6 @@ onActivated(() => {
 .emby-task-filter__empty { margin: 10px 0 0; color: var(--text-muted); font-size: 11px; }
 .emby-library-inline-error { display: flex; align-items: center; gap: 7px; margin-bottom: 15px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 25%, var(--border)); border-radius: var(--radius-control); background: color-mix(in srgb, var(--danger) 7%, var(--surface)); color: var(--danger); font-size: 12px; }
 .emby-library-list-head { display: flex; align-items: center; gap: 9px; margin-bottom: 13px; color: var(--text-muted); font-size: 12px; }
-.emby-library-list-head__hint { margin-left: auto; font-size: 11px; }
 .emby-media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(172px, 1fr)); gap: 18px 14px; }
 .emby-media-card { position: relative; min-width: 0; overflow: visible; border: 1px solid transparent; border-radius: var(--radius-card); background: var(--surface); cursor: pointer; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
 .emby-media-card:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--brand) 42%, var(--border)); box-shadow: 0 12px 24px color-mix(in srgb, #0f172a 12%, transparent); }
