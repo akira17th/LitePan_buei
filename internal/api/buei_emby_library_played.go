@@ -125,6 +125,9 @@ func bueiApplyUserPlayedStatus(users []embyproxy.LibraryUserItemStatus, userID s
 					users[i].WatchedEpisodes = 0
 					users[i].RemainingEpisodes = total
 				}
+			} else if !played {
+				// 总集数未知时也要清掉本地已看进度，避免取消标记后仍显示“观看中”。
+				users[i].WatchedEpisodes = 0
 			}
 		} else if played {
 			users[i].WatchedEpisodes = 1

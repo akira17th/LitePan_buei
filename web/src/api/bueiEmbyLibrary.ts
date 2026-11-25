@@ -190,6 +190,23 @@ export function restoreBueiEmbyLibraryItem(itemId: string, configId = "") {
   );
 }
 
+export interface BueiEmbyLibraryProjectEntry {
+  name: string;
+  is_dir: boolean;
+  size: number;
+  modified_at?: string;
+}
+
+export interface BueiEmbyLibraryProjectFiles {
+  item_id: string;
+  item_name: string;
+  path: string;
+  strm_entries: BueiEmbyLibraryProjectEntry[];
+  cloud_entries: BueiEmbyLibraryProjectEntry[];
+  strm_error?: string;
+  cloud_error?: string;
+}
+
 export interface BueiEmbyLibraryDeleteResult {
   deleted: boolean;
   item_name: string;
@@ -199,6 +216,13 @@ export interface BueiEmbyLibraryDeleteResult {
   strm_path: string;
   index_refreshed: boolean;
   emby_refreshed: boolean;
+}
+
+export function fetchBueiEmbyLibraryProjectFiles(itemId: string, path = "") {
+  return http.get<BueiEmbyLibraryProjectFiles>(`${basePath}/project-files`, {
+    item_id: itemId,
+    path: path || undefined,
+  });
 }
 
 export function deleteBueiEmbyLibraryItem(itemId: string, configId = "", libraryId = "") {

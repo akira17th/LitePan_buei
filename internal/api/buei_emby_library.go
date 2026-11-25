@@ -25,7 +25,7 @@ type bueiEmbyLibraryUserStatusDTO struct {
 	UserName          string `json:"user_name"`
 	PrimaryImageTag   string `json:"primary_image_tag,omitempty"`
 	Played            bool   `json:"played"`
-	WatchedEpisodes   int    `json:"watched_episodes,omitempty"`
+	WatchedEpisodes   int    `json:"watched_episodes"`
 	RemainingEpisodes *int   `json:"remaining_episodes,omitempty"`
 	TotalEpisodes     int    `json:"total_episodes,omitempty"`
 }

@@ -35,6 +35,7 @@ import BusySpinner from "@/components/base/BusySpinner.vue";
 import BueiEmbyArchiveLogModal from "@/components/buei/BueiEmbyArchiveLogModal.vue";
 import BueiEmbyArchiveRuleModal from "@/components/buei/BueiEmbyArchiveRuleModal.vue";
 import BueiEmbyLibraryIcon from "@/components/buei/BueiEmbyLibraryIcon.vue";
+import BueiEmbyLibraryProjectModal from "@/components/buei/BueiEmbyLibraryProjectModal.vue";
 import { bueiEmbyLibraryKind, type BueiEmbyLibraryKind } from "@/components/buei/bueiEmbyLibraryIcons";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
 import type { DropdownMenuItem } from "@/types/menu";
@@ -53,6 +54,8 @@ const loadingDetail = ref(false);
 const syncingEmby = ref(false);
 const archivingItemID = ref("");
 const deletingItemID = ref("");
+const projectItem = ref<BueiEmbyLibraryItem | null>(null);
+const projectOpen = ref(false);
 const errorMessage = ref("");
 const menuOpenID = ref("");
 const loaded = ref(false);
@@ -552,6 +555,11 @@ async function deleteItem(item: BueiEmbyLibraryItem) {
   }
 }
 
+function openProject(item: BueiEmbyLibraryItem) {
+  projectItem.value = item;
+  projectOpen.value = true;
+}
+
 function handleMenuSelect(item: BueiEmbyLibraryItem, key: string) {
   if (key === "archive") void archiveItem(item);
   else if (key === "restore") void restoreItem(item);
@@ -806,6 +814,11 @@ onActivated(() => {
               v-for="item in visibleItems"
               :key="item.id"
               class="emby-media-card"
+              role="button"
+              tabindex="0"
+              :aria-label="`浏览「${item.name}」的 STRM 与网盘目录`"
+              @click="openProject(item)"
+              @keydown.enter.prevent="openProject(item)"
             >
               <div class="emby-media-card__poster">
                 <img v-if="imageURL(item.poster_url)" :src="imageURL(item.poster_url)" :alt="item.name" loading="lazy" />
@@ -939,6 +952,7 @@ onActivated(() => {
       </div>
     </Teleport>
 
+    <BueiEmbyLibraryProjectModal :open="projectOpen" :item="projectItem" @close="projectOpen = false" />
     <BueiEmbyArchiveRuleModal
       :open="archiveRuleOpen"
       :library-id="selectedLibraryId"
@@ -1059,7 +1073,7 @@ onActivated(() => {
 .emby-library-list-head { display: flex; align-items: center; gap: 9px; margin-bottom: 13px; color: var(--text-muted); font-size: 12px; }
 .emby-library-list-head__hint { margin-left: auto; font-size: 11px; }
 .emby-media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(172px, 1fr)); gap: 18px 14px; }
-.emby-media-card { position: relative; min-width: 0; overflow: visible; border: 1px solid transparent; border-radius: var(--radius-card); background: var(--surface); cursor: default; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+.emby-media-card { position: relative; min-width: 0; overflow: visible; border: 1px solid transparent; border-radius: var(--radius-card); background: var(--surface); cursor: pointer; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
 .emby-media-card:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--brand) 42%, var(--border)); box-shadow: 0 12px 24px color-mix(in srgb, #0f172a 12%, transparent); }
 .emby-media-card:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; }
 .emby-media-card__poster { position: relative; aspect-ratio: 2 / 3; overflow: hidden; border-radius: var(--radius-card) var(--radius-card) 0 0; background: linear-gradient(145deg, color-mix(in srgb, var(--brand) 22%, var(--surface-sunken)), var(--surface-sunken)); }

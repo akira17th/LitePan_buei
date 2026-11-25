@@ -16,6 +16,8 @@ func (h *Handler) registerBueiRoutes(r chi.Router) {
 		r.Post("/restore", h.bueiEmbyLibraryRestore)
 		// buei:emby-delete —— 删除项目：网盘文件夹 + STRM 文件夹，并刷新索引与媒体库。
 		r.Post("/delete", h.bueiEmbyLibraryDeleteProject)
+		// buei:emby-project —— 项目 STRM 目录 / 网盘目录对照浏览。
+		r.Get("/project-files", h.bueiEmbyLibraryProjectFiles)
 		r.Get("/sync-state", h.bueiEmbyLibrarySyncState)
 		r.Get("/images/{itemID}", h.bueiEmbyLibraryImage)
 		// buei:emby-archive —— 归档媒体库的自动归档配置、立即执行与执行日志。
