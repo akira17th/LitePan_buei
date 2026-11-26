@@ -18,6 +18,9 @@
 .vscode/
 .tools/
 
+# 本地 AI agent 技能 / 约定（不入库）
+.agents/
+
 # 前端依赖与本地缓存
 web/node_modules/
 web/*.tsbuildinfo

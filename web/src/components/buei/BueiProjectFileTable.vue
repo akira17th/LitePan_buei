@@ -158,6 +158,7 @@ const rows = computed(() =>
       <table v-else class="project-table">
         <colgroup>
           <col class="project-col--check" />
+          <!-- 名称列不设宽度，自动吃掉剩余空间；表格 min-width 保证它至少有约 174px -->
           <col />
           <col class="project-col--type" />
           <col class="project-col--size" />
@@ -330,7 +331,7 @@ const rows = computed(() =>
 .project-pane__delete:hover:not(:disabled) { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--surface)); }
 .project-pane__delete:disabled { opacity: .45; cursor: not-allowed; }
 
-.project-pane__body { flex: 1; min-height: 240px; max-height: min(52vh, 520px); overflow: auto; }
+.project-pane__body { flex: 1; min-height: 240px; max-height: min(52vh, 520px); overflow: auto; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; }
 .project-pane__state { display: grid; place-items: center; gap: 8px; min-height: 240px; padding: 18px; color: var(--text-muted); font-size: 12px; text-align: center; }
 .project-pane__state--error { color: var(--danger); }
 
@@ -349,7 +350,8 @@ const rows = computed(() =>
 }
 .project-pane__foot b { color: var(--text); font-weight: 600; }
 
-.project-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+/* 列宽固定，屏幕过窄时整张表保持最小宽度并横向滚动，避免列被挤压到看不清。 */
+.project-table { width: 100%; min-width: 460px; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
 .project-col--check { width: 34px; }
 .project-col--type { width: 76px; }
 .project-col--size { width: 78px; }
@@ -480,7 +482,7 @@ const rows = computed(() =>
 .project-table__name-inner :deep(.is-kind-nfo),
 .project-table__name-inner :deep(.is-kind-json),
 .project-table__name-inner :deep(.is-kind-other) { color: var(--text-muted); }
-.project-table__name-text { min-width: 0; color: var(--text); line-height: 1.45; overflow-wrap: anywhere; }
+.project-table__name-text { min-width: 0; color: var(--text); line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }
 .project-table__name-inner.is-link:hover .project-table__name-text { color: var(--brand); }
 
 .project-table__type { color: var(--text-muted); white-space: nowrap; }
