@@ -24,12 +24,18 @@ type ShareIngestPanelApi = {
 };
 const shareIngestRef = ref<ShareIngestPanelApi | null>(null);
 // #endregion buei:share-ingest
+// #region buei:douban-score
+const BueiDoubanScorePanel = defineAsyncComponent(() => import("@/components/buei/BueiDoubanScorePanel.vue"));
+// #endregion buei:douban-score
 const BackupRestorePanel = defineAsyncComponent(() => import("@/components/admin/BackupRestorePanel.vue"));
 
 const SCRAPE_TAB = "scrape";
 const PROXY_TAB = "proxy";
 const ENHANCED_TAB = "enhanced";
 const BACKUP_TAB = "backup";
+// #region buei:douban-score
+const DOUBAN_TAB = "douban-score";
+// #endregion buei:douban-score
 // #region buei:share-ingest
 const SHARE_INGEST_TAB = "media";
 // #endregion buei:share-ingest
@@ -38,6 +44,9 @@ const tabs = [
   { key: SHARE_INGEST_TAB, label: "影视入库" },
   // #endregion buei:share-ingest
   { key: SCRAPE_TAB, label: "STRM 刮削" },
+  // #region buei:douban-score
+  { key: DOUBAN_TAB, label: "豆瓣评分" },
+  // #endregion buei:douban-score
   { key: ENHANCED_TAB, label: "增强工具" },
   { key: BACKUP_TAB, label: "备份管理" },
 ];
@@ -67,7 +76,7 @@ const route = useRoute();
 const initialTab = String(route.query.tab ?? "") === PROXY_TAB ? ENHANCED_TAB : SHARE_INGEST_TAB;
 const { activeTab, setActiveTab } = useSectionTabRoute(
   initialTab,
-  [SCRAPE_TAB, ENHANCED_TAB, SHARE_INGEST_TAB, BACKUP_TAB],
+  [SCRAPE_TAB, DOUBAN_TAB, ENHANCED_TAB, SHARE_INGEST_TAB, BACKUP_TAB],
   {
     beforeTabChange: async () => {
       if (!settingsDrawerOpen.value) return true;
@@ -101,6 +110,9 @@ const isBackupTab = computed(() => activeTab.value === BACKUP_TAB);
 // #region buei:share-ingest
 const isShareIngestTab = computed(() => activeTab.value === SHARE_INGEST_TAB);
 // #endregion buei:share-ingest
+// #region buei:douban-score
+const isDoubanScoreTab = computed(() => activeTab.value === DOUBAN_TAB);
+// #endregion buei:douban-score
 
 async function openScrapeSettings() {
   scrapeSettingsVisited.value = true;
@@ -188,6 +200,9 @@ async function handleDrawerSave() {
       ref="shareIngestRef"
     />
     <!-- #endregion buei:share-ingest -->
+    <!-- #region buei:douban-score -->
+    <BueiDoubanScorePanel v-if="tabsVisited[DOUBAN_TAB]" v-show="isDoubanScoreTab" />
+    <!-- #endregion buei:douban-score -->
     <BackupRestorePanel v-if="tabsVisited[BACKUP_TAB]" v-show="isBackupTab" />
 
     <AdminSettingsDrawer

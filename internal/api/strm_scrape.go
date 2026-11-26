@@ -156,7 +156,7 @@ func (h *Handler) listStrmScrapeItems(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeOK(w, items)
+	writeOK(w, h.bueiAttachDoubanScores(r.Context(), taskID, items)) // buei:douban-score
 }
 
 func (h *Handler) refreshStrmScrapeIndex(w http.ResponseWriter, r *http.Request) {
@@ -190,7 +190,7 @@ func (h *Handler) refreshStrmScrapeIndex(w http.ResponseWriter, r *http.Request)
 		writeErr(w, err)
 		return
 	}
-	writeOK(w, items)
+	writeOK(w, h.bueiAttachDoubanScores(r.Context(), req.StrmTaskID, items)) // buei:douban-score
 }
 
 func (h *Handler) rematchStrmScrapeItem(w http.ResponseWriter, r *http.Request) {

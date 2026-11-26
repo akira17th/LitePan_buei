@@ -526,6 +526,23 @@ func (s *Service) run(ctx context.Context, req RunRequest) error {
 		inspected := inspectWork(g)
 		item := buildItemFromInspection(req.StrmTaskID, root, g, inspected)
 		need := mode == WriteModeOverwrite || workNeedsScrapeFromInspection(g, cfg, inspected)
+		// #region buei:dates —— 已刮削但 NFO 缺发行日期：只查一次 TMDB 详情补日期，不重写其它元数据
+		if !need && workNeedsDateBackfill(g, inspected.mediaType) {
+			if err := s.backfillWorkDates(ctx, client, g, inspected.mediaType); err != nil {
+				if s.log != nil {
+					s.log.Warn("STRM 刮削补写发行/完结日期失败，已跳过", "work", displayName, "err", err)
+				}
+			}
+			s.upsertIndexItem(ctx, req.StrmTaskID, root, g)
+			s.setProgress(func(p *Progress) {
+				p.Done = i + 1
+				p.CurrentItemID = ""
+				p.Message = "已补写日期：" + displayName
+			})
+			time.Sleep(interval)
+			continue
+		}
+		// #endregion buei:dates
 		if !need {
 			s.setProgress(func(p *Progress) {
 				p.Done = i + 1

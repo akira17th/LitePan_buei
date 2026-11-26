@@ -83,6 +83,8 @@ func buildItemFromInspection(taskID int64, root string, g workGroup, inspected w
 		stem := strings.TrimSuffix(filepath.Base(g.entries[0].absPath), filepath.Ext(g.entries[0].absPath))
 		tmdbID = rules.FindTMDBIDInName(stem)
 	}
+	// buei:dates
+	releaseDate, endDate := "", ""
 	if nfoMeta, ok := readWorkNFOMeta(g, mediaType); ok && !manualComplete {
 		if nfoMeta.Title != "" {
 			title = nfoMeta.Title
@@ -92,6 +94,10 @@ func buildItemFromInspection(taskID int64, root string, g workGroup, inspected w
 		}
 		if nfoMeta.Year != nil {
 			year = nfoMeta.Year
+		}
+		releaseDate = nfoMeta.Premiered
+		if mediaType == MediaTypeTV {
+			endDate = nfoMeta.EndDate
 		}
 	}
 	if manualComplete {
@@ -148,6 +154,9 @@ func buildItemFromInspection(taskID int64, root string, g workGroup, inspected w
 		EpScraped:  epScraped,
 		TVState:    tvState,
 		AddedAt:    workAddedAt(g),
+		// buei:dates
+		ReleaseDate: releaseDate,
+		EndDate:     endDate,
 	}
 	if g.flatFile != "" {
 		item.StrmName = filepath.Base(g.flatFile)
@@ -166,6 +175,9 @@ type workNFOMeta struct {
 	Title  string
 	TMDBID string
 	Year   *int
+	// buei:dates —— NFO 里的发行日期 / 完结日期（索引重建时从这里恢复）。
+	Premiered string
+	EndDate   string
 }
 
 func resolveWorkMediaType(g workGroup) string {
@@ -306,6 +318,9 @@ func readWorkNFOMeta(g workGroup, mediaType string) (workNFOMeta, bool) {
 			continue
 		}
 		meta := workNFOMeta{Title: strings.TrimSpace(nfo.Title), TMDBID: strings.TrimSpace(nfo.TMDBID)}
+		// buei:dates
+		meta.Premiered = normalizeDateValue(nfo.Premiered)
+		meta.EndDate = normalizeDateValue(nfo.EndDate)
 		if y, err := strconv.Atoi(strings.TrimSpace(nfo.Year)); err == nil && y > 0 {
 			meta.Year = &y
 		}

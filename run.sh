@@ -11,6 +11,8 @@ export GOMODCACHE="$GOPATH/pkg/mod"
 export GOCACHE="$PROJECT_DIR/.tools/gocache"
 export GOTOOLCHAIN=local
 export LITEPAN_CORS_ORIGINS="http://10.0.0.5:5173,http://10.0.0.5:5211"
+# 本地开发：不启动 buei 定时后台任务（豆瓣评分每日 08:00 查询等）
+export LITEPAN_DEV=1
 
 # 检查环境
 for cmd in go npm; do

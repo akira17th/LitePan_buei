@@ -1,4 +1,5 @@
 import { http } from "./client";
+import type { BueiDoubanScoreView } from "./bueiDoubanScore";
 import type { FileItem } from "./types";
 
 export type StrmScrapeWriteMode = "missing_only" | "overwrite";
@@ -32,6 +33,12 @@ export interface StrmScrapeItem {
   ep_scraped?: number;
   tv_state?: StrmScrapeTVState | string;
   added_at?: string;
+  /** 发行日期：电影为上映日期，剧集为首播日期（来自 TMDB，写入 NFO，仅用于豆瓣评分调度）。 */
+  release_date?: string;
+  /** 剧集完结日期（仅剧集；TMDB 标记已完结时才有，仅用于豆瓣评分调度）。 */
+  end_date?: string;
+  /** buei:douban-score —— 该作品已保存的豆瓣评分（由索引接口按需补上）。 */
+  douban?: BueiDoubanScoreView;
 }
 
 export interface StrmScrapeProgress {

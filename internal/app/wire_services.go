@@ -202,6 +202,9 @@ func wireServices(cfg config.Config, logs *logx.Manager, st *storeBundle, core *
 	// #region buei:emby auto archive
 	bueiSvc.embyArchive = wireBueiEmbyArchive(cfg, logs, st, fileSvc, strmSvc, strmScrapeSvc, embyProxySvc)
 	// #endregion buei:emby auto archive
+	// #region buei:douban score
+	bueiSvc.doubanScore = wireBueiDoubanScore(logs, st, strmSvc, strmScrapeSvc)
+	// #endregion buei:douban score
 	// #region buei:guangya share emby refresh
 	bueiSvc.guangyaShare.SetEmbyRefresher(bueiEmbyRefresher(embyProxySvc))
 	// #endregion buei:guangya share emby refresh

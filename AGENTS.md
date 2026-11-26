@@ -78,6 +78,8 @@
 | README 定制说明 | `README.md` |
 | Emby 媒体库（后台辅助工具 tab；复用 Emby/Jellyfin 反代配置，左侧读取全部 Emby 媒体库；按媒体库名称匹配 STRM 任务并从 `/api/admin/strm-scrape/items` 展示项目；普通媒体库排除含“归档”的任务，归档媒体库只匹配名称同样含“归档”且同类的任务（不回退普通任务）；卡片显示所属任务、年份、完结状态、完整用户名及观看状态，剧集显示所有用户剩余集数最小值 / 总集数；“Emby 同步”查询完整项目和各用户 UserData，项目目录保存 `emby.json`，用户信息按用户名保存为同目录的 `emby_users_<用户名>.json`（平铺 STRM 为 `<项目>.emby_users_<用户名>.json`）；“...”菜单普通媒体库提供“归档”，归档媒体库提供“移回原处”；归档保存 `buei_archive.json` 原始网盘/STRM/Emby 媒体库位置，移动网盘文件夹和 STRM 文件夹，刷新源/目标 STRM 索引及源/归档 Emby 媒体库；移回按记录还原并刷新两边索引和媒体库；“...”菜单另有红色“删除”，删除网盘源文件夹与 STRM 文件夹并刷新索引和媒体库；卡片点击详情暂不启用） | `internal/api/buei_emby_library.go`、`internal/api/buei_emby_library_sync.go`、`internal/api/buei_emby_library_users.go`、`internal/api/buei_emby_library_archive.go`、`internal/api/buei_emby_library_restore.go`、`internal/api/buei_emby_library_delete.go`、`internal/api/buei_emby_library_project.go`、`internal/api/buei_emby_library_tmdb.go`、`internal/api/buei_emby_library_strm.go`、`internal/strmscrape/buei_tmdb.go`、`internal/strmscrape/buei_scrape_dirs.go`、`internal/buei/embyarchive/delete.go`、`internal/buei/embyarchive/browse.go`、`internal/api/buei_routes.go`、`internal/embyproxy/buei_library.go`、`internal/embyproxy/buei_library_raw.go`、`internal/embyproxy/buei_library_users.go`、`web/src/components/admin/BueiEmbyLibraryPage.vue`、`web/src/components/buei/BueiEmbyLibraryProjectModal.vue`、`web/src/components/buei/BueiProjectFileTable.vue`、`web/src/components/buei/bueiProjectSort.ts`、`web/src/api/bueiEmbyLibrary.ts`、`web/src/utils/bueiEmbyLibraryTasks.ts` |
 | Emby 自动归档（归档媒体库工具栏「自动归档」下拉：立即执行 / 配置 / 日志；配置弹窗多选非归档来源媒体库，不同归档媒体库之间来源互斥；规则固定为「剧集已完结」+「任一用户已看完」，同时满足才归档；频率 1 / 6 / 24 小时，默认每小时；保存即写入 `next_run_at` 由后台循环按频率执行；每次执行写入日志并在弹窗展示时间、统计与项目明细，执行中自动轮询；批量归档沿用媒体卡片「… → 归档」步骤，只在最后统一刷新索引与 Emby 媒体库） | `internal/buei/embyarchive/`、`internal/api/buei_emby_archive.go`、`internal/store/buei_emby_archive_repo.go`、`internal/store/migrations/0037_buei_emby_archive_rules.sql`、`internal/domain/buei_emby_archive.go`、`internal/app/buei_emby_archive_wire.go`、`web/src/components/buei/BueiEmbyArchiveRuleModal.vue`、`web/src/components/buei/BueiEmbyArchiveLogModal.vue`、`web/src/api/bueiEmbyArchive.ts` |
+| STRM 刮削「发行日期 / 完结日期」（刮削时从 TMDB 详情取：电影用 `release_date`、剧集首播用 `first_air_date`、剧集完结用 `last_air_date` 且要求 TMDB `status` 为 Ended / Canceled；写进作品 NFO 的 `<premiered>` / `<enddate>`，索引重建时从 NFO 恢复；已刮削但 NFO 缺 `premiered` 的作品在下次「开始刮削」时只补日期、不重写其它元数据；日期不在界面上展示，只供豆瓣评分调度使用） | `internal/strmscrape/buei_dates.go`、`internal/strmscrape/nfo.go`、`internal/strmscrape/index.go`、`internal/strmscrape/item.go`、`internal/strmscrape/match.go`、`internal/strmscrape/service.go`、`web/src/api/strmScrape.ts` |
+| 豆瓣评分（辅助工具 tab，排在「STRM 刮削」之后：左侧是 STRM 任务列表、右侧是海报墙，点任务即切换，不再用下拉；卡片显示豆瓣评分、类型 · 年份 · 完结状态胶囊，悬停可单独「查询 / 重查」；没有类型筛选（一个 STRM 任务只会是一种类型）；评分存主库 `buei_douban_scores`（迁移 `0040`），按 `(strm_task_id, item_id)` 关联 STRM 索引项目——索引是可重建缓存，评分不能放在里面；查到评分后一并写进作品 NFO（`internal/strmscrape.UpdateItemRatings`：根级 `<rating>` / `<votes>` 社区评分 + `<doubanid>` / `<uniqueid type="douban">` 豆瓣 ID），整轮结束按任务扫一次目录批量写，`<ratings>` 集合保持不动，重写 NFO 时会把旧值回写；查询走豆瓣 `search`（带评分）并用 `suggest` 兜底，按「片名清洗 + 年份 + 电影/剧集」打分匹配；每天 08:00 自动查询全部任务，参照 STRM 刮削写入的日期判断：没有评分 / 日期未知（电影无上映日期、剧集未完结或没有完结日期）/ 日期在 1 个月内都要查，有评分且电影上映、剧集完结超过 1 个月才跳过） | `internal/buei/doubanscore/`、`internal/api/buei_douban_score.go`、`internal/store/buei_douban_score_repo.go`、`internal/store/migrations/0040_buei_douban_scores.sql`、`internal/domain/buei_douban_score.go`、`internal/app/buei_douban_score_wire.go`、`web/src/components/buei/BueiDoubanScorePanel.vue`、`web/src/api/bueiDoubanScore.ts` |
 | 影视入库（辅助工具单 tab，统一管理光鸭与夸克；收藏栏 + 按钮先识别光鸭链接并解析收藏，非光鸭链接显示云盘下拉（当前仅夸克，不校验域名）并选择「来自：分享」收藏文件夹；打开收藏后标题行右侧箭头可新窗口打开收藏链接；左侧收藏与文件列表同卡片、保存位置与目标文件夹浏览同卡片，右侧 TMDB / 重命名 / 联动动作；收藏链接允许重复，保存位置、浏览目录、重命名规则与转存历史均按收藏 ID 隔离，不再按链接去重或匹配；光鸭收藏与夸克收藏均可编辑，光鸭改链接后自动重新解析并保留保存位置 / 重命名规则 / 联动动作，仅清理该收藏旧分享的文件对应关系；光鸭保留文件级入库 / 丢弃 / 入库历史（分享内容浏览表格中文件夹不可选中，点击文件夹进入内部），夸克保留平铺目录 / 删除文件 / 来源文件夹改名；目标路径存在时只读展示目标文件夹内容（名称/类型/大小/时间，类型图标与源列表一致，默认名称倒序，可点表头排序）；收藏文件列表默认按名称升序，分组固定为「普通文件 → 已入库 → 文件夹 → 已丢弃」自上而下，组内再按选定字段排序；重命名上方支持 TMDB 匹配（按目标文件夹的剧集/电影与名称搜索，结果按年份倒序展示、可打开 TMDB，选择后用 TMDB 剧名 + “ (年份)” + “ {tmdb-ID}” 完全替换目标文件夹名，系统未配置 API Key 时提示），添加前缀会去掉 {tmdb-ID}；支持目标路径预设、浏览目录记忆、Shift 连选、前缀 / SxxEnn / 多组替换文本、入库后 STRM / 刮削 / Emby 联动；季数与起始集数不设上限） | `internal/buei/guangyashare/`、`internal/buei/quarkingest/`、`internal/store/buei_guangya_share_repo.go`、`internal/store/buei_quark_ingest_repo.go`、`drivers/Guangya/buei_share.go`、`internal/api/buei_guangya_share.go`、`internal/api/buei_quark_ingest.go`、`web/src/components/buei/BueiShareIngestPanel.vue`、`web/src/components/buei/BueiIngestTargetFiles.vue`、`web/src/components/buei/BueiGuangyaShareConfirm.vue`、`web/src/api/bueiGuangyaShare.ts`、`web/src/api/bueiQuarkIngest.ts`、`web/src/utils/bueiShareLink.ts`、`web/src/utils/bueiIngestKinds.ts`、`web/src/utils/bueiQuarkShare.ts` |
 | 影视入库收藏文件夹直接父目录 | `web/src/components/file/FolderSelector.vue`、`FolderPickerModal.vue`（`buei:quark-ingest` 标记，返回 `parentDirId`） |
 | `.tools/` 忽略 | `.gitignore` |
@@ -242,6 +244,7 @@ Dockerfile 会在构建阶段执行 `npm run type-check && npm run build`，然�
 | `LITEPAN_CORS_ORIGINS` | 额外允许的跨域来源（逗号/分号分隔） |
 | `LITEPAN_SECRET_KEY` | 覆盖 `data/secret.key` 的密钥（备份加密等） |
 | `LITEPAN_API_PROXY` | 仅前端 dev server 使用，代理 `/api` 到后端 |
+| `LITEPAN_DEV` | `1/true/yes/on` 表示本地开发：跳过 buei 定时后台任务（当前为「豆瓣评分」每天 08:00 的自动查询），手动查询仍可用；`run.sh` 默认设成 `1` |
 
 ### 3.3 FUSE
 
@@ -361,7 +364,7 @@ HTTP
 - 迁移文件在 `internal/store/migrations/NNNN_name.sql`，按版本号顺序执行，记录在 `schema_migrations`。
 - 迁移 SQL 按分号拆分执行，**字符串字面量里不要出现分号**。
 - 已执行的迁移绝不能修改或改编号；只能新增后续迁移。
-- 当前最新迁移为 `0039_buei_emby_archive_enabled.sql`；buei 新迁移从 `0040` 起。
+- 当前最新迁移为 `0041_buei_douban_score_drop_ended_at.sql`（删除 `buei_douban_scores.ended_at`，改由 STRM 刮削日期判断）；buei 新迁移从 `0042` 起。
 - 说明：`0033_buei_guangya_share_provider.sql`（夸克分享 provider）已随功能回撤删除，但部分已有数据库仍记录该版本；恢复夸克功能时沿用原文件即可，新迁移不要复用 0033。
 
 ### 4.8 全局设置
@@ -683,6 +686,32 @@ web/src/composables/useBueiXxx.ts
   - 分层：归档、移回、任务匹配、Emby 匹配、规则执行都在 `internal/buei/embyarchive`；`internal/api/buei_emby_library_*.go` 只做 HTTP 解析与 DTO，`buei_emby_library_sync.go` 仍需的匹配辅助函数通过 `embyarchive.*` 调用。
   - 停止顺序：`app.Shutdown` 先停自动归档（`Scheduler.Stop`）再关 Emby 反代与数据库；后台执行使用 app 上下文，退出时可被取消。
 
+
+### 7.10 buei 豆瓣评分
+
+后台入口位于「辅助工具 → 豆瓣评分」，排在「STRM 刮削」之后。
+
+- **数据来源**：作品列表直接复用 `strmscrape.Service.ListItems`（STRM 索引项目），左侧任务列表来自 `strm.Service.ListTasks`；不新增独立的媒体扫描。
+- **存储位置**：评分写主库 `buei_douban_scores`，主键 `(strm_task_id, item_id)`。不要写进 `data/strmscrape/{task_id}.sqlite`：索引是「可重建缓存」，`rebuildIndexLocked` 会 `DELETE FROM items`，上游 bump `indexSchemaVersion` 时整库重建，评分会丢光。
+- **查询**：三条来源按可靠性回退（`douban.go`）——① `search.douban.com/movie/subject_search`（rating + 「剧集」label，最准，但匿名访问容易被 302 到 `sec.douban.com` 风控页，命中后冷却 30 分钟不再尝试）→ ② `m.douban.com/rexxar/api/v2/search/subjects`（移动端 API，自带评分，缺类型标记，需带手机 UA + `Referer: https://m.douban.com/`）→ ③ `j/subject_suggest`（ID / 年份 / `episode`）+ `rexxar/api/v2/movie/{id}` 详情补评分（剧集会被 301 到 `/tv/{id}`，Go 自动跟随）。片名先清洗（去年份、季集标记、`{tmdb-xxx}`），再按「标题全等 / 包含 + 年份（差 ≥2 年直接放弃）+ 电影↔剧集」打分，阈值 60；同时过滤 `type=celebrity` 的影人。请求间隔 900ms，429/5xx 退避重试，别调快。
+- **调度**：`internal/buei/doubanscore/schedule.go` 决定「是否需要查询」——没有评分要查；日期未知（电影没有 `release_date`、剧集没有 `end_date`，即未完结或还没刮削出日期）要查；日期距今不满 1 个月要查；只有「有评分 + 电影上映 / 剧集完结超过 1 个月」才跳过。参照日期来自 STRM 刮削写入 NFO 的 `release_date` / `end_date`（见 §7.11），不再自己记录「首次观察到的完结时间」（`buei_douban_scores.ended_at` 已随迁移 `0041` 删除，那种观察值不准确）。每天 08:00（服务器本地时区）跑全部任务，启动时若已过点且当天没跑过会补跑；状态存 config key `buei_douban_score_state`。
+- **接口**：`GET /api/admin/buei/douban-score/tasks`、`GET /items`（服务端过滤/排序/分页，一次读全任务索引再按评分合并）、`GET /state`、`POST /query`（`strm_task_id` / `item_ids` + `force` / `all_tasks`）、`POST /stop`。
+- **刷新**：整任务查询结束后写 `last_run_at` 与统计；单条「查询 / 重查」不走调度、不重置每日计划。
+- **输出目录缺失**：读取 STRM 索引时若报「STRM 输出目录不存在 / 无效」，按空数据处理（`isStrmDirMissing`），海报墙显示「没有索引项目」，后台查询把该任务计 0 条，不记错误、不打断整轮。
+- **开发环境**：`run.sh` 会设置 `LITEPAN_DEV=1`，`wireBueiDoubanScore` 据此传 `SchedulerDisabled`，`Service.Start` 只打一行日志、不启动 08:00 的循环；接口与手动「查询本任务 / 全部任务」保持可用。
+- **写入 NFO**：每轮查询结束后（含单条「查询 / 重查」）把评分与豆瓣 ID 写进作品 NFO——根级 `<rating>`（保留一位小数）与 `<votes>`（Emby / Jellyfin 读作 CommunityRating），以及 `<doubanid>` 与 `<uniqueid type="douban" default="false">`（外部 ID，Kodi / Emby 识别）；未匹配到条目时只保留已有值，不清空。只改 NFO，不动索引与网盘；NFO 不存在或不是标准 movie/tvshow 的作品跳过。已有 `<ratings>` 集合（Kodi 新格式）不改内部结构，只同步根级节点；`writeMatchedOpts` 完整重写 NFO 时会先把旧 `<rating>` / `<votes>` 取出来、写完再补回去，避免「重刮 / 匹配」把评分冲掉。
+- **注意**：查询失败或没匹配时保留上一次成功的评分，只更新 `status` / `checked_at`，避免一次风控把已有数据抹掉；任务删除后的残留评分在下一次「全部任务」查询时按现存任务清单清理（`pruneMissingTasks`）。
+
+### 7.11 buei STRM 刮削日期
+
+「辅助工具 → STRM 刮削」的作品卡片除了类型 / 年份 / 集数，还显示发行日期与完结日期；日期同时供豆瓣评分调度使用。
+
+- **来源只有 TMDB**：豆瓣没有剧集完结日期，电影 `pubdate` 也常是中国大陆重映日期，因此不接受豆瓣日期。`decodeTMDBInfo` 里电影取 `release_date`，剧集取 `first_air_date` 作为发行日期；剧集完结日期取 `last_air_date`，但**只在该剧 `status` 为 `Ended` / `Canceled` 时**才采用——连载剧的 `last_air_date` 是「最新已播集日期」，当真完结日期会误导。
+- **存储**：写进作品 NFO 的 `<premiered>`（电影上映 / 剧集首播）与 `<enddate>`（仅剧集）。索引 `items` 表有 `release_date` / `end_date` 两列，但索引仍是可重建缓存：`buildItem` 从 NFO 读回日期，`indexSchemaVersion` 升到 `3`，旧索引删除重建后日期不丢。
+- **补写**：完整刮削时 `writeWorkNFOWithDates` 直接写入；仅补缺模式（NFO 已存在）走 `patchNFODates`，只填空的 `<premiered>` / `<enddate>` 节点，已有值（可能用户手写）不覆盖。已刮削但缺 `premiered` 的作品在「开始刮削」时由 `backfillWorkDates` 单独查一次 TMDB 详情补日期，**不重写**海报、演员、分集等其它元数据。
+- **不展示**：日期只用于豆瓣评分调度，刮削卡片与豆瓣海报墙都不显示（`Item.release_date` / `end_date` 仍在接口里）。
+- **未覆盖**：只有「开始刮削 / 重刮 / 匹配」会刷新日期；连载剧的完结日期要等 TMDB 标记 `Ended` 后的下一次刮削才会补上。
+
 ---
 
 ## 8. 编码约定
@@ -880,10 +909,14 @@ make lint
 | `internal/api/buei_emby_library_tmdb.go` | 项目目录的 TMDB 搜索与手动匹配接口 |
 | `internal/strmscrape/buei_tmdb.go` | TMDB 搜索（按年份倒序）与按 TMDB ID 同步重新匹配 |
 | `internal/strmscrape/buei_rescrape.go` | 「重刮」：按已有 TMDB ID 同步重新刮削 |
+| `internal/strmscrape/buei_dates.go` | 发行日期 / 完结日期：TMDB 字段归一化、写入 NFO、缺日期时补写 |
+| `internal/strmscrape/buei_rating.go` | 豆瓣评分写入作品 NFO 的社区评分（`<rating>` / `<votes>`），重写 NFO 前回读保留 |
 | `internal/api/buei_emby_library_strm.go` | 项目目录缺失 / 多余 STRM 检测、生成刮削与多余清理接口 |
 | `internal/strmscrape/buei_scrape_dirs.go` | 按目录同步刮削（生成 STRM 后自动刮削用） |
 | `internal/buei/embyarchive/browse.go` | 网盘目录按相对路径解析（项目对照浏览用） |
 | `internal/embyproxy/buei_library_users.go` | 查询 Emby 各用户观看状态及分集进度 |
+| `internal/buei/doubanscore/` | 豆瓣评分：抓取/匹配（`douban.go`、`match.go`）、海报墙合并（`service.go`）、每日 08:00 规则（`schedule.go`） |
+| `web/src/components/buei/BueiDoubanScorePanel.vue` | 豆瓣评分海报墙：任务列表 + 筛选 + 逐条查询 |
 | `web/src/components/admin/BueiEmbyLibraryPage.vue` | Emby 媒体库卡片、任务筛选、同步、归档/移回交互 |
 | `web/src/api/bueiEmbyLibrary.ts` | buei Emby 媒体库前端 API 类型和请求 |
 | `web/src/components/buei/bueiProjectAssoc.ts` | 项目目录浏览的关联文件前缀分组与高亮配色 |

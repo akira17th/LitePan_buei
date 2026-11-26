@@ -171,6 +171,26 @@ function selectTaskFilter(task: number | "all") {
   selectedTaskFilter.value = task;
 }
 
+// buei:douban-score —— 豆瓣评分与条目跳转。
+function doubanURL(item: BueiEmbyLibraryItem) {
+  const id = item.douban?.douban_id;
+  return id ? `https://movie.douban.com/subject/${id}/` : "";
+}
+
+function doubanScore(item: BueiEmbyLibraryItem) {
+  const rating = item.douban?.rating;
+  return typeof rating === "number" ? rating.toFixed(1) : "";
+}
+
+function doubanScoreTitle(item: BueiEmbyLibraryItem) {
+  const douban = item.douban;
+  if (!douban || typeof douban.rating !== "number") return "";
+  const parts = [`豆瓣 ${douban.rating.toFixed(1)}`];
+  if (douban.votes) parts.push(`${douban.votes} 人评价`);
+  if (douban.douban_title) parts.push(douban.douban_title);
+  return parts.join(" · ");
+}
+
 function tmdbURL(item: BueiEmbyLibraryItem) {
   const kind = item.media_type === "tv" || item.type === "Series" ? "tv" : "movie";
   return `https://www.themoviedb.org/${kind}/${encodeURIComponent(item.tmdb_id || "")}`;
@@ -317,6 +337,7 @@ function toLibraryItem(task: StrmTask, item: StrmScrapeItem, synced?: BueiEmbyLi
     ep_scraped: item.ep_scraped,
     tv_state: item.tv_state,
     tmdb_id: item.tmdb_id,
+    douban: item.douban,
   };
 }
 
@@ -834,30 +855,48 @@ onActivated(() => {
                 <img v-if="imageURL(item.poster_url)" :src="imageURL(item.poster_url)" :alt="item.name" loading="lazy" />
                 <div v-else class="emby-media-card__poster-fallback"><SvgIcon name="film" :size="28" /></div>
                 <div class="emby-media-card__poster-shade" />
-                <span class="emby-media-card__type">
-                  <span>{{ item.type === "Series" ? "剧集" : "电影" }}</span>
-                  <span v-if="item.production_year" class="emby-media-card__year">{{ item.production_year }}</span>
-                  <button
-                    v-if="item.type === 'Series'"
-                    type="button"
-                    class="emby-media-card__state"
-                    :class="{ 'is-ended': item.tv_state === 'ended' }"
-                    :disabled="isTVStatePending(item.id)"
-                    :aria-pressed="item.tv_state === 'ended'"
-                    :title="item.tv_state === 'ended' ? '点击标记为未完结（会继续追更）' : '点击标记为已完结'"
-                    @click.stop="toggleTVState(item)"
-                  >{{ item.tv_state === "ended" ? "已完结" : "未完结" }}</button>
+                <span v-if="doubanScore(item)" class="emby-media-card__rating" :title="doubanScoreTitle(item)">
+                  <span class="emby-media-card__rating-icon" aria-hidden="true">豆</span>
+                  <span class="emby-media-card__rating-value">{{ doubanScore(item) }}</span>
                 </span>
-                <a
-                  v-if="item.tmdb_id"
-                  class="emby-media-card__tmdb"
-                  :href="tmdbURL(item)"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title="在 TMDB 打开"
-                  aria-label="在 TMDB 打开"
-                  @click.stop
-                >TMDB<SvgIcon name="arrow-up-right-from-square" :size="9" /></a>
+                <div class="emby-media-card__bottom">
+                  <span class="emby-media-card__type">
+                    <span>{{ item.type === "Series" ? "剧集" : "电影" }}</span>
+                    <span v-if="item.production_year" class="emby-media-card__year">{{ item.production_year }}</span>
+                    <button
+                      v-if="item.type === 'Series'"
+                      type="button"
+                      class="emby-media-card__state"
+                      :class="{ 'is-ended': item.tv_state === 'ended' }"
+                      :disabled="isTVStatePending(item.id)"
+                      :aria-pressed="item.tv_state === 'ended'"
+                      :title="item.tv_state === 'ended' ? '点击标记为未完结（会继续追更）' : '点击标记为已完结'"
+                      @click.stop="toggleTVState(item)"
+                    >{{ item.tv_state === "ended" ? "已完结" : "未完结" }}</button>
+                  </span>
+                  <div v-if="item.tmdb_id || doubanURL(item)" class="emby-media-card__links" @click.stop>
+                    <a
+                      v-if="item.tmdb_id"
+                      class="emby-media-card__tmdb"
+                      :href="tmdbURL(item)"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="在 TMDB 打开"
+                      aria-label="在 TMDB 打开"
+                      @click.stop
+                    >TMDB<SvgIcon name="arrow-up-right-from-square" :size="9" /></a>
+                    <a
+                      v-if="doubanURL(item)"
+                      class="emby-media-card__douban-link"
+                      :href="doubanURL(item)"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      :title="item.douban?.douban_title ? `在豆瓣打开：${item.douban.douban_title}` : '在豆瓣打开'"
+                      aria-label="在豆瓣打开"
+                      @click.stop
+                    >豆瓣<SvgIcon name="arrow-up-right-from-square" :size="9" /></a>
+                  </div>
+                </div>
                 <span v-if="episodeLabel(item)" class="emby-media-card__episodes">{{ episodeLabel(item) }}</span>
                 <div class="emby-media-card__actions" @click.stop>
                   <AppDropdown
@@ -1100,7 +1139,9 @@ onActivated(() => {
 .emby-media-card:hover .emby-media-card__poster img { transform: scale(1.035); }
 .emby-media-card__poster-fallback { display: grid; place-items: center; width: 100%; height: 100%; color: color-mix(in srgb, var(--brand) 55%, var(--text-muted)); }
 .emby-media-card__poster-shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(2,6,23,.22), transparent 34%, rgba(2,6,23,.7)); pointer-events: none; }
-.emby-media-card__type { position: absolute; left: 10px; bottom: 10px; display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 6px; color: #fff; background: rgba(2,6,23,.62); backdrop-filter: blur(6px); box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); font-size: 10px; font-weight: 700; line-height: 1.5; white-space: nowrap; }
+/* 海报左下角：类型标记在上，TMDB / 豆瓣链接在下 */
+.emby-media-card__bottom { position: absolute; left: 10px; bottom: 10px; z-index: 2; display: flex; flex-direction: column; align-items: flex-start; gap: 5px; max-width: calc(100% - 18px); }
+.emby-media-card__type { display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 6px; color: #fff; background: rgba(2,6,23,.62); backdrop-filter: blur(6px); box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); font-size: 10px; font-weight: 700; line-height: 1.5; white-space: nowrap; }
 .emby-media-card__year, .emby-media-card__state { display: inline-flex; align-items: center; color: rgba(255,255,255,.76); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .01em; }
 .emby-media-card__state { padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: #ffd08a; cursor: pointer; }
 .emby-media-card__state:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 2px; }
@@ -1108,9 +1149,13 @@ onActivated(() => {
 .emby-media-card__state:focus-visible { outline: 2px solid rgba(255,255,255,.85); outline-offset: 2px; border-radius: 3px; }
 .emby-media-card__state.is-ended { color: #9ce3c0; }
 .emby-media-card__year::before, .emby-media-card__state::before { content: ""; width: 3px; height: 3px; margin: 0 6px 0 5px; border-radius: 50%; background: currentColor; opacity: .85; }
-.emby-media-card__tmdb { position: absolute; top: 10px; left: 10px; z-index: 2; display: inline-flex; align-items: center; gap: 3px; padding: 3px 7px; border-radius: 5px; color: rgba(255,255,255,.82); background: rgba(2,6,23,.68); backdrop-filter: blur(5px); font-size: 10px; font-weight: 750; letter-spacing: .02em; line-height: 1.5; text-decoration: none; transition: background .15s ease, color .15s ease; }
+.emby-media-card__links { display: flex; align-items: center; gap: 4px; }
+.emby-media-card__tmdb,
+.emby-media-card__douban-link { display: inline-flex; align-items: center; gap: 3px; padding: 3px 7px; border-radius: 5px; color: rgba(255,255,255,.82); background: rgba(2,6,23,.68); backdrop-filter: blur(5px); font-size: 10px; font-weight: 750; letter-spacing: .02em; line-height: 1.5; text-decoration: none; transition: background .15s ease, color .15s ease; }
 .emby-media-card__tmdb:hover { color: #06202a; background: #01b4e4; }
 .emby-media-card__tmdb:focus-visible { outline: 2px solid #01b4e4; outline-offset: 2px; }
+.emby-media-card__douban-link:hover { color: #fff; background: #2e963b; }
+.emby-media-card__douban-link:focus-visible { outline: 2px solid #2e963b; outline-offset: 2px; }
 .emby-media-card__episodes { position: absolute; top: 10px; right: 10px; z-index: 2; padding: 3px 7px; border-radius: 5px; color: #ffe9b0; background: rgba(2,6,23,.68); backdrop-filter: blur(5px); font-size: 10px; font-weight: 750; }
 .emby-media-card__actions { position: absolute; right: 7px; bottom: 7px; z-index: 3; }
 .emby-media-card__more { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); cursor: pointer; transition: background .15s ease, color .15s ease; }
@@ -1119,6 +1164,8 @@ onActivated(() => {
 .emby-media-card__more:disabled { opacity: .75; color: var(--brand); cursor: wait; }
 .emby-media-card__body { min-width: 0; padding: 10px 10px 12px; }
 .emby-media-card__body h3 { margin: 0; overflow: hidden; color: var(--text); font-size: 13px; font-weight: 700; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.emby-media-card__rating { position: absolute; top: 10px; left: 10px; z-index: 2; display: inline-flex; align-items: center; gap: 3px; height: 26px; padding: 0 10px; border-radius: var(--radius-pill); color: #fff; background: #2e963b; box-shadow: 0 1px 4px rgba(2,6,23,.35); font-size: 12px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.emby-media-card__rating-icon { flex-shrink: 0; display: grid; place-items: center; width: 16px; height: 16px; border-radius: 4px; color: #2e963b; background: #fff; font-size: 10px; font-weight: 800; line-height: 1; }
 .emby-media-card__task { display: flex; align-items: center; gap: 4px; min-width: 0; margin-top: 6px; color: var(--brand); font-size: 10px; font-weight: 650; line-height: 1.2; }
 .emby-media-card__task span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .emby-media-card__users { display: flex; flex-wrap: wrap; gap: 4px; min-height: 20px; margin-top: 8px; }

@@ -13,6 +13,7 @@ import (
 	"litepan/internal/auth"
 	"litepan/internal/automation"
 	"litepan/internal/backuprestore"
+	"litepan/internal/buei/doubanscore"
 	"litepan/internal/buei/embyarchive"
 	"litepan/internal/cache"
 	"litepan/internal/cacheretention"
@@ -63,6 +64,7 @@ type App struct {
 	embyProxy        *embyproxy.Service
 	fnosProxy        *fnosproxy.Service
 	bueiEmbyArchive  *embyarchive.Service // buei: emby auto archive
+	bueiDoubanScore  *doubanscore.Service // buei: douban score
 	httpSrv          *http.Server
 	httpBaseCancel   context.CancelFunc
 	restartCh        <-chan struct{}
@@ -148,6 +150,7 @@ func New(ctx context.Context, opts Options) (*App, error) {
 		embyProxy:        svc.embyProxy,
 		fnosProxy:        svc.fnosProxy,
 		bueiEmbyArchive:  svc.buei.embyArchive, // buei: emby auto archive
+		bueiDoubanScore:  svc.buei.doubanScore, // buei: douban score
 		httpSrv:          httpSrv,
 		httpBaseCancel:   httpBaseCancel,
 		restartCh:        restartCh,
@@ -192,6 +195,9 @@ func (a *App) Run(ctx context.Context) error {
 	if a.bueiEmbyArchive != nil {
 		a.bueiEmbyArchive.Start(ctx) // buei: emby auto archive
 	}
+	if a.bueiDoubanScore != nil {
+		a.bueiDoubanScore.Start(ctx) // buei: douban score
+	}
 	errCh := make(chan error, 1)
 	go func() {
 		a.log.Info("HTTP 服务已监听", "addr", a.cfg.ListenAddr)
@@ -228,6 +234,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 	if a.bueiEmbyArchive != nil {
 		a.bueiEmbyArchive.Stop(ctx) // buei: emby auto archive
+	}
+	if a.bueiDoubanScore != nil {
+		a.bueiDoubanScore.Stop(ctx) // buei: douban score
 	}
 	if a.httpBaseCancel != nil {
 		a.httpBaseCancel()

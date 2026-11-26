@@ -1,6 +1,7 @@
 package api
 
 import (
+	"litepan/internal/buei/doubanscore"
 	"litepan/internal/buei/embyarchive"
 	"litepan/internal/buei/guangyashare"
 	"litepan/internal/buei/quarkingest"
@@ -12,6 +13,7 @@ type BueiDeps struct {
 	GuangyaShare *guangyashare.Service
 	QuarkIngest  *quarkingest.Service
 	EmbyArchive  *embyarchive.Service
+	DoubanScore  *doubanscore.Service
 	// Emby 媒体库最近同步时间（“超过 12 小时自动同步”与按钮悬停提示）。
 	EmbyLibrarySync domain.BueiEmbyLibrarySyncRepository
 }

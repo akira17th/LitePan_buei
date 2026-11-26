@@ -1,3 +1,4 @@
+import type { BueiDoubanScoreView } from "./bueiDoubanScore";
 import { http } from "./client";
 
 // buei 定制：后台「Emby 媒体库」浏览接口。
@@ -30,6 +31,8 @@ export interface BueiEmbyUserStatus {
 }
 
 export interface BueiEmbyLibraryItem {
+  /** buei:douban-score —— 来自 STRM 索引的豆瓣评分。 */
+  douban?: BueiDoubanScoreView;
   id: string;
   name: string;
   type: "Movie" | "Series" | string;

@@ -16,6 +16,9 @@ type workNFO struct {
 	TMDBID  string     `xml:"tmdbid,omitempty"`
 	Plot    string     `xml:"plot,omitempty"`
 	Actors  []nfoActor `xml:"actor,omitempty"`
+	// buei:dates —— 发行日期（电影上映 / 剧集首播）与剧集完结日期。
+	Premiered string `xml:"premiered,omitempty"`
+	EndDate   string `xml:"enddate,omitempty"`
 }
 
 type nfoActor struct {

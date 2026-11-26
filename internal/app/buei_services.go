@@ -1,6 +1,7 @@
 package app
 
 import (
+	"litepan/internal/buei/doubanscore"
 	"litepan/internal/buei/embyarchive"
 	"litepan/internal/buei/guangyashare"
 	"litepan/internal/buei/quarkingest"
@@ -15,6 +16,7 @@ type bueiServices struct {
 	guangyaShare    *guangyashare.Service
 	quarkIngest     *quarkingest.Service
 	embyArchive     *embyarchive.Service
+	doubanScore     *doubanscore.Service
 	embyLibrarySync domain.BueiEmbyLibrarySyncRepository
 }
 

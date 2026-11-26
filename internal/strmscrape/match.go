@@ -26,6 +26,9 @@ type tmdbInfo struct {
 	MediaType    string
 	Doubt        bool
 	EpisodeCount int // 默认全剧集数；刮削时会按本地已有季收窄
+	// buei:dates —— 发行日期（电影上映 / 剧集首播）与剧集完结日期，来自 TMDB 详情。
+	ReleaseDate string
+	EndDate     string
 }
 
 type tmdbActor struct {
@@ -218,19 +221,42 @@ func (s *Service) writeMatchedOpts(ctx context.Context, client *tmdb.Client, g w
 	actorSkipped := false
 	// 目标 NFO 不存在或不是标准 NFO（如压制组信息文件）都重写；后者直接覆盖。
 	if nfoWriteNeeded(overwrite, nfo) {
+		// #region buei:rating —— 重写 NFO 会丢掉豆瓣评分，先取出旧值，写完再补回去
+		prevCommunity, hasPrevCommunity := readNFOCommunity(nfo)
+		// #endregion buei:rating
+		// #region buei:dates —— 完整写入时带上发行日期 / 完结日期
+		nfoRoot := "movie"
 		if mediaType == MediaTypeTV {
-			if err := writeTVShowNFO(nfo, info.Title, info.TMDBID, info.Plot, info.Year, actors...); err != nil {
-				return 0, err
-			}
-		} else if err := writeMovieNFO(nfo, info.Title, info.TMDBID, info.Plot, info.Year, actors...); err != nil {
+			nfoRoot = "tvshow"
+		}
+		if err := writeWorkNFOWithDates(nfoRoot, nfo, info.Title, info.TMDBID, info.Plot, info.Year, mediaType, info.ReleaseDate, info.EndDate, actors); err != nil {
 			return 0, err
 		}
-	} else if cfg.Actors {
-		// 补写演员是可选项：NFO 结构异常时只警告跳过，不能中断整部作品（否则海报/背景图/Logo 也写不成）。
-		if err := appendNFOActors(nfo, actors); err != nil {
-			actorSkipped = true
+		// #endregion buei:dates
+		// #region buei:rating
+		if hasPrevCommunity {
+			if _, err := patchNFOCommunity(nfo, prevCommunity); err != nil && s.log != nil {
+				s.log.Warn("STRM 刮削回写社区评分失败，已跳过", "nfo", nfo, "err", err)
+			}
+		}
+		// #endregion buei:rating
+	} else {
+		// #region buei:dates —— 仅补缺模式下只补写缺失的日期节点
+		if changed, err := patchNFODates(nfo, mediaType, info.ReleaseDate, info.EndDate); err != nil {
 			if s.log != nil {
-				s.log.Warn("STRM 刮削补写演员信息失败，已跳过", "nfo", nfo, "err", err)
+				s.log.Warn("STRM 刮削补写发行/完结日期失败，已跳过", "nfo", nfo, "err", err)
+			}
+		} else if changed && s.log != nil {
+			s.log.Debug("STRM 刮削已补写发行/完结日期", "nfo", nfo)
+		}
+		// #endregion buei:dates
+		if cfg.Actors {
+			// 补写演员是可选项：NFO 结构异常时只警告跳过，不能中断整部作品（否则海报/背景图/Logo 也写不成）。
+			if err := appendNFOActors(nfo, actors); err != nil {
+				actorSkipped = true
+				if s.log != nil {
+					s.log.Warn("STRM 刮削补写演员信息失败，已跳过", "nfo", nfo, "err", err)
+				}
 			}
 		}
 	}
@@ -565,6 +591,19 @@ func decodeTMDBInfo(raw json.RawMessage, mediaType string) (tmdbInfo, error) {
 	if n := asInt(m["number_of_episodes"]); n != nil && *n > 0 {
 		epCount = *n
 	}
+	// #region buei:dates —— 发行日期（电影上映 / 剧集首播）与剧集完结日期
+	releaseDate := normalizeDateValue(anyString(m["release_date"]))
+	endDate := ""
+	if mediaType == MediaTypeTV {
+		releaseDate = normalizeDateValue(anyString(m["first_air_date"]))
+		// 只有 TMDB 明确已完结/被砍才用 last_air_date 当完结日期，
+		// 否则连载剧的「最新已播集日期」会被误判为完结。
+		switch strings.ToLower(strings.TrimSpace(anyString(m["status"]))) {
+		case "ended", "canceled":
+			endDate = normalizeDateValue(anyString(m["last_air_date"]))
+		}
+	}
+	// #endregion buei:dates
 	return tmdbInfo{
 		TMDBID:       id,
 		Title:        title,
@@ -575,6 +614,9 @@ func decodeTMDBInfo(raw json.RawMessage, mediaType string) (tmdbInfo, error) {
 		BackdropPath: backdrop,
 		MediaType:    mediaType,
 		EpisodeCount: epCount,
+		// buei:dates
+		ReleaseDate: releaseDate,
+		EndDate:     endDate,
 	}, nil
 }
 

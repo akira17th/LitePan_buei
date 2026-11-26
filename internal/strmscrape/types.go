@@ -34,6 +34,9 @@ type Item struct {
 	EpScraped  int    `json:"ep_scraped,omitempty"`
 	TVState    string `json:"tv_state,omitempty"` // ended|updating
 	AddedAt    string `json:"added_at,omitempty"`
+	// buei:dates —— 发行日期（电影上映 / 剧集首播）与剧集完结日期，均来自 TMDB 并写入 NFO。
+	ReleaseDate string `json:"release_date,omitempty"`
+	EndDate     string `json:"end_date,omitempty"`
 }
 
 type ItemListSort string

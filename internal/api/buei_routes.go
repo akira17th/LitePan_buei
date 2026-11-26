@@ -39,6 +39,14 @@ func (h *Handler) registerBueiRoutes(r chi.Router) {
 		// buei:emby-tv-state —— 点击“已完结 / 未完结”切换完结状态。
 		r.Post("/tv-state", h.bueiEmbyLibraryTVState)
 	})
+	// buei:douban-score —— 辅助工具「豆瓣评分」：按 STRM 任务海报墙查询与保存豆瓣评分。
+	r.Route("/buei/douban-score", func(r chi.Router) {
+		r.Get("/tasks", h.bueiDoubanScoreTasks)
+		r.Get("/items", h.bueiDoubanScoreItems)
+		r.Get("/state", h.bueiDoubanScoreState)
+		r.Post("/query", h.bueiDoubanScoreQuery)
+		r.Post("/stop", h.bueiDoubanScoreStop)
+	})
 	r.Route("/tools/guangya-share", func(r chi.Router) {
 		r.Post("/parse", h.bueiGuangyaShareParse)
 		r.Post("/list", h.bueiGuangyaShareList)
