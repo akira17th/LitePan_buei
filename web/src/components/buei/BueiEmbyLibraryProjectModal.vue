@@ -132,7 +132,7 @@ async function cleanupOrphanStrm() {
     await load(true);
     orphanStrm.value = [];
     emit("refreshed");
-    toast.success(`已删除 ${result.deleted} 个多余的 STRM 文件`);
+    toast.success(`已清理 ${result.deleted} 个文件`);
   } catch (err) {
     toast.error(getApiErrorMessage(err, "删除多余 STRM 失败"));
   } finally {
@@ -242,7 +242,14 @@ async function deleteSelected(names: string[], side: "strm" | "cloud") {
   if (!ok) return;
   deleting.value = true;
   try {
-    const result = await deleteBueiEmbyLibraryProjectFiles({ itemId: item.id, path: path.value.join("/"), names, side });
+    const result = await deleteBueiEmbyLibraryProjectFiles({
+      itemId: item.id,
+      path: path.value.join("/"),
+      names,
+      side,
+      configId: props.configId,
+      libraryId: props.libraryId,
+    });
     if (result.project_removed) {
       // 项目里已没有 strm，后端把整个项目文件夹删掉了，直接关闭弹窗并刷新列表。
       toast.success(`已删除项目「${item.name}」的全部文件`);

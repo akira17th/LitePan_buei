@@ -120,9 +120,13 @@ func (s *Service) DeleteProjectEntries(ctx context.Context, req ProjectDeleteReq
 	cloudDirID, cloudItems, cloudErr := s.BrowseCloudDirWithID(ctx, task.AccountID, task.ParentID, relative, true)
 	cloudNames := make([]string, 0, len(cloudItems))
 	cloudIDs := make(map[string]string, len(cloudItems))
+	cloudDirs := make(map[string]bool, len(cloudItems))
 	for _, item := range cloudItems {
 		cloudNames = append(cloudNames, item.Name)
 		cloudIDs[item.Name] = item.ID
+		if item.IsDir {
+			cloudDirs[item.Name] = true
+		}
 	}
 
 	// 只有勾选视频正片或 .strm 时才连带删除同组文件，并且连带另一侧；
@@ -139,13 +143,15 @@ func (s *Service) DeleteProjectEntries(ctx context.Context, req ProjectDeleteReq
 	} else {
 		trigger = IsSTRMFileName
 	}
-	keys := associatedKeys(selected, trigger)
-	primaryTargets := selectProjectTargets(primaryNames, selected, keys)
-	otherTargets := selectProjectTargets(otherNames, nil, keys)
+	prefixes := associatedPrefixes(selected, trigger)
+	primaryTargets := selectProjectTargets(primaryNames, selected, prefixes)
+	otherTargets := selectProjectTargets(otherNames, nil, prefixes)
 	strmTargets, cloudTargets := primaryTargets, otherTargets
 	if side == "cloud" {
 		strmTargets, cloudTargets = otherTargets, primaryTargets
 	}
+	// 连带命中但不显式勾选的目录不删，避免把同名文件夹整个删掉。
+	cloudTargets = dropUnselectedDirs(cloudTargets, cloudDirs, selected)
 	if len(strmTargets) == 0 && len(cloudTargets) == 0 {
 		if cloudErr != nil {
 			return ProjectDeleteResult{}, cloudErr
@@ -168,7 +174,13 @@ func (s *Service) DeleteProjectEntries(ctx context.Context, req ProjectDeleteReq
 		}
 	}
 	for _, name := range strmTargets {
-		if err := os.RemoveAll(filepath.Join(strmDir, name)); err != nil {
+		target := filepath.Join(strmDir, name)
+		if !selected[name] {
+			if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
+				continue
+			}
+		}
+		if err := os.RemoveAll(target); err != nil {
 			return ProjectDeleteResult{}, domain.Errorf(domain.CodeDriverError, "网盘文件已删除，但删除本地 STRM 文件失败：%v", err)
 		}
 	}
@@ -201,6 +213,21 @@ func (s *Service) DeleteProjectEntries(ctx context.Context, req ProjectDeleteReq
 	}
 	result.EmbyRefresh = true
 	return result, nil
+}
+
+// dropUnselectedDirs 去掉「关联命中但没有显式勾选」的目录，只保留文件与显式勾选项。
+func dropUnselectedDirs(names []string, dirs map[string]bool, selected map[string]bool) []string {
+	if len(dirs) == 0 {
+		return names
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if dirs[name] && !selected[name] {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 // hasSTRMFiles 判断目录（含子目录）里是否还有 .strm 文件。
@@ -305,10 +332,25 @@ func (s *Service) DeleteProjectSTRMs(ctx context.Context, req ProjectSTRMDeleteR
 	if err != nil {
 		return ProjectSTRMDeleteResult{}, err
 	}
-	result := ProjectSTRMDeleteResult{Deleted: make([]string, 0, len(names))}
+	localNames, err := readLocalDirNames(strmDir)
+	if err != nil {
+		return ProjectSTRMDeleteResult{}, err
+	}
+	selectedSet := make(map[string]bool, len(names))
 	for _, name := range names {
-		err := os.Remove(filepath.Join(strmDir, name))
-		if err != nil && !os.IsNotExist(err) {
+		selectedSet[name] = true
+	}
+	// 以 .strm 文件名开头的同组文件（nfo、图片、字幕、json 等）一并清理。
+	targets := selectProjectTargets(localNames, selectedSet, associatedPrefixes(selectedSet, IsSTRMFileName))
+	result := ProjectSTRMDeleteResult{Deleted: make([]string, 0, len(targets))}
+	for _, name := range targets {
+		target := filepath.Join(strmDir, name)
+		if !selectedSet[name] {
+			if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
+				continue
+			}
+		}
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 			return ProjectSTRMDeleteResult{}, domain.Errorf(domain.CodeDriverError, "删除 STRM 文件失败：%v", err)
 		}
 		result.Deleted = append(result.Deleted, name)
@@ -349,34 +391,63 @@ func IsSTRMFileName(name string) bool {
 	return strings.EqualFold(filepath.Ext(strings.TrimSpace(name)), ".strm")
 }
 
-// associatedKeys 收集会触发关联删除的基础名（视频正片或 .strm）。
-func associatedKeys(selected map[string]bool, trigger func(string) bool) map[string]bool {
-	keys := make(map[string]bool, len(selected))
+// associatedPrefixes 收集会触发关联删除的文件前缀（视频正片或 .strm 去掉扩展名）。
+func associatedPrefixes(selected map[string]bool, trigger func(string) bool) []string {
+	prefixes := make([]string, 0, len(selected))
 	for name := range selected {
 		if !trigger(name) {
 			continue
 		}
-		if key := MediaBaseKey(name); key != "" {
-			keys[key] = true
+		if prefix := mediaFilePrefix(name); prefix != "" {
+			prefixes = append(prefixes, prefix)
 		}
 	}
-	return keys
+	return prefixes
+}
+
+// mediaFilePrefix 返回文件名去掉扩展名后的前缀（小写）。
+func mediaFilePrefix(name string) string {
+	base := strings.TrimSuffix(strings.TrimSpace(name), filepath.Ext(strings.TrimSpace(name)))
+	return strings.ToLower(strings.TrimSpace(base))
+}
+
+// matchesMediaPrefix 判断文件名是否以某个主文件前缀开头：
+// 前缀本身或其后的分隔符（. - _ 空格）开头的文件都算同类，
+// 例如 aaaa.strm 会连出 aaaa.json / aaaa.nfo / aaaa-thumb.jpg / aaaa.zh.srt，
+// 但不会误删 aaaa2.json。
+func matchesMediaPrefix(name string, prefixes []string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return false
+	}
+	for _, prefix := range prefixes {
+		if prefix == "" || !strings.HasPrefix(lower, prefix) {
+			continue
+		}
+		if len(lower) == len(prefix) {
+			return true
+		}
+		switch lower[len(prefix)] {
+		case '.', '-', '_', ' ', '(':
+			return true
+		}
+	}
+	return false
 }
 
 // selectProjectTargets 从目录条目里挑出要删除的文件：
-// 显式勾选的（selected 非空时）总是删除；基础名命中的按 keys 连带。
-func selectProjectTargets(entries []string, selected map[string]bool, keys map[string]bool) []string {
+// 显式勾选的（selected 非空时）总是删除；文件名以主文件前缀开头的按 prefixes 连带。
+func selectProjectTargets(entries []string, selected map[string]bool, prefixes []string) []string {
 	out := make([]string, 0, len(selected))
 	for _, name := range entries {
 		if len(selected) > 0 && selected[name] {
 			out = append(out, name)
 			continue
 		}
-		if len(keys) == 0 {
+		if len(prefixes) == 0 {
 			continue
 		}
-		key := MediaBaseKey(name)
-		if key != "" && keys[key] {
+		if matchesMediaPrefix(name, prefixes) {
 			out = append(out, name)
 		}
 	}

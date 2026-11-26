@@ -36,8 +36,8 @@ func TestSelectProjectTargets(t *testing.T) {
 	entries := []string{"aaaa.mkv", "aaaa.strm", "aaaa.nfo", "aaaa-thumb.jpg", "aaaa-fanart.jpg", "aaaa.zh.srt", "bbbb.strm", "bbbb.nfo"}
 
 	// 勾选视频：本侧连带同组文件。
-	keys := associatedKeys(map[string]bool{"aaaa.mkv": true}, IsVideoFileName)
-	got := selectProjectTargets(entries, map[string]bool{"aaaa.mkv": true}, keys)
+	prefixes := associatedPrefixes(map[string]bool{"aaaa.mkv": true}, IsVideoFileName)
+	got := selectProjectTargets(entries, map[string]bool{"aaaa.mkv": true}, prefixes)
 	sort.Strings(got)
 	want := []string{"aaaa-fanart.jpg", "aaaa-thumb.jpg", "aaaa.mkv", "aaaa.nfo", "aaaa.strm", "aaaa.zh.srt"}
 	if len(got) != len(want) {
@@ -50,21 +50,43 @@ func TestSelectProjectTargets(t *testing.T) {
 	}
 
 	// 勾选 .strm：同样连带同组文件。
-	keys = associatedKeys(map[string]bool{"aaaa.strm": true}, IsSTRMFileName)
-	got = selectProjectTargets(entries, map[string]bool{"aaaa.strm": true}, keys)
+	prefixes = associatedPrefixes(map[string]bool{"aaaa.strm": true}, IsSTRMFileName)
+	got = selectProjectTargets(entries, map[string]bool{"aaaa.strm": true}, prefixes)
 	sort.Strings(got)
 	if len(got) != len(want) {
 		t.Fatalf("选中 STRM 应连带关联文件：%v", got)
 	}
 
-	// 勾选其它类型：只删除自己，不产生关联键。
-	keys = associatedKeys(map[string]bool{"aaaa.nfo": true}, IsSTRMFileName)
-	if len(keys) != 0 {
-		t.Fatalf("非主文件不应产生关联键：%v", keys)
+	// 勾选其它类型：只删除自己，不产生关联前缀。
+	prefixes = associatedPrefixes(map[string]bool{"aaaa.nfo": true}, IsSTRMFileName)
+	if len(prefixes) != 0 {
+		t.Fatalf("非主文件不应产生关联前缀：%v", prefixes)
 	}
-	got = selectProjectTargets(entries, map[string]bool{"aaaa.nfo": true}, keys)
+	got = selectProjectTargets(entries, map[string]bool{"aaaa.nfo": true}, prefixes)
 	if len(got) != 1 || got[0] != "aaaa.nfo" {
 		t.Fatalf("非主文件只删除自己：%v", got)
+	}
+}
+
+func TestSelectProjectTargetsMatchesPrefixedFiles(t *testing.T) {
+	entries := []string{
+		"aaaa.strm", "aaaa.json", "aaaa.metadata.json", "aaaa.nfo", "aaaa-thumb.jpg",
+		"aaaa.zh.srt", "aaaa (2024).nfo", "aaaa2.json", "aaaab.nfo", "bbbb.strm",
+	}
+	prefixes := associatedPrefixes(map[string]bool{"aaaa.strm": true}, IsSTRMFileName)
+	got := selectProjectTargets(entries, map[string]bool{"aaaa.strm": true}, prefixes)
+	sort.Strings(got)
+	want := []string{
+		"aaaa (2024).nfo", "aaaa-thumb.jpg", "aaaa.json", "aaaa.metadata.json",
+		"aaaa.nfo", "aaaa.strm", "aaaa.zh.srt",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("应连带所有以 strm 文件名开头的文件：%v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("应连带所有以 strm 文件名开头的文件：%v", got)
+		}
 	}
 }
 

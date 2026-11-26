@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import type { BueiEmbyLibraryProjectEntry } from "@/api/bueiEmbyLibrary";
 import BusySpinner from "@/components/base/BusySpinner.vue";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
+import BueiTailText from "@/components/buei/BueiTailText.vue";
 import {
   PROJECT_ENTRY_KIND_LABELS,
   projectEntryKind,
@@ -138,7 +139,7 @@ const rows = computed(() =>
   <section class="project-pane">
     <header class="project-pane__head">
       <span class="project-pane__title"><span class="project-pane__title-icon"><SvgIcon :name="icon" :size="12" /></span>{{ title }}</span>
-      <span class="project-pane__path" :title="path">{{ path || "根目录" }}</span>
+      <BueiTailText class="project-pane__path" :text="path || ''" placeholder="根目录" :title="path || '根目录'" />
       <button
         type="button"
         class="project-pane__delete"
@@ -300,7 +301,7 @@ const rows = computed(() =>
 .project-pane__title { display: inline-flex; align-items: center; gap: 7px; min-width: 0; flex-shrink: 0; font-size: 12.5px; font-weight: 600; color: var(--text); }
 .project-pane__title-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; color: var(--brand); background: color-mix(in srgb, var(--brand) 12%, transparent); }
 .project-pane__path {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
   margin-left: 8px;
   overflow: hidden;

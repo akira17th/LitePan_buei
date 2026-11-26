@@ -18,14 +18,13 @@ import (
 )
 
 const (
-	archiveWord                    = "归档"
-	archiveRecordFileName          = "buei_archive.json"
-	archiveLibraryMovieName        = "归档 · 电影"
-	archiveLibraryTVName           = "归档 · 剧集"
-	bueiEmbyItemListPageLimit      = 200
-	bueiEmbyItemListMaxPages       = 200
-	bueiEmbyItemListDefaultSort    = strmscrape.ItemListSortTitleAsc
-	bueiEmbyRefreshLibraryModeName = "library"
+	archiveWord                 = "归档"
+	archiveRecordFileName       = "buei_archive.json"
+	archiveLibraryMovieName     = "归档 · 电影"
+	archiveLibraryTVName        = "归档 · 剧集"
+	bueiEmbyItemListPageLimit   = 200
+	bueiEmbyItemListMaxPages    = 200
+	bueiEmbyItemListDefaultSort = strmscrape.ItemListSortTitleAsc
 )
 
 // FileOps 是归档需要的文件操作子集，便于单元测试替换。
@@ -52,7 +51,7 @@ type ScrapeOps interface {
 // EmbyOps 是 Emby/Jellyfin 媒体库相关的依赖子集。
 type EmbyOps interface {
 	ListLibraries(ctx context.Context, configIDs ...string) ([]embyproxy.Library, error)
-	RefreshLibrary(ctx context.Context, req embyproxy.RefreshRequest) (embyproxy.RefreshResult, error)
+	RefreshLibraryDirect(ctx context.Context, configID, libraryID string) error
 	ListLibraryItemsRaw(ctx context.Context, configID, libraryID string) ([]map[string]any, error)
 	ListLibraryItemUserStatuses(ctx context.Context, configID string, rawItems []map[string]any) (map[string][]embyproxy.LibraryUserItemStatus, error)
 }
@@ -203,11 +202,7 @@ func RefreshLibraries(ctx context.Context, emby EmbyOps, configID string, librar
 			continue
 		}
 		seen[libraryID] = struct{}{}
-		if _, err := emby.RefreshLibrary(ctx, embyproxy.RefreshRequest{
-			ConfigID:  strings.TrimSpace(configID),
-			Mode:      bueiEmbyRefreshLibraryModeName,
-			LibraryID: libraryID,
-		}); err != nil {
+		if err := emby.RefreshLibraryDirect(ctx, strings.TrimSpace(configID), libraryID); err != nil {
 			return err
 		}
 	}

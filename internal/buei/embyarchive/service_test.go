@@ -50,8 +50,8 @@ func (f *fakeEmby) ListLibraries(context.Context, ...string) ([]embyproxy.Librar
 	return f.libraries, nil
 }
 
-func (f *fakeEmby) RefreshLibrary(context.Context, embyproxy.RefreshRequest) (embyproxy.RefreshResult, error) {
-	return embyproxy.RefreshResult{}, nil
+func (f *fakeEmby) RefreshLibraryDirect(context.Context, string, string) error {
+	return nil
 }
 
 func (f *fakeEmby) ListLibraryItemsRaw(context.Context, string, string) ([]map[string]any, error) {
