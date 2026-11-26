@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   cleanupBueiProjectStrm,
   deleteBueiEmbyLibraryProjectFiles,
@@ -25,6 +25,7 @@ import {
   type ProjectSortField,
 } from "@/components/buei/bueiProjectSort";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
+import { projectAssocGroups } from "@/components/buei/bueiProjectAssoc";
 
 const props = defineProps<{
   open: boolean;
@@ -84,6 +85,14 @@ watch(
     void refreshAndCheck();
   },
   { immediate: true },
+);
+
+// 两侧勾选的视频 / .strm 汇总成关联分组，两个表格共用同一组颜色。
+const assocGroups = computed(() =>
+  projectAssocGroups([
+    { side: "cloud", names: [...cloudSelected.value] },
+    { side: "strm", names: [...strmSelected.value] },
+  ]),
 );
 
 // force 为 true 时绕过网盘目录缓存，确保「刷新」能拿到网盘最新文件。
@@ -499,6 +508,7 @@ function handleSort(field: ProjectSortField) {
           :sort-dir="sortDir"
           :selected="strmSelected"
           :deleting="deleting"
+          :assoc-groups="assocGroups"
           @sort="handleSort"
           @open-dir="openDir"
           @update:selected="strmSelected = $event"
@@ -515,6 +525,7 @@ function handleSort(field: ProjectSortField) {
           :sort-dir="sortDir"
           :selected="cloudSelected"
           :deleting="deleting"
+          :assoc-groups="assocGroups"
           @sort="handleSort"
           @open-dir="openDir"
           @update:selected="cloudSelected = $event"

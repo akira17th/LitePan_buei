@@ -4,6 +4,7 @@ import type { BueiEmbyLibraryProjectEntry } from "@/api/bueiEmbyLibrary";
 import BusySpinner from "@/components/base/BusySpinner.vue";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
 import BueiTailText from "@/components/buei/BueiTailText.vue";
+import { projectAssocIndex, type ProjectAssocGroup } from "@/components/buei/bueiProjectAssoc";
 import {
   PROJECT_ENTRY_KIND_LABELS,
   projectEntryKind,
@@ -29,8 +30,10 @@ const props = withDefaults(
     sortDir: ProjectSortDir;
     selected: Set<string>;
     deleting?: boolean;
+    /** 关联文件分组：命中的行用对应颜色高亮，跨两侧共享同一组颜色。 */
+    assocGroups?: ProjectAssocGroup[];
   }>(),
-  { loading: false, error: "", deleting: false, path: "" },
+  { loading: false, error: "", deleting: false, path: "", assocGroups: () => [] },
 );
 
 const emit = defineEmits<{
@@ -126,11 +129,21 @@ function selectTypeFilter(value: TypeFilter) {
   filterOpen.value = false;
 }
 
+// 关联高亮：命中所选主文件名前缀的行用该组的颜色标出来，方便看出删除会连带哪些文件。
 const rows = computed(() =>
   visible.value.map((entry) => {
     const [date, clock] = (entry.modified_at ? formatTime(entry.modified_at) : "-").split(" ");
     const kind = projectEntryKind(entry);
-    return { entry, date, clock: clock || "", kindLabel: projectEntryKindLabel(kind), kindIcon: projectEntryKindIcon(kind) };
+    // 目录不参与高亮：连带删除时不会删除未勾选的目录，标出来反而误导。
+    const assocIndex = entry.is_dir ? -1 : projectAssocIndex(entry.name, props.assocGroups);
+    return {
+      entry,
+      date,
+      clock: clock || "",
+      kindLabel: projectEntryKindLabel(kind),
+      kindIcon: projectEntryKindIcon(kind),
+      assocColor: assocIndex >= 0 ? props.assocGroups[assocIndex].color : "",
+    };
   }),
 );
 </script>
@@ -227,9 +240,10 @@ const rows = computed(() =>
         </thead>
         <tbody>
           <tr
-            v-for="{ entry, date, clock, kindLabel, kindIcon } in rows"
+            v-for="{ entry, date, clock, kindLabel, kindIcon, assocColor } in rows"
             :key="entry.name"
-            :class="{ 'is-selected': selected.has(entry.name), 'is-dir': entry.is_dir }"
+            :class="{ 'is-selected': selected.has(entry.name), 'is-dir': entry.is_dir, 'is-assoc': !!assocColor }"
+            :style="assocColor ? { '--assoc-color': assocColor } : undefined"
             @click="toggleRow(entry.name)"
             @dblclick="openDir(entry)"
           >
@@ -451,12 +465,19 @@ const rows = computed(() =>
 }
 .project-table tbody tr { cursor: pointer; user-select: none; }
 .project-table tbody tr:hover { background: var(--surface-hover); }
+.project-table tbody tr.is-assoc:not(.is-selected) { background: color-mix(in srgb, var(--assoc-color) 9%, transparent); }
+.project-table tbody tr.is-assoc:hover:not(.is-selected) { background: color-mix(in srgb, var(--assoc-color) 16%, transparent); }
+.project-table tbody tr.is-assoc td:first-child { box-shadow: inset 3px 0 0 var(--assoc-color); }
 .project-table tbody tr.is-selected { background: color-mix(in srgb, var(--brand) 9%, transparent); }
 .project-table tbody tr.is-selected:hover { background: color-mix(in srgb, var(--brand) 13%, transparent); }
+/* 勾选行本身也属于某个关联组时，用它所在组的颜色，避免和别组的颜色混在一起。 */
+.project-table tbody tr.is-selected.is-assoc { background: color-mix(in srgb, var(--assoc-color) 13%, transparent); }
+.project-table tbody tr.is-selected.is-assoc:hover { background: color-mix(in srgb, var(--assoc-color) 19%, transparent); }
 .project-table tbody tr:last-child td { border-bottom: none; }
 
 .project-table__check { padding: 0 0 0 11px !important; }
 .project-table__check input { width: 13px; height: 13px; accent-color: var(--brand); cursor: pointer; vertical-align: middle; }
+.project-table tbody tr.is-assoc .project-table__check input { accent-color: var(--assoc-color); }
 
 .project-table__name-inner {
   display: flex;
