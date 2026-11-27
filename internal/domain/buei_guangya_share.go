@@ -92,6 +92,8 @@ type GuangyaShareLink struct {
 	LastBrowsePath []GuangyaShareBrowseCrumb
 	// RenameReplace 是上次使用的替换文本重命名规则。
 	RenameReplace GuangyaShareRenameReplace
+	// buei: MagnetAccountID 是磁力收藏离线使用的光鸭账号 ID；仅列表返回时在内存中填充，不落库。
+	MagnetAccountID int64
 }
 
 const (

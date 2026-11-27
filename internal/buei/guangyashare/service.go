@@ -111,6 +111,8 @@ type ParseInput struct {
 	Password string
 	// SavedID 大于 0 时表示打开已有收藏；为 0 时新建一条收藏，允许链接重复。
 	SavedID int64
+	// buei: 磁力解析执行离线下载的光鸭账号；为 0 时取第一个启用的光鸭账号。
+	AccountID int64
 }
 
 // UpdateSavedInput 是编辑光鸭收藏链接的入参。
@@ -307,6 +309,10 @@ func (s *Service) Parse(ctx context.Context, in ParseInput) (*ParseResult, error
 	if s == nil || s.client == nil {
 		return nil, domain.Errorf(domain.CodeInternal, "光鸭分享服务未初始化")
 	}
+	// buei: 磁力链接走离线下载解析，与分享解析同一返回结构。
+	if IsMagnetLink(in.URL) {
+		return s.ParseMagnet(ctx, ParseMagnetInput{URL: in.URL, SavedID: in.SavedID, AccountID: in.AccountID})
+	}
 	link, err := ParseShareLink(in.URL)
 	if err != nil {
 		return nil, err
@@ -390,6 +396,10 @@ func (s *Service) UpdateSavedLink(ctx context.Context, in UpdateSavedInput) (*Pa
 		return nil, err
 	}
 
+	// buei: 编辑磁力收藏时保留原收藏记录并重新走磁力解析。
+	if IsMagnetLink(in.URL) && isMagnetShareID(old.ShareID) {
+		return s.ParseMagnet(ctx, ParseMagnetInput{URL: in.URL, SavedID: old.ID})
+	}
 	link, err := ParseShareLink(in.URL)
 	if err != nil {
 		return nil, err
@@ -454,7 +464,38 @@ func (s *Service) UpdateSavedLink(ctx context.Context, in UpdateSavedInput) (*Pa
 }
 
 // SavedLinks 返回已收藏的分享链接，按收藏 ID 固定顺序。
+// SavedLinks 返回全部收藏；磁力收藏的 Owner 填充为离线时使用的光鸭账号名（仅展示用）。
 func (s *Service) SavedLinks(ctx context.Context) ([]*domain.GuangyaShareLink, error) {
+	links, err := s.savedLinks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// 磁力收藏没有分享者，用离线账号名替代「光鸭用户」占位。
+	accountNames := make(map[int64]string)
+	for _, link := range links {
+		if link == nil || !isMagnetShareID(link.ShareID) {
+			continue
+		}
+		accountID := s.loadMagnetAccount(ctx, link.ShareID)
+		if accountID <= 0 {
+			continue
+		}
+		name, ok := accountNames[accountID]
+		if !ok {
+			if account, err := s.accounts.Get(ctx, accountID); err == nil && account != nil {
+				name = account.Name
+			}
+			accountNames[accountID] = name
+		}
+		if name != "" {
+			link.Owner = name
+		}
+		link.MagnetAccountID = accountID
+	}
+	return links, nil
+}
+
+func (s *Service) savedLinks(ctx context.Context) ([]*domain.GuangyaShareLink, error) {
 	if s == nil || s.links == nil {
 		return []*domain.GuangyaShareLink{}, nil
 	}
@@ -501,6 +542,12 @@ func (s *Service) DeleteSavedLink(ctx context.Context, id int64) error {
 	if s == nil || s.links == nil {
 		return domain.Errorf(domain.CodeNotImplement, "收藏功能未启用")
 	}
+	// buei: 磁力收藏删除时先删「来自：云添加/<哈希>」目录，再删收藏记录。
+	if link, err := s.links.Get(ctx, id); err == nil && link != nil && isMagnetShareID(link.ShareID) {
+		if err := s.DeleteMagnetFiles(ctx, link.ShareID); err != nil {
+			s.logger().Warn("删除磁力离线目录失败，继续删除收藏记录", "link_id", id, "share_id", link.ShareID, "error", err)
+		}
+	}
 	if err := s.links.Delete(ctx, id); err != nil {
 		return err
 	}
@@ -515,7 +562,22 @@ func (s *Service) DeleteSavedLink(ctx context.Context, id int64) error {
 
 // List 列出分享内指定目录的直接内容。
 func (s *Service) List(ctx context.Context, in ListInput) (*ListResult, error) {
-	if s == nil || s.client == nil {
+	if s == nil {
+		return nil, domain.Errorf(domain.CodeInternal, "光鸭分享服务未初始化")
+	}
+	// buei: 磁力收藏浏览子目录 = 列光鸭账号内的真实目录（ParentID 是网盘文件 ID）。
+	if isMagnetShareID(in.ShareID) || IsMagnetLink(in.URL) {
+		shareID := in.ShareID
+		if !isMagnetShareID(shareID) {
+			shareID = magnetShareIDPrefix + MagnetInfoHash(in.URL)
+		}
+		items, err := s.listMagnetDir(ctx, shareID, strings.TrimSpace(in.ParentID))
+		if err != nil {
+			return nil, err
+		}
+		return &ListResult{Items: items}, nil
+	}
+	if s.client == nil {
 		return nil, domain.Errorf(domain.CodeInternal, "光鸭分享服务未初始化")
 	}
 	shareID, password, err := resolveShareInput(in.URL, in.ShareID, in.Password)
@@ -533,6 +595,16 @@ func (s *Service) List(ctx context.Context, in ListInput) (*ListResult, error) {
 func (s *Service) Transfer(ctx context.Context, in TransferInput) (out *TransferResult, err error) {
 	if s == nil {
 		return nil, domain.Errorf(domain.CodeInternal, "光鸭分享服务未初始化")
+	}
+	// buei: 磁力收藏的文件已在光鸭账号内，入库即移动到目标目录，后续联动一致。
+	// 磁力链接不是分享链接，要在 resolveShareInput 之前识别。
+	if isMagnetShareID(in.ShareID) || IsMagnetLink(in.URL) {
+		// buei: shareID 优先取收藏标识，磁力链接则从 URL 推导。
+		shareID := in.ShareID
+		if !isMagnetShareID(shareID) {
+			shareID = magnetShareIDPrefix + MagnetInfoHash(in.URL)
+		}
+		return s.transferMagnetFiles(ctx, in, shareID)
 	}
 	shareID, password, err := resolveShareInput(in.URL, in.ShareID, in.Password)
 	if err != nil {

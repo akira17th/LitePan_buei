@@ -1,5 +1,10 @@
 export type ShareLinkProvider = "guangya" | "quark";
 
+// buei 定制：识别磁力链接（magnet:?xt=urn:btih:...）。磁力收藏走光鸭离线下载解析。
+export function isMagnetLink(input: string): boolean {
+  return input.trim().toLowerCase().startsWith("magnet:?xt=urn:btih:");
+}
+
 // buei 定制：影视入库的 + 收藏弹窗只自动识别光鸭；其他链接按手动选择的云盘保存。
 export function detectShareLinkProvider(input: string): ShareLinkProvider | null {
   const text = String(input ?? "").trim().toLowerCase();

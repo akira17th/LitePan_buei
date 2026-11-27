@@ -40,6 +40,7 @@ import { buildBrowserLocationQuery } from "@/utils/bueiBrowserLocation";
 import { isQuarkShareInboxName } from "@/utils/bueiQuarkShare";
 import {
   detectShareLinkProvider,
+  isMagnetLink,
   type ShareLinkProvider,
 } from "@/utils/bueiShareLink";
 import { toast } from "@/composables/useToast";
@@ -202,8 +203,19 @@ const sourceTitle = computed(() =>
 const sourceSubtitle = computed(() =>
   provider.value === "quark"
     ? `夸克 · ${activeQuarkFavorite.value?.accountName || "未选择账号"}`
-    : result.value?.owner || "光鸭用户",
+    : result.value?.owner || "光鸭",
 );
+// #region buei:guangya magnet ingest
+// 当前打开的光鸭收藏是否为磁力；磁力收藏固定离线账号，保存位置只能选该账号。
+const currentMagnetAccountID = computed(() => {
+  if (provider.value !== "guangya") return 0;
+  const key = activeFavoriteKey.value;
+  if (!key?.startsWith("g:")) return 0;
+  const id = Number(key.slice(2));
+  const link = savedLinks.value.find((item) => item.id === id);
+  return link && link.share_id?.startsWith("magnet:") ? Number(link.magnet_account_id || 0) : 0;
+});
+// #endregion buei:guangya magnet ingest
 
 // #region buei:quark-favorite-path
 // 夸克收藏文件夹在账号内的路径：根目录 → 来自：分享 → 收藏文件夹。
@@ -236,7 +248,7 @@ const unifiedFavorites = computed<UnifiedFavorite[]>(() => {
       provider: "guangya" as const,
       id: link.id,
       title: link.title || link.share_id || "未命名分享",
-      subtitle: `${link.owner || "光鸭用户"} · ${formatTimeShort(link.last_used_at) || "刚刚"}`,
+      subtitle: `${link.owner || "光鸭"} · ${formatTimeShort(link.last_used_at) || "刚刚"}`,
       link: link.url || link.share_id,
       createdAt: link.created_at || link.updated_at,
       accountName: "",
@@ -264,12 +276,47 @@ const unifiedFavorites = computed<UnifiedFavorite[]>(() => {
 const favoritesLoading = computed(() => savedLoading.value || quarkFavoritesLoading.value);
 const favoritesError = computed(() => savedError.value || quarkFavoritesError.value);
 const favoriteDetectedProvider = computed(() => detectShareLinkProvider(favoriteLink.value));
+// buei 定制：磁力链接走光鸭离线下载解析，收藏后与光鸭分享同一入库流程。
+const favoriteIsMagnet = computed(() => !favoriteEditing.value && isMagnetLink(favoriteLink.value));
+// 多个启用光鸭账号时由用户选择磁力离线执行账号。
+const favoriteMagnetAccountId = ref<number | null>(null);
+// 磁力解析进行中：显示等待提示与已用时间，让用户知道任务在跑。
+const favoriteMagnetWaiting = ref(false);
+const favoriteMagnetWaitSeconds = ref(0);
+let favoriteMagnetWaitTimer: ReturnType<typeof setInterval> | null = null;
+
+function startMagnetWaitHint() {
+  stopMagnetWaitHint();
+  favoriteMagnetWaiting.value = true;
+  favoriteMagnetWaitSeconds.value = 0;
+  favoriteMagnetWaitTimer = setInterval(() => {
+    favoriteMagnetWaitSeconds.value += 1;
+  }, 1000);
+}
+
+function stopMagnetWaitHint() {
+  if (favoriteMagnetWaitTimer) {
+    clearInterval(favoriteMagnetWaitTimer);
+    favoriteMagnetWaitTimer = null;
+  }
+  favoriteMagnetWaiting.value = false;
+}
+const favoriteMagnetAccountOptions = computed(() =>
+  guangyaAccounts.value.map((account) => ({ value: account.id, label: account.name })),
+);
+const showFavoriteMagnetAccount = computed(
+  () => favoriteIsMagnet.value && favoriteMagnetAccountOptions.value.length > 1,
+);
 // 添加收藏时只识别光鸭；其余链接一律归入手动选择的云盘，不校验域名。
 const showFavoriteProviderSelect = computed(
-  () => !favoriteEditing.value && favoriteDetectedProvider.value !== "guangya",
+  () =>
+    !favoriteEditing.value &&
+    !favoriteIsMagnet.value &&
+    favoriteDetectedProvider.value !== "guangya",
 );
 const favoriteProvider = computed<Provider>(() => {
   if (favoriteEditing.value) return favoriteEditing.value.provider;
+  if (favoriteIsMagnet.value) return "guangya";
   return favoriteDetectedProvider.value === "guangya" ? "guangya" : favoriteProviderManual.value;
 });
 const favoriteQuarkAccountOptions = computed(() =>
@@ -895,6 +942,12 @@ const pickerAccounts = computed(() => {
     const accountId = activeQuarkFavorite.value?.account_id;
     return quarkAccounts.value.filter((account) => account.id === accountId);
   }
+  // #region buei:guangya magnet ingest
+  // 磁力收藏固定离线账号：保存位置只能选该账号下的目录。
+  if (currentMagnetAccountID.value > 0) {
+    return guangyaAccounts.value.filter((account) => account.id === currentMagnetAccountID.value);
+  }
+  // #endregion buei:guangya magnet ingest
   return guangyaAccounts.value;
 });
 const pickerTitle = computed(() => {
@@ -1342,6 +1395,43 @@ function applyDestinationBase(base: DestinationBase | null) {
 }
 
 function applyDestinationForShare(res: GuangyaShareParseResult) {
+  // #region buei:guangya magnet ingest
+  // 磁力收藏固定离线账号：保存位置只能预填该账号的目录，其它账号的预设直接忽略。
+  if (currentMagnetAccountID.value > 0) {
+    const account = guangyaAccounts.value.find((item) => item.id === currentMagnetAccountID.value);
+    const draft = res.last_destination ?? null;
+    const sameAccount = (base: DestinationBase | null | undefined) => !!base && base.accountId === currentMagnetAccountID.value;
+    const draftBase = draft ? destinationBaseFromAPI(draft.account_id, draft.parent_id, draft.base_path, draft.base_dirs) : null;
+    const lastBase = res.last_base
+      ? destinationBaseFromAPI(res.last_base.account_id, res.last_base.parent_id, res.last_base.path, res.last_base.dirs)
+      : null;
+    const base = sameAccount(draftBase) ? draftBase : sameAccount(lastBase) ? lastBase : null;
+    if (base) {
+      destination.value = {
+        accountId: base.accountId,
+        accountName: account?.name || base.accountName,
+        parentId: base.parentId || "",
+        path: base.path || "/",
+        dirs: [...base.dirs],
+      };
+    } else {
+      destination.value = {
+        accountId: currentMagnetAccountID.value,
+        accountName: account?.name || "",
+        parentId: "",
+        path: "/",
+        dirs: [],
+      };
+    }
+    folderTitle.value = toHalfWidthBrackets(draft?.title || res.title || res.items[0]?.name || "").trim();
+    isSeries.value = draft ? draft.is_series : true;
+    season.value = draft ? draft.season : 1;
+    autoStrm.value = draft ? draft.auto_strm !== false : true;
+    autoScrape.value = draft ? draft.auto_scrape !== false : true;
+    scrapeTaskId.value = draft && draft.auto_scrape_task_id > 0 ? Number(draft.auto_scrape_task_id) : null;
+    return;
+  }
+  // #endregion buei:guangya magnet ingest
   const draft = res.last_destination ?? null;
   const draftBase = draft
     ? destinationBaseFromAPI(draft.account_id, draft.parent_id, draft.base_path, draft.base_dirs)
@@ -1441,11 +1531,18 @@ const canTransfer = computed(() => {
       !interactionBusy.value
     );
   }
+  // #region buei:guangya magnet ingest
+  // 磁力收藏的保存位置必须在离线账号内；普通分享不限制账号。
+  const accountIdOK =
+    currentMagnetAccountID.value > 0
+      ? destination.value.accountId === currentMagnetAccountID.value
+      : destination.value.accountId > 0;
+  // #endregion buei:guangya magnet ingest
   return (
     !!result.value &&
     !result.value.need_password &&
     selectedItems.value.length > 0 &&
-    destination.value.accountId > 0 &&
+    accountIdOK &&
     !!sanitizedFolderTitle.value &&
     !interactionBusy.value
   );
@@ -1551,6 +1648,12 @@ function onFolderResolved(payload: {
     toast.error("夸克入库只能在收藏所属账号内进行");
     return;
   }
+  // #region buei:guangya magnet ingest
+  if (provider.value === "guangya" && currentMagnetAccountID.value > 0 && payload.accountId !== currentMagnetAccountID.value) {
+    toast.error("磁力入库只能在离线时使用的光鸭账号内进行");
+    return;
+  }
+  // #endregion buei:guangya magnet ingest
   // #region buei:quark ingest flash to guangya
   if (provider.value === "quark" && flashToGuangya.value) {
     if (!guangyaAccounts.value.some((account) => account.id === payload.accountId)) {
@@ -1573,15 +1676,18 @@ function onFolderResolved(payload: {
   pickerOpen.value = false;
 }
 
-async function loadSavedLinks() {
-  savedLoading.value = true;
-  savedError.value = "";
+async function loadSavedLinks(silent = false) {
+  // buei: silent 静默刷新（不触发列表 loading，避免收藏列表闪烁）。
+  if (!silent) {
+    savedLoading.value = true;
+    savedError.value = "";
+  }
   try {
     savedLinks.value = (await bueiGuangyaShareApi.saved()).items;
   } catch (error) {
-    savedError.value = getApiErrorMessage(error, "加载光鸭收藏失败");
+    if (!silent) savedError.value = getApiErrorMessage(error, "加载光鸭收藏失败");
   } finally {
-    savedLoading.value = false;
+    if (!silent) savedLoading.value = false;
   }
 }
 
@@ -1882,6 +1988,11 @@ function resetFavoriteDialog() {
   favoriteEditing.value = null;
   favoriteLink.value = "";
   favoritePassword.value = "";
+  // #region buei:guangya magnet ingest
+  // 默认选带 VIP 标记的光鸭账号（多个时优先第一个 VIP）。
+  const vipAccount = guangyaAccounts.value.find((a) => (a.profile_vip || "").trim() !== "");
+  favoriteMagnetAccountId.value = vipAccount?.id ?? null;
+  // #endregion buei:guangya magnet ingest
   favoriteProviderManual.value = "quark";
   favoriteError.value = "";
   favoriteQuarkAccountId.value = quarkAccounts.value[0]?.id ?? null;
@@ -1903,6 +2014,9 @@ function openAddFavorite() {
 
 function closeFavoriteDialog() {
   if (favoriteSaving.value) return;
+  // #region buei:guangya magnet ingest
+  stopMagnetWaitHint();
+  // #endregion buei:guangya magnet ingest
   favoriteDialogOpen.value = false;
   favoriteFolderPickerOpen.value = false;
 }
@@ -1987,7 +2101,8 @@ function onFavoriteLinkInput(event?: Event) {
   if (favoriteEditing.value) return;
   const target = event?.target as HTMLInputElement | null;
   const value = target?.value ?? favoriteLink.value;
-  if (value.trim() && detectShareLinkProvider(value) !== "guangya") void ensureFavoriteQuarkInbox();
+  if (!value.trim() || isMagnetLink(value)) return;
+  if (detectShareLinkProvider(value) !== "guangya") void ensureFavoriteQuarkInbox();
 }
 
 function onFavoriteProviderChange(value: string | number | boolean) {
@@ -2044,6 +2159,10 @@ async function submitFavorite() {
   const targetProvider = favoriteProvider.value;
   favoriteSaving.value = true;
   favoriteError.value = "";
+  // #region buei:guangya magnet ingest
+  const magnetWait = favoriteIsMagnet.value;
+  if (magnetWait) startMagnetWaitHint();
+  // #endregion buei:guangya magnet ingest
   try {
     if (targetProvider === "guangya") {
       const editingFavorite = favoriteEditing.value;
@@ -2055,13 +2174,19 @@ async function submitFavorite() {
         : await bueiGuangyaShareApi.parse({
             url: link,
             password: favoritePassword.value.trim(),
+            // buei: 磁力解析可指定光鸭账号执行离线下载。
+            account_id: favoriteIsMagnet.value ? favoriteMagnetAccountId.value || undefined : undefined,
           });
       if (res.need_password) {
         favoriteError.value = "该分享需要提取码";
         return;
       }
+      // #region buei:guangya magnet ingest
+      // 磁力收藏：先静默刷新收藏列表，保存位置才能按离线账号锁定（不能等套用后再刷新）。
+      if (favoriteIsMagnet.value) await loadSavedLinks(true);
+      // #endregion buei:guangya magnet ingest
       applyParsedGuangya(res, link);
-      await loadSavedLinks();
+      if (!favoriteIsMagnet.value) await loadSavedLinks();
       if (res.saved_link_id > 0) {
         activeFavoriteKey.value = `g:${res.saved_link_id}`;
       } else if (editingFavorite) {
@@ -2103,6 +2228,9 @@ async function submitFavorite() {
     favoriteError.value = getApiErrorMessage(error, "保存收藏失败");
   } finally {
     favoriteSaving.value = false;
+    // #region buei:guangya magnet ingest
+    if (magnetWait) stopMagnetWaitHint();
+    // #endregion buei:guangya magnet ingest
   }
 }
 
@@ -2199,6 +2327,10 @@ async function parseShare(refreshSaved = true, savedID?: number) {
       controller.signal,
     );
     if (controller.signal.aborted) return;
+    // #region buei:guangya magnet ingest
+    // 磁力收藏解析后静默刷新收藏列表，让 currentMagnetAccountID 能取到离线账号（锁定保存位置）。
+    if (isMagnetLink(input)) await loadSavedLinks(true);
+    // #endregion buei:guangya magnet ingest
     applyParsedGuangya(res, input);
     if (refreshSaved && activeFavoriteKey.value === null) void loadAllFavorites();
   } catch (error) {
@@ -3423,7 +3555,9 @@ onBeforeUnmount(() => {
 
           <div v-else-if="parsing" class="gys__empty">
             <BusySpinner variant="notch" :size="34" />
-            <p>正在解析分享内容…</p>
+            <!-- #region buei:guangya magnet ingest -->
+            <p>{{ isMagnetLink(url) ? "正在让光鸭离线解析磁力… 可能需要 1–2 分钟" : "正在解析分享内容…" }}</p>
+            <!-- #endregion buei:guangya magnet ingest -->
             <small>目录较多时可能需要几十秒，请稍候</small>
           </div>
 
@@ -4158,12 +4292,36 @@ onBeforeUnmount(() => {
         <small>不校验域名，可填写任意链接。</small>
       </label>
 
-      <div v-if="favoriteProvider === 'guangya'" class="gys__editor-provider">
+      <!-- #region buei:guangya magnet ingest -->
+      <div v-if="favoriteIsMagnet" class="gys__editor-provider">
+        <span class="gys__provider">光鸭 · 磁力</span>
+        <span>调用光鸭离线下载解析磁力，完成后与分享一样勾选入库，可能需要 1–2 分钟</span>
+      </div>
+
+      <!-- #region buei:guangya magnet ingest -->
+      <p v-if="favoriteMagnetWaiting" class="gys__magnet-wait" aria-live="polite">
+        <BusySpinner :size="14" />
+        <span>正在让光鸭离线解析磁力… 已等待 {{ favoriteMagnetWaitSeconds }} 秒，请勿关闭</span>
+      </p>
+      <!-- #endregion buei:guangya magnet ingest -->
+
+      <label v-if="showFavoriteMagnetAccount" class="gys__editor-field">
+        <span>光鸭账号</span>
+        <AppSelect
+          :model-value="favoriteMagnetAccountId"
+          :options="favoriteMagnetAccountOptions"
+          placeholder="选择离线下载的光鸭账号"
+          :disabled="favoriteSaving"
+          @update:model-value="(v) => (favoriteMagnetAccountId = v ? Number(v) : null)"
+        />
+      </label>
+
+      <div v-else-if="favoriteProvider === 'guangya'" class="gys__editor-provider">
         <span class="gys__provider">光鸭</span>
         <span>{{ favoriteEditing ? "保存后自动重新解析" : "自动解析并收藏，提取码可选" }}</span>
       </div>
 
-      <label v-if="favoriteProvider === 'guangya'" class="gys__editor-field">
+      <label v-if="favoriteProvider === 'guangya' && !favoriteIsMagnet" class="gys__editor-field">
         <span>提取码</span>
         <input
           v-model="favoritePassword"
@@ -4174,6 +4332,7 @@ onBeforeUnmount(() => {
           @keydown.enter.prevent="submitFavorite"
         />
       </label>
+      <!-- #endregion buei:guangya magnet ingest -->
 
       <template v-if="favoriteProvider === 'quark'">
         <label class="gys__editor-field">
@@ -4213,14 +4372,16 @@ onBeforeUnmount(() => {
       <AppButton
         variant="primary"
         :loading="favoriteSaving"
-        :disabled="favoriteProvider === 'quark' && !favoriteQuarkFolderId"
+        :disabled="(favoriteProvider === 'quark' && !favoriteQuarkFolderId) || (favoriteIsMagnet && !isMagnetLink(favoriteLink))"
         @click="submitFavorite"
       >
         {{
           favoriteProvider === "guangya"
-            ? favoriteEditing
-              ? "保存并解析"
-              : "解析并收藏"
+            ? favoriteIsMagnet
+              ? "解析磁力并收藏"
+              : favoriteEditing
+                ? "保存并解析"
+                : "解析并收藏"
             : "保存收藏"
         }}
       </AppButton>
@@ -5978,6 +6139,10 @@ onBeforeUnmount(() => {
   font-size: 9px;
   font-style: normal;
   line-height: 1;
+  /* #region buei:guangya magnet ingest */
+  flex: none;
+  white-space: nowrap;
+  /* #endregion buei:guangya magnet ingest */
 }
 
 .gys__provider.is-quark {
@@ -6331,14 +6496,35 @@ onBeforeUnmount(() => {
 
 .gys__editor-provider {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 7px;
   margin-top: -4px;
   font-size: 11px;
   color: var(--text-muted);
 }
 
+/* #region buei:guangya magnet ingest */
+/* 多行说明文案时徽标与首行对齐 */
+.gys__editor-provider .gys__provider {
+  margin-top: 1px;
+}
+
+/* #endregion buei:guangya magnet ingest */
+
 .gys__editor-hint,
+/* #region buei:guangya magnet ingest */
+/* 磁力解析等待提示 */
+.gys__magnet-wait {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* #endregion buei:guangya magnet ingest */
+
 .gys__editor-error {
   margin: -4px 0 0;
   font-size: 11px;

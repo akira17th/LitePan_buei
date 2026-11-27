@@ -215,6 +215,8 @@ func (h *Handler) bueiGuangyaShareParse(w http.ResponseWriter, r *http.Request) 
 		URL      string `json:"url"`
 		Password string `json:"password"`
 		SavedID  int64  `json:"saved_id"`
+		// buei: 磁力解析使用指定光鸭账号执行离线下载；0 表示自动选择。
+		AccountID int64 `json:"account_id"`
 	}
 	if err := decodeJSON(r, &in); err != nil {
 		writeErr(w, err)
@@ -224,6 +226,9 @@ func (h *Handler) bueiGuangyaShareParse(w http.ResponseWriter, r *http.Request) 
 		URL:      in.URL,
 		Password: in.Password,
 		SavedID:  in.SavedID,
+		// #region buei:guangya magnet ingest
+		AccountID: in.AccountID,
+		// #endregion buei:guangya magnet ingest
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -415,10 +420,12 @@ type bueiGuangyaShareSavedLinkDTO struct {
 	CreatedAt  string `json:"created_at"`
 	UpdatedAt  string `json:"updated_at"`
 	LastUsedAt string `json:"last_used_at"`
+	// buei: 磁力收藏离线使用的光鸭账号 ID；非磁力为 0。
+	MagnetAccountID int64 `json:"magnet_account_id"`
 }
 
 func bueiGuangyaShareSavedLinkToDTO(link *domain.GuangyaShareLink) bueiGuangyaShareSavedLinkDTO {
-	return bueiGuangyaShareSavedLinkDTO{
+	dto := bueiGuangyaShareSavedLinkDTO{
 		ID:         link.ID,
 		ShareID:    link.ShareID,
 		URL:        link.URL,
@@ -429,6 +436,11 @@ func bueiGuangyaShareSavedLinkToDTO(link *domain.GuangyaShareLink) bueiGuangyaSh
 		UpdatedAt:  FormatAPITime(link.UpdatedAt),
 		LastUsedAt: FormatAPITime(link.LastUsedAt),
 	}
+	// #region buei:guangya magnet ingest
+	// 磁力收藏：Owner 已由服务层填充为光鸭账号名；这里带上账号 ID 供前端锁定保存位置。
+	dto.MagnetAccountID = link.MagnetAccountID
+	// #endregion buei:guangya magnet ingest
+	return dto
 }
 
 func (h *Handler) bueiGuangyaShareDiscard(w http.ResponseWriter, r *http.Request) {

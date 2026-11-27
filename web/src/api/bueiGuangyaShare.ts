@@ -104,6 +104,8 @@ export interface GuangyaShareSavedLink {
   created_at: string;
   updated_at: string;
   last_used_at: string;
+  // 磁力收藏离线使用的光鸭账号 ID；非磁力为 0。
+  magnet_account_id?: number;
 }
 
 export interface GuangyaShareListPayload {
@@ -182,7 +184,10 @@ export interface GuangyaShareTransferResult {
 }
 
 export const bueiGuangyaShareApi = {
-  parse: (payload: { url: string; password: string; saved_id?: number }, signal?: AbortSignal) =>
+  parse: (
+    payload: { url: string; password: string; saved_id?: number; account_id?: number },
+    signal?: AbortSignal,
+  ) =>
     http.postWithTimeout<GuangyaShareParseResult>(
       "/admin/tools/guangya-share/parse",
       payload,
