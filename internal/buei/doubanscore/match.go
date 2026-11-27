@@ -18,7 +18,43 @@ var (
 	reSeasonCN      = regexp.MustCompile(`第\s*[0-9一二三四五六七八九十]+\s*[季部]`)
 	reMultiSpace    = regexp.MustCompile(`\s+`)
 	reInvisible     = regexp.MustCompile(`[\x{200b}-\x{200f}\x{feff}]`)
+	// reSeasonTail 匹配候选标题末尾的季数信息（第一季 / Season 1 / 第2部 / 罗马数字 / 裸数字）。
+	reSeasonTail = regexp.MustCompile(`(?i)(第\s*[0-9一二三四五六七八九十]+\s*[季部]|season\s*\d+|[IVXivx]+\s*季|\s\d{1,2})$`)
 )
+
+// stripSeasonSuffix 去掉标题末尾的季数标记：「一人之下 第一季」→「一人之下」。
+// 豆瓣把多季拆成独立条目，STRM 索引里的整部作品要靠它对上第一季。
+func stripSeasonSuffix(title string) string {
+	prev := ""
+	for prev != title {
+		prev = title
+		title = strings.TrimSpace(reSeasonTail.ReplaceAllString(title, ""))
+	}
+	return title
+}
+
+// isSeasonEntryTitle 判断豆瓣标题是否是「XXX 第N季 / Season N / XXX 2」这类分季条目。
+// 在原始文本上剥离（normalizeTitle 会吃掉空格，裸数字规则依赖空格边界），再宽松比较。
+func isSeasonEntryTitle(title string) bool {
+	stripped := stripSeasonSuffix(title)
+	if stripped == title {
+		return false
+	}
+	return normalizeTitle(stripped) != normalizeTitle(title)
+}
+
+// seasonOnlyDiff 判断两个互相包含的标题的差集是否只是季数信息。
+// 「一人之下 第一季」vs「一人之下」：差集「第一季」→ true，视为同一部作品。
+func seasonOnlyDiff(a, b string) bool {
+	long, short := a, b
+	if len(short) > len(long) {
+		long, short = short, long
+	}
+	if !strings.HasPrefix(long, short) {
+		return false
+	}
+	return stripSeasonSuffix(strings.TrimSpace(long[len(short):])) == ""
+}
 
 // cleanDoubanText 去掉豆瓣标题里夹带的不可见字符（如 ‎）并压缩空白。
 func cleanDoubanText(raw string) string {
@@ -61,7 +97,7 @@ func normalizeTitle(raw string) string {
 // 候选匹配阈值：低于该分数视为没有可靠匹配。
 const matchThreshold = 60.0
 
-func scoreCandidate(candTitle string, candYear *int, isTV bool, hasRating bool, want string, wantYear *int, mediaType string) float64 {
+func scoreCandidate(candTitle string, candYear *int, isTV, hasRating, isSeasonEntry bool, want string, wantYear *int, mediaType string) float64 {
 	candKey := normalizeTitle(candTitle)
 	wantKey := normalizeTitle(want)
 	if candKey == "" || wantKey == "" {
@@ -71,12 +107,18 @@ func scoreCandidate(candTitle string, candYear *int, isTV bool, hasRating bool, 
 	switch {
 	case candKey == wantKey:
 		score += 100
+	case seasonOnlyDiff(candKey, wantKey):
+		// 差集只是「第X季 / Season N」：就是这部作品（豆瓣分季、索引整部），按接近全等打分。
+		score += 85
 	case strings.Contains(candKey, wantKey) || strings.Contains(wantKey, candKey):
 		score += 45
 	default:
 		return -1
 	}
-	if wantYear != nil && candYear != nil {
+	// 季数条目（同一部作品的不同季）不参与年份打分：索引的整部年份是首播年，
+	// 与最新季年份必然不同，按年份加减分会让首播季永远压住最新季，
+	// 「整部剧取最新一季评分作代表」就失效了。年份防混淆只对非季条目生效。
+	if wantYear != nil && candYear != nil && !isSeasonEntry {
 		diff := *wantYear - *candYear
 		if diff < 0 {
 			diff = -diff
@@ -114,12 +156,31 @@ func scoreCandidate(candTitle string, candYear *int, isTV bool, hasRating bool, 
 func pickSearch(hits []searchHit, want string, wantYear *int, mediaType string) *LookupResult {
 	var best *LookupResult
 	bestScore := 0.0
+	// bestSeasonYear 只在「多季条目互相打平」时参与比较：取年份更新的那一季。
+	// 豆瓣把多季拆成独立条目（标题季数后缀已被 seasonOnlyDiff 抹平），同部作品的各季
+	// 打分完全相同；STRM 索引的整部剧集取最新一季的评分作代表（最贴近当前播出状态）。
+	// 电影之间天然不会出现季数条目，该决胜规则不影响电影匹配。
+	var bestSeasonYear int
 	for _, hit := range hits {
-		score := scoreCandidate(hit.Title, hit.Year, hit.IsTV, hit.Rating != nil, want, wantYear, mediaType)
-		if score < matchThreshold || score <= bestScore {
+		score := scoreCandidate(hit.Title, hit.Year, hit.IsTV, hit.Rating != nil, hit.IsSeasonEntry, want, wantYear, mediaType)
+		// 低于阈值直接淘汰；分数低于当前最优也淘汰（严格更高才替换，并列走下面决胜）。
+		if score < matchThreshold || score < bestScore {
 			continue
 		}
+		seasonYear := 0
+		if hit.Year != nil {
+			seasonYear = *hit.Year
+		}
+		if score == bestScore && best != nil {
+			// 并列：只有两边都是季数条目才按「更新的季」决胜，其余维持先到者。
+			// 代表评分要可用：hasRating 在 scoreCandidate 里有 +2，没评分的季分数
+			// 严格更低，根本进不了这里——并列只发生在「都有/都没有评分」的季之间。
+			if !best.isSeason || !hit.IsSeasonEntry || bestSeasonYear >= seasonYear {
+				continue
+			}
+		}
 		bestScore = score
+		bestSeasonYear = seasonYear
 		source := hit.Source
 		if source == "" {
 			source = "search"
@@ -133,6 +194,7 @@ func pickSearch(hits []searchHit, want string, wantYear *int, mediaType string) 
 			IsTV:        hit.IsTV,
 			Source:      source,
 		}
+		best.isSeason = hit.IsSeasonEntry
 	}
 	return best
 }
@@ -141,7 +203,7 @@ func pickSuggest(items []LookupResult, want string, wantYear *int, mediaType str
 	var best *LookupResult
 	bestScore := 0.0
 	for _, item := range items {
-		score := scoreCandidate(item.DoubanTitle, item.DoubanYear, item.IsTV, false, want, wantYear, mediaType)
+		score := scoreCandidate(item.DoubanTitle, item.DoubanYear, item.IsTV, false, false, want, wantYear, mediaType)
 		if score < matchThreshold || score <= bestScore {
 			continue
 		}

@@ -111,11 +111,11 @@ func TestPickSuggestTVByEpisode(t *testing.T) {
 
 func TestScoreCandidateThreshold(t *testing.T) {
 	// 「八仙！」 vs 「八仙过海」：包含关系得分不足以越过阈值。
-	score := scoreCandidate("八仙过海", intPtr(1985), true, true, "八仙！", intPtr(2026), "movie")
+	score := scoreCandidate("八仙过海", intPtr(1985), true, true, false, "八仙！", intPtr(2026), "movie")
 	if score >= matchThreshold {
 		t.Fatalf("分数 %.1f 不应越过阈值 %.1f", score, matchThreshold)
 	}
-	score = scoreCandidate("八仙！", intPtr(2026), false, true, "八仙！", intPtr(2026), "movie")
+	score = scoreCandidate("八仙！", intPtr(2026), false, true, false, "八仙！", intPtr(2026), "movie")
 	if score < matchThreshold {
 		t.Fatalf("完全匹配分数 %.1f 应越过阈值 %.1f", score, matchThreshold)
 	}

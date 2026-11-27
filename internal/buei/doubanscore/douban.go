@@ -53,10 +53,52 @@ type LookupResult struct {
 	IsTV        bool
 	// Source 记录命中来源：search / rexxar / suggest / detail。
 	Source string
+
+	// isSeason 内部决胜标记：命中条目是「第N季」分季条目（不导出、不展示）。
+	isSeason bool
 }
 
 // errDoubanChallenge 表示搜索页被 302 到 sec.douban.com 的人机校验页。
 var errDoubanChallenge = errors.New("豆瓣搜索页被风控校验拦截")
+
+// DescribeLookupError 把查询失败的根因转成给用户看的一句话：
+// 未命中任何候选与「接口都被拦」必须区分开，否则风控会被误报成「豆瓣无此条目」。
+func DescribeLookupError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return "查询失败"
+	}
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(msg, errDoubanChallenge.Error()):
+		return "豆瓣搜索被风控拦截，请稍后重试"
+	case strings.Contains(lower, "sec.douban.com") || strings.Contains(lower, "challenge"):
+		return "豆瓣搜索被风控拦截，请稍后重试"
+	case strings.Contains(msg, "解析豆瓣"):
+		return "豆瓣接口返回异常，可能被风控拦截，请稍后重试"
+	case strings.Contains(lower, "429") || strings.Contains(lower, "rate"):
+		return "豆瓣接口限流，请稍后重试"
+	case strings.Contains(lower, "context deadline exceeded") || strings.Contains(lower, "client timeout"):
+		return "豆瓣请求超时，请稍后重试"
+	case strings.Contains(lower, "connection refused") || strings.Contains(lower, "no such host") ||
+		strings.Contains(lower, "network is unreachable") || strings.Contains(lower, "connection reset"):
+		return "网络连接失败，请检查网络后重试"
+	default:
+		return "查询失败：" + truncateDesc(msg)
+	}
+}
+
+// truncateDesc 截断过长的底层错误信息。
+func truncateDesc(msg string) string {
+	runes := []rune(msg)
+	if len(runes) > 120 {
+		return string(runes[:120]) + "…"
+	}
+	return msg
+}
 
 type doubanClient struct {
 	http     *http.Client
@@ -224,6 +266,8 @@ type searchHit struct {
 	Votes   int
 	IsTV    bool
 	RawName string
+	// IsSeasonEntry 标记这是「XXX 第N季 / Season N」的分季条目。
+	IsSeasonEntry bool
 	// Source 标记候选来源：search（搜索页）/ rexxar（移动端搜索）。
 	Source string
 }
@@ -264,7 +308,9 @@ func (c *doubanClient) search(ctx context.Context, query string) ([]searchHit, e
 			Votes:   item.Rating.Count,
 			IsTV:    labelsContainTV(item),
 			RawName: item.Title,
-			Source:  "search",
+			// 标题带季数后缀 → 多季条目里的某一季。
+			IsSeasonEntry: isSeasonEntryTitle(title),
+			Source:        "search",
 		}
 		if item.Rating.Count > 0 && item.Rating.Value > 0 {
 			v := item.Rating.Value
@@ -312,6 +358,7 @@ type doubanRexxarSearch struct {
 				ID     string `json:"id"`
 				Title  string `json:"title"`
 				Year   string `json:"year"`
+				URI    string `json:"uri"`
 				Rating struct {
 					Value float64 `json:"value"`
 					Count int     `json:"count"`
@@ -346,13 +393,17 @@ func parseRexxarSearch(body []byte) ([]searchHit, error) {
 		if id == "" {
 			continue
 		}
+		seasonTitle := cleanDoubanText(target.Title)
 		hit := searchHit{
 			ID:      id,
-			Title:   cleanDoubanText(target.Title),
+			Title:   seasonTitle,
 			Year:    atoiPtr(target.Year),
 			Votes:   target.Rating.Count,
 			RawName: target.Title,
 			Source:  "rexxar",
+			// 移动端搜索结果没有电影/剧集字段，但 URI 里有：douban://douban.com/tv/{id}。
+			IsTV:          strings.Contains(target.URI, "/tv/"),
+			IsSeasonEntry: isSeasonEntryTitle(seasonTitle),
 		}
 		if target.Rating.Count > 0 && target.Rating.Value > 0 {
 			v := target.Rating.Value

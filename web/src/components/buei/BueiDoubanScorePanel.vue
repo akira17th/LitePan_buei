@@ -15,11 +15,11 @@ import {
   type BueiDoubanWallItem,
 } from "@/api/bueiDoubanScore";
 import AdminEmptyState from "@/components/admin/AdminEmptyState.vue";
+import BueiDoubanRunModal from "@/components/buei/BueiDoubanRunModal.vue";
 import AppButton from "@/components/base/AppButton.vue";
 import AppSelect from "@/components/base/AppSelect.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
 import { useAdminPageLoading } from "@/composables/useAdminLoadingBar";
-import { confirm } from "@/composables/useConfirm";
 import { toast } from "@/composables/useToast";
 
 const PAGE_LIMIT = 60;
@@ -56,6 +56,7 @@ const sortOptions = [
   { value: "added_desc", label: "添加时间" },
 ];
 
+const activeTask = computed(() => tasks.value.find((t) => t.id === activeTaskId.value) ?? null);
 const progress = computed(() => state.value?.progress ?? null);
 const running = computed(() => Boolean(progress.value?.running));
 const scheduleText = computed(() => {
@@ -285,38 +286,32 @@ function schedulePoll() {
   }, POLL_INTERVAL);
 }
 
-async function runTask() {
+// 立即查询：打开弹窗展示「将查询 / 无需查询」清单，确认后才执行。
+const showRunModal = ref(false);
+
+function openRunModal() {
   if (!activeTaskId.value || running.value) return;
-  try {
-    const result = await queryBueiDoubanScore({ strm_task_id: activeTaskId.value });
-    state.value = state.value ? { ...state.value, progress: result } : state.value;
-    pendingRefresh.value = true;
-    await loadState();
-    schedulePoll();
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "启动查询失败"));
-  }
+  showRunModal.value = true;
 }
 
-async function runAll() {
-  if (running.value) return;
-  if (!tasks.value.length) return;
-  const ok = await confirm({
-    title: "查询全部任务",
-    message: "按规则查询所有 STRM 任务的豆瓣评分：没有评分、未完结、完结不满 3 个月的作品会重新查询，其余跳过。",
-    confirmText: "开始查询",
-    danger: false,
-  }).catch(() => false);
-  if (!ok) return;
-  try {
-    const result = await queryBueiDoubanScore({ all_tasks: true });
-    state.value = state.value ? { ...state.value, progress: result } : state.value;
-    pendingRefresh.value = true;
+// 查询进行中关掉弹窗（后台运行）：面板接管轮询，结束后刷新列表。
+function closeRunModal() {
+  showRunModal.value = false;
+  void (async () => {
     await loadState();
-    schedulePoll();
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "启动查询失败"));
-  }
+    if (running.value) {
+      pendingRefresh.value = true;
+      schedulePoll();
+    }
+  })();
+}
+
+// 弹窗里的查询结束后：刷新任务计数与海报墙，并同步面板顶部状态。
+async function onRunFinished() {
+  pendingRefresh.value = false;
+  busyItemId.value = "";
+  await Promise.all([loadState(), loadTasks(), loadItems(true)]);
+  toast.success("豆瓣评分查询结束");
 }
 
 async function refreshItem(item: BueiDoubanWallItem) {
@@ -381,10 +376,9 @@ onUnmounted(() => {
       <div class="douban__actions">
         <AppButton v-if="running" type="button" variant="secondary" @click="stopRun">停止查询</AppButton>
         <template v-else>
-          <AppButton type="button" variant="secondary" :disabled="!activeTaskId" @click="runTask">
-            查询本任务
+          <AppButton type="button" variant="primary" :disabled="!activeTaskId" @click="openRunModal">
+            立即查询
           </AppButton>
-          <AppButton type="button" variant="primary" @click="runAll">全部任务</AppButton>
         </template>
       </div>
     </header>
@@ -528,6 +522,16 @@ onUnmounted(() => {
         </div>
       </section>
     </div>
+
+    <!-- #region buei:douban-score —— 立即查询弹窗：先展示将查/跳过清单，再执行并逐项显示结果 -->
+    <BueiDoubanRunModal
+      v-if="showRunModal && activeTaskId"
+      :strm-task-id="activeTaskId"
+      :task-name="activeTask?.name ?? ''"
+      @close="closeRunModal"
+      @finished="onRunFinished"
+    />
+    <!-- #endregion buei:douban-score -->
   </div>
 </template>
 

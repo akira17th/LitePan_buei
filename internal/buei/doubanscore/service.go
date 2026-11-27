@@ -3,6 +3,7 @@ package doubanscore
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -114,6 +115,13 @@ func New(opts Options) *Service {
 	return s
 }
 
+// ItemRunStatus 是单个作品在一次查询中的状态与结果说明。
+type ItemRunStatus struct {
+	Title  string `json:"title"`
+	State  string `json:"state"` // queried | skipped | failed
+	Detail string `json:"detail,omitempty"`
+}
+
 // Progress 是一次查询的执行进度。
 type Progress struct {
 	Running      bool   `json:"running"`
@@ -125,10 +133,14 @@ type Progress struct {
 	Skipped      int    `json:"skipped"`
 	Failed       int    `json:"failed"`
 	CurrentTitle string `json:"current_title,omitempty"`
-	Message      string `json:"message,omitempty"`
-	Error        string `json:"error,omitempty"`
-	StartedAt    string `json:"started_at,omitempty"`
-	FinishedAt   string `json:"finished_at,omitempty"`
+	// CurrentItemID 是正在查询的项目 ID（弹窗逐项状态用）。
+	CurrentItemID string `json:"current_item_id,omitempty"`
+	Message       string `json:"message,omitempty"`
+	Error         string `json:"error,omitempty"`
+	StartedAt     string `json:"started_at,omitempty"`
+	FinishedAt    string `json:"finished_at,omitempty"`
+	// Items 按项目记录本轮状态与真实原因（跳过原因 / 失败原因 / 匹配结果）。
+	Items map[string]*ItemRunStatus `json:"items,omitempty"`
 }
 
 // Summary 是最近一次自动/手动查询的统计。
@@ -226,6 +238,57 @@ type ItemQuery struct {
 	Filter     string // all | scored | unscored | pending
 	MediaType  string // all | movie | tv
 	Sort       string // default | title_asc | year_desc | added_desc | rating_asc
+}
+
+// PlanItem 是查询计划里的一行：要不要查，以及原因。
+type PlanItem struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Year   *int   `json:"year,omitempty"`
+	Reason string `json:"reason"`
+}
+
+// Plan 是「立即查询」弹窗的数据：将查询 / 无需查询两组清单。
+type Plan struct {
+	StrmTaskID int64      `json:"strm_task_id"`
+	TaskName   string     `json:"task_name"`
+	Run        []PlanItem `json:"run"`
+	Skip       []PlanItem `json:"skip"`
+}
+
+// QueryPlan 按当前调度规则（无 TMDB 不查 / 无评分要查 / 日期规则）拆分任务作品。
+func (s *Service) QueryPlan(ctx context.Context, strmTaskID int64) (Plan, error) {
+	if strmTaskID <= 0 {
+		return Plan{}, domain.Errorf(domain.CodeValidation, "strm_task_id 无效")
+	}
+	taskName, err := s.taskName(ctx, strmTaskID)
+	if err != nil {
+		return Plan{}, err
+	}
+	items, err := s.loadAllItems(ctx, strmTaskID)
+	if err != nil {
+		return Plan{}, err
+	}
+	scores, err := s.scores.ListByTask(ctx, strmTaskID)
+	if err != nil {
+		return Plan{}, err
+	}
+	byID := make(map[string]*domain.BueiDoubanScore, len(scores))
+	for _, sc := range scores {
+		byID[sc.ItemID] = sc
+	}
+	now := s.now()
+	plan := Plan{StrmTaskID: strmTaskID, TaskName: taskName, Run: []PlanItem{}, Skip: []PlanItem{}}
+	for _, item := range items {
+		d := decideQuery(byID[item.ID], item, now)
+		entry := PlanItem{ID: item.ID, Title: item.Title, Year: item.Year, Reason: d.Reason}
+		if d.Query {
+			plan.Run = append(plan.Run, entry)
+		} else {
+			plan.Skip = append(plan.Skip, entry)
+		}
+	}
+	return plan, nil
 }
 
 // RunRequest 指定一次查询的范围。
@@ -582,6 +645,7 @@ func (s *Service) StartQuery(req RunRequest) (Progress, error) {
 		StrmTaskID: req.StrmTaskID,
 		Message:    "正在准备查询",
 		StartedAt:  time.Now().UTC().Format(time.RFC3339),
+		Items:      make(map[string]*ItemRunStatus),
 	}
 	progress := s.progress
 	s.mu.Unlock()
@@ -602,6 +666,7 @@ func (s *Service) StartQuery(req RunRequest) (Progress, error) {
 		s.runCancel = nil
 		s.progress.Running = false
 		s.progress.CurrentTitle = ""
+		s.progress.CurrentItemID = ""
 		s.progress.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 		if s.progress.Message == "正在准备查询" {
 			s.progress.Message = ""
@@ -709,6 +774,7 @@ func (s *Service) execute(ctx context.Context, req RunRequest, scope string) {
 		itemFilter[id] = struct{}{}
 	}
 	total := 0
+	skipReasons := make(map[string]string, len(req.ItemIDs))
 	for _, task := range targets {
 		items, err := s.loadAllItems(ctx, task.ID)
 		if err != nil {
@@ -727,6 +793,18 @@ func (s *Service) execute(ctx context.Context, req RunRequest, scope string) {
 			}
 			items = kept
 		}
+		// 记下跳过原因，弹窗里要给用户看「为什么不用查」。
+		now := s.now()
+		existing, _ := s.scores.ListByTask(ctx, task.ID)
+		scores := make(map[string]*domain.BueiDoubanScore, len(existing))
+		for _, sc := range existing {
+			scores[sc.ItemID] = sc
+		}
+		for _, item := range items {
+			if d := decideQuery(scores[item.ID], item, now); !d.Query {
+				skipReasons[item.ID] = d.Reason
+			}
+		}
 		loaded = append(loaded, taskItems{task: task, items: items})
 		total += len(items)
 	}
@@ -740,7 +818,7 @@ func (s *Service) execute(ctx context.Context, req RunRequest, scope string) {
 		if ctx.Err() != nil {
 			break
 		}
-		if err := s.runTask(ctx, entry.task.ID, entry.items, req.Force); err != nil {
+		if err := s.runTask(ctx, entry.task.ID, entry.items, skipReasons, req.Force); err != nil {
 			if ctx.Err() != nil {
 				break
 			}
@@ -765,7 +843,7 @@ func (s *Service) execute(ctx context.Context, req RunRequest, scope string) {
 	})
 }
 
-func (s *Service) runTask(ctx context.Context, taskID int64, items []strmscrape.Item, force bool) error {
+func (s *Service) runTask(ctx context.Context, taskID int64, items []strmscrape.Item, skipReason map[string]string, force bool) error {
 	existingList, err := s.scores.ListByTask(ctx, taskID)
 	if err != nil {
 		return err
@@ -802,11 +880,17 @@ func (s *Service) runTask(ctx context.Context, taskID int64, items []strmscrape.
 			s.setProgress(func(p *Progress) {
 				p.Done++
 				p.Skipped++
+				p.Items[item.ID] = &ItemRunStatus{
+					Title:  item.Title,
+					State:  "skipped",
+					Detail: skipReason[item.ID],
+				}
 			})
 			continue
 		}
 		s.setProgress(func(p *Progress) {
 			p.CurrentTitle = item.Title
+			p.CurrentItemID = item.ID
 		})
 
 		res, lookupErr := s.lookup(ctx, item.Title, item.Year, item.MediaType)
@@ -815,6 +899,21 @@ func (s *Service) runTask(ctx context.Context, taskID int64, items []strmscrape.
 		}
 		score := buildScore(taskID, item, prev, res, lookupErr, s.now())
 		batch = append(batch, score)
+		status := &ItemRunStatus{Title: item.Title, State: "queried"}
+		switch {
+		case lookupErr != nil:
+			status.State = "failed"
+			status.Detail = DescribeLookupError(lookupErr)
+		case res == nil:
+			status.Detail = "豆瓣没有匹配到条目"
+		case score.Rating == nil:
+			status.Detail = "豆瓣暂无评分"
+		default:
+			status.Detail = fmt.Sprintf("豆瓣 %.1f 分 · %d 人评价", *score.Rating, score.Votes)
+		}
+		s.setProgress(func(p *Progress) {
+			p.Items[item.ID] = status
+		})
 		if score.Rating != nil {
 			// 查询失败/未匹配时会沿用上一次的评分，这里也照写，保证 NFO 与库一致。
 			nfoRatings = append(nfoRatings, strmscrape.ItemRating{

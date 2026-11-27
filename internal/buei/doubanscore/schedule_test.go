@@ -2,6 +2,7 @@ package doubanscore
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 )
 
 func tvItem(state string) strmscrape.Item {
-	return strmscrape.Item{ID: "x", Title: "示例剧", MediaType: strmscrape.MediaTypeTV, TVState: state}
+	return strmscrape.Item{ID: "x", Title: "示例剧", MediaType: strmscrape.MediaTypeTV, TVState: state, TMDBID: "61889"}
 }
 
 func tvItemWithEnd(endDate string) strmscrape.Item {
@@ -20,7 +21,24 @@ func tvItemWithEnd(endDate string) strmscrape.Item {
 }
 
 func movieItem() strmscrape.Item {
-	return strmscrape.Item{ID: "m", Title: "示例电影", MediaType: strmscrape.MediaTypeMovie}
+	return strmscrape.Item{ID: "m", Title: "示例电影", MediaType: strmscrape.MediaTypeMovie, TMDBID: "693134"}
+}
+
+func TestDecideQuerySkipsItemsWithoutTMDBID(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	item := strmscrape.Item{ID: "raw", Title: "未刮削电影", MediaType: strmscrape.MediaTypeMovie, Year: intPtr(2023)}
+	d := decideQuery(nil, item, now)
+	if d.Query {
+		t.Fatal("没有 TMDB ID 的作品不应查询豆瓣")
+	}
+	if !strings.Contains(d.Reason, "TMDB") {
+		t.Fatalf("跳过原因应说明缺 TMDB：%q", d.Reason)
+	}
+	// 即使已有评分也保持跳过。
+	d = decideQuery(&domain.BueiDoubanScore{Rating: floatPtr(8.0)}, item, now)
+	if d.Query {
+		t.Fatal("已有评分但未刮削 TMDB 仍应跳过")
+	}
 }
 
 func movieItemWithRelease(releaseDate string) strmscrape.Item {

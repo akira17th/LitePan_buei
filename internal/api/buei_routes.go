@@ -43,6 +43,7 @@ func (h *Handler) registerBueiRoutes(r chi.Router) {
 	r.Route("/buei/douban-score", func(r chi.Router) {
 		r.Get("/tasks", h.bueiDoubanScoreTasks)
 		r.Get("/items", h.bueiDoubanScoreItems)
+		r.Get("/plan", h.bueiDoubanScorePlan)
 		r.Get("/state", h.bueiDoubanScoreState)
 		r.Post("/query", h.bueiDoubanScoreQuery)
 		r.Post("/stop", h.bueiDoubanScoreStop)

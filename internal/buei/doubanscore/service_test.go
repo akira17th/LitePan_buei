@@ -2,7 +2,9 @@ package doubanscore
 
 import (
 	"context"
+	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -141,9 +143,10 @@ func TestItemsMergeFilterAndSort(t *testing.T) {
 	now := time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)
 	items := map[int64][]strmscrape.Item{
 		1: {
-			{ID: "a", Title: "高分剧", MediaType: strmscrape.MediaTypeTV, TVState: strmscrape.TVStateUpdating, Year: intPtr(2026)},
-			{ID: "b", Title: "无评分电影", MediaType: strmscrape.MediaTypeMovie, Year: intPtr(2024)},
-			{ID: "c", Title: "老片", MediaType: strmscrape.MediaTypeMovie, Year: intPtr(2010), ReleaseDate: "2010-05-01"},
+			{ID: "a", Title: "高分剧", MediaType: strmscrape.MediaTypeTV, TVState: strmscrape.TVStateUpdating, Year: intPtr(2026), TMDBID: "1399"},
+			{ID: "b", Title: "无评分电影", MediaType: strmscrape.MediaTypeMovie, Year: intPtr(2024), TMDBID: "693134"},
+			{ID: "c", Title: "老片", MediaType: strmscrape.MediaTypeMovie, Year: intPtr(2010), ReleaseDate: "2010-05-01", TMDBID: "27205"},
+			{ID: "d", Title: "未刮削", MediaType: strmscrape.MediaTypeMovie, Year: intPtr(2023)},
 		},
 	}
 	scores := newFakeScores()
@@ -157,15 +160,15 @@ func TestItemsMergeFilterAndSort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Items: %v", err)
 	}
-	if page.Stats.Total != 3 || page.Stats.Scored != 2 || page.Stats.Unscored != 1 {
+	if page.Stats.Total != 4 || page.Stats.Scored != 2 || page.Stats.Unscored != 2 {
 		t.Fatalf("stats = %+v", page.Stats)
 	}
 	if page.Stats.Pending != 1 { // 只有「追更中且有评分」算待更新
 		t.Fatalf("pending = %d, want 1", page.Stats.Pending)
 	}
 	// 默认按评分倒序，未评分排最后。
-	if page.Items[0].ID != "a" || page.Items[1].ID != "c" || page.Items[2].ID != "b" {
-		t.Fatalf("排序不符合预期：%s, %s, %s", page.Items[0].ID, page.Items[1].ID, page.Items[2].ID)
+	if page.Items[0].ID != "a" || page.Items[1].ID != "c" || page.Items[2].ID != "b" || page.Items[3].ID != "d" {
+		t.Fatalf("排序不符合预期：%s, %s, %s, %s", page.Items[0].ID, page.Items[1].ID, page.Items[2].ID, page.Items[3].ID)
 	}
 	if page.Items[1].Douban == nil || page.Items[1].Douban.NeedsQuery {
 		t.Fatal("上映超过 1 个月的老片已有评分，不应再需要查询")
@@ -175,7 +178,7 @@ func TestItemsMergeFilterAndSort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Items(unscored): %v", err)
 	}
-	if len(unscored.Items) != 1 || unscored.Items[0].ID != "b" {
+	if len(unscored.Items) != 2 || unscored.Items[0].ID != "b" || unscored.Items[1].ID != "d" {
 		t.Fatalf("未评分筛选 = %+v", unscored.Items)
 	}
 
@@ -192,8 +195,8 @@ func TestRunTaskSkipsFinishedMedia(t *testing.T) {
 	now := time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)
 	items := map[int64][]strmscrape.Item{
 		1: {
-			{ID: "done", Title: "完结老剧", MediaType: strmscrape.MediaTypeTV, TVState: strmscrape.TVStateEnded, Year: intPtr(2018), EndDate: "2018-06-01"},
-			{ID: "airing", Title: "追更剧", MediaType: strmscrape.MediaTypeTV, TVState: strmscrape.TVStateUpdating, Year: intPtr(2026)},
+			{ID: "done", Title: "完结老剧", MediaType: strmscrape.MediaTypeTV, TVState: strmscrape.TVStateEnded, Year: intPtr(2018), EndDate: "2018-06-01", TMDBID: "61889"},
+			{ID: "airing", Title: "追更剧", MediaType: strmscrape.MediaTypeTV, TVState: strmscrape.TVStateUpdating, Year: intPtr(2026), TMDBID: "1399"},
 		},
 	}
 	scores := newFakeScores()
@@ -308,7 +311,7 @@ func (f *fakeRatings) UpdateItemRatings(_ context.Context, _ int64, ratings []st
 func TestRunTaskWritesRatingsToNFO(t *testing.T) {
 	now := time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)
 	items := map[int64][]strmscrape.Item{
-		1: {{ID: "movie", Title: "示例电影", MediaType: strmscrape.MediaTypeMovie, Year: intPtr(2024)}},
+		1: {{ID: "movie", Title: "示例电影", MediaType: strmscrape.MediaTypeMovie, Year: intPtr(2024), TMDBID: "693134"}},
 	}
 	scores := newFakeScores()
 	ratings := &fakeRatings{}
@@ -346,5 +349,68 @@ func TestRunTaskWritesRatingsToNFO(t *testing.T) {
 	got := ratings.seen[0]
 	if got.ItemID != "movie" || got.Rating != 8.6 || got.Votes != 12345 {
 		t.Fatalf("写入 NFO 的评分不符：%+v", got)
+	}
+}
+
+func TestRunTaskSkipsItemsWithoutTMDBID(t *testing.T) {
+	now := time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)
+	items := map[int64][]strmscrape.Item{
+		1: {
+			{ID: "scraped", Title: "已刮削", MediaType: strmscrape.MediaTypeMovie, Year: intPtr(2024), TMDBID: "693134"},
+			{ID: "raw", Title: "未刮削电影", MediaType: strmscrape.MediaTypeMovie, Year: intPtr(2023)},
+		},
+	}
+	scores := newFakeScores()
+	calls := 0
+	svc := testService(t, items, scores, now)
+	svc.lookup = func(_ context.Context, title string, year *int, mediaType string) (*LookupResult, error) {
+		calls++
+		return &LookupResult{DoubanID: "1", DoubanTitle: title, Rating: floatPtr(7.0)}, nil
+	}
+
+	if _, err := svc.StartQuery(RunRequest{StrmTaskID: 1}); err != nil {
+		t.Fatalf("StartQuery: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		svc.mu.Lock()
+		running := svc.running
+		svc.mu.Unlock()
+		if !running {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if calls != 1 {
+		t.Fatalf("只应查询已刮削的作品，实际 %d 次", calls)
+	}
+	svc.mu.Lock()
+	status := svc.progress.Items["raw"]
+	svc.mu.Unlock()
+	if status == nil || status.State != "skipped" || !strings.Contains(status.Detail, "TMDB") {
+		t.Fatalf("未刮削作品应记录跳过原因：%+v", status)
+	}
+}
+
+func TestDescribeLookupErrorClassifiesFailures(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{errDoubanChallenge, "豆瓣搜索被风控拦截，请稍后重试"},
+		{errors.New(`Get "https://search.douban.com": status 429`), "豆瓣接口限流，请稍后重试"},
+		{errors.New(`Get "https://m.douban.com": context deadline exceeded`), "豆瓣请求超时，请稍后重试"},
+		{errors.New(`dial tcp: connection refused`), "网络连接失败，请检查网络后重试"},
+		{errors.New("解析豆瓣条目详情失败: unexpected end of JSON input"), "豆瓣接口返回异常"},
+	}
+	for _, tc := range cases {
+		got := DescribeLookupError(tc.err)
+		if !strings.HasPrefix(got, tc.want) {
+			t.Fatalf("DescribeLookupError(%v) = %q, want 前缀 %q", tc.err, got, tc.want)
+		}
+	}
+	if DescribeLookupError(nil) != "" {
+		t.Fatal("无错误时应返回空文案")
 	}
 }

@@ -60,6 +60,12 @@ export interface BueiDoubanItemPage {
   stats: BueiDoubanItemStats;
 }
 
+export interface BueiDoubanRunStatus {
+  title: string;
+  state: "queried" | "skipped" | "failed";
+  detail?: string;
+}
+
 export interface BueiDoubanProgress {
   running: boolean;
   scope: string;
@@ -70,10 +76,26 @@ export interface BueiDoubanProgress {
   skipped: number;
   failed: number;
   current_title?: string;
+  current_item_id?: string;
   message?: string;
   error?: string;
   started_at?: string;
   finished_at?: string;
+  items?: Record<string, BueiDoubanRunStatus>;
+}
+
+export interface BueiDoubanPlanItem {
+  id: string;
+  title: string;
+  year?: number;
+  reason: string;
+}
+
+export interface BueiDoubanPlan {
+  strm_task_id: number;
+  task_name: string;
+  run: BueiDoubanPlanItem[];
+  skip: BueiDoubanPlanItem[];
 }
 
 export interface BueiDoubanSummary {
@@ -122,6 +144,12 @@ export function fetchBueiDoubanScoreItems(strmTaskId: number, query: BueiDoubanI
     filter: query.filter ?? "all",
     media_type: query.media_type || undefined,
     sort: query.sort ?? "default",
+  });
+}
+
+export function fetchBueiDoubanScorePlan(strmTaskId: number) {
+  return http.get<BueiDoubanPlan>("/admin/buei/douban-score/plan", {
+    strm_task_id: strmTaskId,
   });
 }
 

@@ -55,6 +55,23 @@ func (h *Handler) bueiDoubanScoreItems(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, page)
 }
 
+func (h *Handler) bueiDoubanScorePlan(w http.ResponseWriter, r *http.Request) {
+	if !ensureServiceReady(w, h.buei.DoubanScore != nil) {
+		return
+	}
+	taskID, err := strmTaskIDQuery(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	plan, err := h.buei.DoubanScore.QueryPlan(r.Context(), taskID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeOK(w, plan)
+}
+
 func (h *Handler) bueiDoubanScoreState(w http.ResponseWriter, r *http.Request) {
 	if !ensureServiceReady(w, h.buei.DoubanScore != nil) {
 		return
