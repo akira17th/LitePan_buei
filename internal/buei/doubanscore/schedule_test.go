@@ -72,6 +72,11 @@ func TestNeedsQueryRules(t *testing.T) {
 			movieItemWithRelease("2026/03/10"),
 			true,
 		},
+		// 没有评分：上映/完结 3 个月内继续追查，超过 3 个月不再查。
+		{"无评分且完结不足三个月", &domain.BueiDoubanScore{Status: domain.BueiDoubanScoreNotFound}, tvItemWithEnd("2026-03-15"), true},
+		{"无评分且完结超过三个月", &domain.BueiDoubanScore{Status: domain.BueiDoubanScoreNotFound}, tvItemWithEnd("2026-02-01"), false},
+		{"无评分且上映超过三个月", &domain.BueiDoubanScore{Status: domain.BueiDoubanScoreNotFound}, movieItemWithRelease("2026-01-01"), false},
+		{"无评分且上映恰好三个月整", &domain.BueiDoubanScore{Status: domain.BueiDoubanScoreNotFound}, movieItemWithRelease("2026-02-21"), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -113,6 +113,39 @@ export interface BueiDoubanState {
   last_run_at?: string;
   next_run_at?: string;
   last_summary?: BueiDoubanSummary;
+  /** 最近一次每日自动查询的执行日志（只保留最近一次）。 */
+  run_log?: BueiDoubanRunLog;
+}
+
+/** buei:run-log —— 每日自动查询日志：各任务待查/成功/失败统计与失败原因。 */
+export interface BueiDoubanRunLog {
+  finished_at: string;
+  duration_ms: number;
+  tasks: BueiDoubanRunLogTask[];
+  total: number;
+  success: number;
+  failed: number;
+}
+
+export interface BueiDoubanRunLogTask {
+  task_id: number;
+  task_name: string;
+  pending: number;
+  success: number;
+  failed: number;
+  reasons?: string[];
+}
+
+/** buei:douban-library —— 任务 ↔ Emby 媒体库关联。 */
+export interface BueiDoubanLibraryOption {
+  library_id: string;
+  library_name: string;
+  updated_at?: string;
+}
+
+export interface BueiDoubanLibrariesResponse {
+  libraries: BueiDoubanLibraryOption[];
+  bindings: Record<string, BueiDoubanLibraryOption>;
 }
 
 export interface BueiDoubanItemsQuery {
@@ -163,4 +196,18 @@ export function queryBueiDoubanScore(body: BueiDoubanQueryBody) {
 
 export function stopBueiDoubanScore() {
   return http.post<BueiDoubanState>("/admin/buei/douban-score/stop");
+}
+
+/** 读取 Emby 媒体库列表与各任务的关联。 */
+export function fetchBueiDoubanLibraries() {
+  return http.get<BueiDoubanLibrariesResponse>("/admin/buei/douban-score/libraries");
+}
+
+/** 保存任务的关联媒体库；libraryId 为空表示解除关联。 */
+export function saveBueiDoubanLibrary(strmTaskId: number, libraryId: string, libraryName: string) {
+  return http.post<{ saved: boolean }>("/admin/buei/douban-score/library", {
+    strm_task_id: strmTaskId,
+    library_id: libraryId,
+    library_name: libraryName,
+  });
 }

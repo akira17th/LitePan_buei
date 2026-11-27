@@ -286,6 +286,10 @@ onBeforeUnmount(() => {
   gap: 12px;
   min-height: 220px;
   max-height: 62vh;
+  /* 兜底：任意区块（如展开的跳过清单）把内容撑高时，整体内滚不溢出弹窗 */
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
 }
 
 .brun__state {
@@ -414,6 +418,11 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 3px;
   margin-top: 6px;
+  /* 跳过项很多时限制高度并出纵向滚动条，避免把弹窗撑出屏幕 */
+  max-height: 30vh;
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
 }
 
 .brun__row--skip {
