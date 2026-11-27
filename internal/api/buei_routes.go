@@ -47,6 +47,9 @@ func (h *Handler) registerBueiRoutes(r chi.Router) {
 		r.Get("/state", h.bueiDoubanScoreState)
 		r.Post("/query", h.bueiDoubanScoreQuery)
 		r.Post("/stop", h.bueiDoubanScoreStop)
+		// buei:douban-library —— 任务 ↔ Emby 媒体库关联（评分联动刷库）。
+		r.Get("/libraries", h.bueiDoubanLibraryList)
+		r.Post("/library", h.bueiDoubanLibrarySave)
 	})
 	r.Route("/tools/guangya-share", func(r chi.Router) {
 		r.Post("/parse", h.bueiGuangyaShareParse)

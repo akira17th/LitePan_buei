@@ -386,10 +386,15 @@ func TestRunTaskSkipsItemsWithoutTMDBID(t *testing.T) {
 		t.Fatalf("只应查询已刮削的作品，实际 %d 次", calls)
 	}
 	svc.mu.Lock()
-	status := svc.progress.Items["raw"]
-	svc.mu.Unlock()
-	if status == nil || status.State != "skipped" || !strings.Contains(status.Detail, "TMDB") {
-		t.Fatalf("未刮削作品应记录跳过原因：%+v", status)
+	defer svc.mu.Unlock()
+	if svc.progress.Total != 1 {
+		t.Fatalf("总数不应包含跳过项，got %d", svc.progress.Total)
+	}
+	if svc.progress.Queried != 1 {
+		t.Fatalf("已查询数应为 1，got %d", svc.progress.Queried)
+	}
+	if status := svc.progress.Items["raw"]; status != nil {
+		t.Fatalf("跳过项不应出现在逐项进度里：%+v", status)
 	}
 }
 

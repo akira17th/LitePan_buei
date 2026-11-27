@@ -55,6 +55,10 @@ type Options struct {
 	Now     func() time.Time
 	// Ratings 可选：非空时把查到的评分一并写进作品 NFO。
 	Ratings RatingWriter
+	// Libraries 可选：任务 ↔ Emby 媒体库关联仓储（查到评分后刷对应媒体库）。
+	Libraries domain.BueiDoubanTaskLibraryRepository
+	// Emby 可选：Emby 刷库接口（RefreshLibraryDirect）；与 Libraries 同时配置才启用联动。
+	Emby EmbyRefresher
 
 	// Interval 是两次豆瓣请求之间的最小间隔，留空用默认 900ms。
 	Interval time.Duration
@@ -71,6 +75,8 @@ type Service struct {
 	items   ItemSource
 	scores  domain.BueiDoubanScoreRepository
 	ratings RatingWriter
+	libs    domain.BueiDoubanTaskLibraryRepository
+	emby    EmbyRefresher
 	configs domain.ConfigRepository
 	log     *slog.Logger
 	now     func() time.Time
@@ -102,6 +108,8 @@ func New(opts Options) *Service {
 		items:   opts.Items,
 		scores:  opts.Scores,
 		ratings: opts.Ratings,
+		libs:    opts.Libraries,
+		emby:    opts.Emby,
 		configs: opts.Configs,
 		log:     log,
 		now:     now,
@@ -160,6 +168,8 @@ type StateView struct {
 	LastRunAt   string   `json:"last_run_at,omitempty"`
 	NextRunAt   string   `json:"next_run_at,omitempty"`
 	LastSummary *Summary `json:"last_summary,omitempty"`
+	// RunLog 是最近一次每日自动查询的执行日志（各任务待查/成功/失败统计）。
+	RunLog *RunLog `json:"run_log,omitempty"`
 }
 
 type persistedState struct {
@@ -542,6 +552,26 @@ func (s *Service) Tasks(ctx context.Context) ([]TaskWall, error) {
 	return out, nil
 }
 
+// TaskLibraries 返回 strm_task_id → 关联媒体库映射。
+func (s *Service) TaskLibraries(ctx context.Context) (map[int64]domain.BueiDoubanTaskLibrary, error) {
+	if s.libs == nil {
+		return map[int64]domain.BueiDoubanTaskLibrary{}, nil
+	}
+	return s.libs.Map(ctx)
+}
+
+// SetTaskLibrary 保存任务的关联媒体库；libraryID 为空表示解除关联。
+func (s *Service) SetTaskLibrary(ctx context.Context, strmTaskID int64, libraryID, libraryName string) error {
+	if s.libs == nil {
+		return domain.Errorf(domain.CodeNotImplement, "未启用媒体库关联存储")
+	}
+	libraryID = strings.TrimSpace(libraryID)
+	if libraryID == "" {
+		return s.libs.Delete(ctx, strmTaskID)
+	}
+	return s.libs.Set(ctx, strmTaskID, libraryID, strings.TrimSpace(libraryName))
+}
+
 func (s *Service) taskName(ctx context.Context, taskID int64) (string, error) {
 	tasks, err := s.tasks.ListTasks(ctx)
 	if err != nil {
@@ -564,6 +594,7 @@ func (s *Service) State(ctx context.Context) (StateView, error) {
 	s.mu.Lock()
 	progress := s.progress
 	s.mu.Unlock()
+	runLog, _ := loadRunLog(ctx, s.configs)
 	now := s.now()
 	return StateView{
 		Progress:    progress,
@@ -571,6 +602,7 @@ func (s *Service) State(ctx context.Context) (StateView, error) {
 		LastRunAt:   st.LastRunAt,
 		NextRunAt:   nextRunAt(now, parseTS(st.LastRunAt)).Format(time.RFC3339),
 		LastSummary: st.LastSummary,
+		RunLog:      runLog,
 	}, nil
 }
 
@@ -743,9 +775,11 @@ func sanitizeItemIDs(ids []string) []string {
 }
 
 func (s *Service) execute(ctx context.Context, req RunRequest, scope string) {
+	runLog := s.beginRunLog(scope)
 	tasks, err := s.tasks.ListTasks(ctx)
 	if err != nil {
 		s.finishWithError(err)
+		s.finishRunLog(ctx, runLog)
 		return
 	}
 	targets := make([]*domain.StrmTask, 0, len(tasks))
@@ -760,6 +794,7 @@ func (s *Service) execute(ctx context.Context, req RunRequest, scope string) {
 	}
 	if len(targets) == 0 {
 		s.finishWithError(domain.Errorf(domain.CodeNotFound, "STRM 任务不存在"))
+		s.finishRunLog(ctx, runLog)
 		return
 	}
 
@@ -773,6 +808,10 @@ func (s *Service) execute(ctx context.Context, req RunRequest, scope string) {
 	for _, id := range req.ItemIDs {
 		itemFilter[id] = struct{}{}
 	}
+	// buei:emby-refresh —— 查到评分的任务收尾登记其媒体库，整轮结束统一刷一次。
+	refresher := newLibraryRefresher(s.emby, s.libs, s.log)
+	refresher.load(ctx)
+
 	total := 0
 	skipReasons := make(map[string]string, len(req.ItemIDs))
 	for _, task := range targets {
@@ -800,13 +839,18 @@ func (s *Service) execute(ctx context.Context, req RunRequest, scope string) {
 		for _, sc := range existing {
 			scores[sc.ItemID] = sc
 		}
+		// buei: —— 「n/m」总数只统计真正要查的条目；跳过的排除在外，
+		// 并记录原因供弹窗展示（runTask 里按 skipReason 直接跳过）。
+		kept := items[:0:0]
 		for _, item := range items {
 			if d := decideQuery(scores[item.ID], item, now); !d.Query {
 				skipReasons[item.ID] = d.Reason
+				continue
 			}
+			kept = append(kept, item)
 		}
-		loaded = append(loaded, taskItems{task: task, items: items})
-		total += len(items)
+		loaded = append(loaded, taskItems{task: task, items: kept})
+		total += len(kept)
 	}
 
 	s.setProgress(func(p *Progress) {
@@ -818,18 +862,32 @@ func (s *Service) execute(ctx context.Context, req RunRequest, scope string) {
 		if ctx.Err() != nil {
 			break
 		}
-		if err := s.runTask(ctx, entry.task.ID, entry.items, skipReasons, req.Force); err != nil {
+		if runLog != nil {
+			runLog.beginTask(entry.task.ID, entry.task.Name)
+		}
+		if err := s.runTask(ctx, entry.task.ID, entry.items, skipReasons, req.Force, refresher, runLog); err != nil {
 			if ctx.Err() != nil {
 				break
 			}
 			s.log.Warn("豆瓣评分查询中断", "task_id", entry.task.ID, "err", err)
 			s.finishWithError(err)
+			s.finishRunLog(ctx, runLog)
 			return
 		}
 	}
 
 	if scope == "all" {
 		s.pruneMissingTasks(ctx, targets)
+	}
+
+	// 无论是否被停止，已写入的评分都触发对应媒体库刷新（用独立上下文，避免取消中断刷库）。
+	refresher.flush(context.WithoutCancel(ctx))
+
+	// buei:run-log —— 被停止也落盘（记录已查部分）；用独立上下文避免取消中断保存。
+	if runLog != nil {
+		saveCtx, saveCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		runLog.finish(saveCtx, s.configs, s.log)
+		saveCancel()
 	}
 
 	if ctx.Err() != nil {
@@ -843,7 +901,7 @@ func (s *Service) execute(ctx context.Context, req RunRequest, scope string) {
 	})
 }
 
-func (s *Service) runTask(ctx context.Context, taskID int64, items []strmscrape.Item, skipReason map[string]string, force bool) error {
+func (s *Service) runTask(ctx context.Context, taskID int64, items []strmscrape.Item, skipReason map[string]string, force bool, refresher *libraryRefresher, runLog *runLogRecorder) error {
 	existingList, err := s.scores.ListByTask(ctx, taskID)
 	if err != nil {
 		return err
@@ -859,6 +917,10 @@ func (s *Service) runTask(ctx context.Context, taskID int64, items []strmscrape.
 	nfoRatings := make([]strmscrape.ItemRating, 0, len(items))
 	defer func() {
 		s.writeNFORatings(ctx, taskID, nfoRatings)
+		// buei:emby-refresh —— 确实给这个任务写过评分 NFO 才登记刷它的媒体库。
+		if len(nfoRatings) > 0 {
+			refresher.collectTask(taskID)
+		}
 	}()
 	flush := func() error {
 		if len(batch) == 0 {
@@ -910,6 +972,14 @@ func (s *Service) runTask(ctx context.Context, taskID int64, items []strmscrape.
 			status.Detail = "豆瓣暂无评分"
 		default:
 			status.Detail = fmt.Sprintf("豆瓣 %.1f 分 · %d 人评价", *score.Rating, score.Votes)
+		}
+		// buei:run-log —— 每日自动任务记录各任务成败与失败原因。
+		if runLog != nil {
+			if lookupErr != nil {
+				runLog.recordFailure(status.Detail)
+			} else {
+				runLog.recordSuccess()
+			}
 		}
 		s.setProgress(func(p *Progress) {
 			p.Items[item.ID] = status
@@ -1029,6 +1099,24 @@ func (s *Service) pruneMissingTasks(ctx context.Context, tasks []*domain.StrmTas
 			s.log.Warn("清理已删除任务的豆瓣评分失败", "task_id", taskID, "err", err)
 		}
 	}
+}
+
+// beginRunLog 每日自动任务（scope=all）创建本轮日志记录器；手动查询不记录。
+func (s *Service) beginRunLog(scope string) *runLogRecorder {
+	if scope != "all" {
+		return nil
+	}
+	return &runLogRecorder{started: s.now()}
+}
+
+// finishRunLog 落盘本轮日志（自动任务）。
+func (s *Service) finishRunLog(ctx context.Context, runLog *runLogRecorder) {
+	if runLog == nil {
+		return
+	}
+	saveCtx, saveCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer saveCancel()
+	runLog.finish(saveCtx, s.configs, s.log)
 }
 
 func (s *Service) finishWithError(err error) {

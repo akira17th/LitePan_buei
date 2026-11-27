@@ -2,13 +2,17 @@
 import { computed, onActivated, onMounted, onUnmounted, ref } from "vue";
 import { getApiErrorMessage } from "@/api/client";
 import {
+  fetchBueiDoubanLibraries,
   fetchBueiDoubanScoreItems,
   fetchBueiDoubanScoreState,
   fetchBueiDoubanScoreTasks,
   queryBueiDoubanScore,
+  saveBueiDoubanLibrary,
   stopBueiDoubanScore,
   type BueiDoubanFilter,
   type BueiDoubanItemStats,
+  type BueiDoubanLibraryOption,
+  type BueiDoubanRunLog,
   type BueiDoubanScoreTask,
   type BueiDoubanSort,
   type BueiDoubanState,
@@ -17,6 +21,7 @@ import {
 import AdminEmptyState from "@/components/admin/AdminEmptyState.vue";
 import BueiDoubanRunModal from "@/components/buei/BueiDoubanRunModal.vue";
 import AppButton from "@/components/base/AppButton.vue";
+import AppModal from "@/components/base/AppModal.vue";
 import AppSelect from "@/components/base/AppSelect.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
 import { useAdminPageLoading } from "@/composables/useAdminLoadingBar";
@@ -42,6 +47,13 @@ const pendingRefresh = ref(false);
 const filter = ref<BueiDoubanFilter>("all");
 const sortKey = ref<BueiDoubanSort>("default");
 const keyword = ref("");
+// buei:douban-library —— 任务 ↔ Emby 媒体库关联（评分联动刷库）。
+const embyLibraries = ref<BueiDoubanLibraryOption[]>([]);
+const taskBindings = ref<Record<string, BueiDoubanLibraryOption>>({});
+const librarySaving = ref(false);
+// buei:run-log —— 每日自动查询日志弹窗。
+const showRunLogModal = ref(false);
+const runLog = computed<BueiDoubanRunLog | null>(() => state.value?.run_log ?? null);
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let loadSeq = 0;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -95,6 +107,15 @@ const filterChips = computed(() => [
   { key: "pending" as BueiDoubanFilter, label: "待更新", count: stats.value.pending },
   { key: "scored" as BueiDoubanFilter, label: "已评分", count: stats.value.scored },
 ]);
+
+function formatDuration(ms: number) {
+  if (!ms || ms < 0) return "—";
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 60) return `${totalSec} 秒`;
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return s ? `${m} 分 ${s} 秒` : `${m} 分钟`;
+}
 
 function formatDateTime(raw?: string) {
   if (!raw) return "—";
@@ -261,6 +282,48 @@ function onSortChange(value: string) {
   void loadItems(true);
 }
 
+// buei:douban-library —— 当前任务的关联媒体库选项（未关联时显示占位）。
+const libraryOptions = computed(() => [
+  { value: "", label: embyLibraries.value.length ? "未关联媒体库" : "未配置 Emby" },
+  ...embyLibraries.value.map((lib) => ({ value: lib.library_id, label: lib.library_name })),
+]);
+const activeBinding = computed(() => {
+  if (!activeTaskId.value) return null;
+  return taskBindings.value[String(activeTaskId.value)] ?? null;
+});
+const libraryPickerValue = computed(() => activeBinding.value?.library_id ?? "");
+
+async function loadLibraries() {
+  try {
+    const data = await fetchBueiDoubanLibraries();
+    embyLibraries.value = data.libraries ?? [];
+    taskBindings.value = data.bindings ?? {};
+  } catch {
+    // 读取失败不打扰：选择器回落为「未关联」。
+  }
+}
+
+async function onLibraryChange(value: string) {
+  const taskId = activeTaskId.value;
+  if (!taskId || librarySaving.value) return;
+  const name = embyLibraries.value.find((lib) => lib.library_id === value)?.library_name ?? "";
+  librarySaving.value = true;
+  try {
+    await saveBueiDoubanLibrary(taskId, value, name);
+    const next = { ...taskBindings.value };
+    if (value) {
+      next[String(taskId)] = { library_id: value, library_name: name };
+    } else {
+      delete next[String(taskId)];
+    }
+    taskBindings.value = next;
+  } catch (e) {
+    toast.error(getApiErrorMessage(e, "保存媒体库关联失败"));
+  } finally {
+    librarySaving.value = false;
+  }
+}
+
 function onKeywordInput() {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
@@ -342,7 +405,7 @@ async function boot() {
   if (booted.value) return;
   booted.value = true;
   loading.value = true;
-  await Promise.all([loadState(), loadTasks()]);
+  await Promise.all([loadState(), loadTasks(), loadLibraries()]);
   await loadItems(true);
   if (running.value) {
     pendingRefresh.value = true;
@@ -374,6 +437,16 @@ onUnmounted(() => {
         </template>
       </div>
       <div class="douban__actions">
+        <!-- #region buei:run-log —— 查看最近一次每日自动查询日志 -->
+        <AppButton
+          v-if="runLog"
+          type="button"
+          variant="ghost"
+          @click="showRunLogModal = true"
+        >
+          自动日志
+        </AppButton>
+        <!-- #endregion buei:run-log -->
         <AppButton v-if="running" type="button" variant="secondary" @click="stopRun">停止查询</AppButton>
         <template v-else>
           <AppButton type="button" variant="primary" :disabled="!activeTaskId" @click="openRunModal">
@@ -415,6 +488,16 @@ onUnmounted(() => {
             </button>
           </div>
           <div class="douban__toolbar-right">
+            <!-- #region buei:douban-library —— 当前任务关联的 Emby 媒体库（评分联动刷库） -->
+            <AppSelect
+              :model-value="libraryPickerValue"
+              :options="libraryOptions"
+              class="douban__library"
+              :disabled="!activeTaskId || librarySaving"
+              :title="activeBinding ? `查询到评分后自动刷新媒体库：${activeBinding.library_name}` : '选择查询到评分后要刷新的 Emby 媒体库'"
+              @update:model-value="onLibraryChange(String($event))"
+            />
+            <!-- #endregion buei:douban-library -->
             <input
               v-model="keyword"
               class="douban__search"
@@ -532,6 +615,41 @@ onUnmounted(() => {
       @finished="onRunFinished"
     />
     <!-- #endregion buei:douban-score -->
+
+    <!-- #region buei:run-log —— 每日自动查询日志（只保留最近一次） -->
+    <AppModal :open="showRunLogModal" size="md" title="自动查询日志" @close="showRunLogModal = false">
+      <div v-if="runLog" class="rlog">
+        <div class="rlog__meta">
+          <span>{{ formatDateTime(runLog.finished_at) }} 结束</span>
+          <span class="rlog__sep">·</span>
+          <span>耗时 {{ formatDuration(runLog.duration_ms) }}</span>
+        </div>
+        <div class="rlog__summary">
+          <span class="rlog__pill">待查 {{ runLog.total }}</span>
+          <span class="rlog__pill rlog__pill--ok">成功 {{ runLog.success }}</span>
+          <span class="rlog__pill" :class="{ 'rlog__pill--fail': runLog.failed > 0 }">失败 {{ runLog.failed }}</span>
+        </div>
+        <div v-if="!runLog.tasks.length" class="rlog__empty">这次没有需要查询的作品。</div>
+        <div v-else class="rlog__list">
+          <div v-for="task in runLog.tasks" :key="task.task_id" class="rlog__task">
+            <div class="rlog__task-head">
+              <span class="rlog__task-name" :title="task.task_name">{{ task.task_name }}</span>
+              <span class="rlog__task-stats">
+                待查 {{ task.pending }} · 成功 {{ task.success }}<template v-if="task.failed"> · 失败 {{ task.failed }}</template>
+              </span>
+            </div>
+            <div v-if="task.reasons?.length" class="rlog__reasons">
+              <span v-for="reason in task.reasons" :key="reason" class="rlog__reason">{{ reason }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-else class="rlog rlog--empty">还没有自动查询记录。</div>
+      <template #footer>
+        <AppButton type="button" variant="ghost" @click="showRunLogModal = false">关闭</AppButton>
+      </template>
+    </AppModal>
+    <!-- #endregion buei:run-log -->
   </div>
 </template>
 
@@ -758,6 +876,133 @@ onUnmounted(() => {
 
 .douban__sort {
   width: 150px;
+}
+
+/* buei:douban-library —— 媒体库选择器与搜索框同高 */
+.douban__library {
+  width: 150px;
+}
+
+.douban__library :deep(.select__trigger) {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  font-size: 13px;
+}
+
+/* buei:run-log —— 自动查询日志弹窗 */
+.rlog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 120px;
+}
+
+.rlog--empty {
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.rlog__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.rlog__sep {
+  opacity: 0.5;
+}
+
+.rlog__summary {
+  display: flex;
+  gap: 6px;
+}
+
+.rlog__pill {
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rlog__pill--ok {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+}
+
+.rlog__pill--fail {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.rlog__empty {
+  padding: 18px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.rlog__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 46vh;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.rlog__task {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+}
+
+.rlog__task-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rlog__task-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.rlog__task-stats {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rlog__reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.rlog__reason {
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--danger);
+  font-size: 11px;
 }
 
 /* 下拉默认内边距比旁边的搜索框/筛选项大，压到同一行高（30px）才不显突兀 */
