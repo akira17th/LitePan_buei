@@ -12,6 +12,8 @@ export interface BueiDoubanScoreTask {
   status: string;
   recorded: number;
   scored: number;
+  /** buei: 「未评分 + 待更新」数量，左侧任务列表徽标用。 */
+  needs_query: number;
 }
 
 export interface BueiDoubanScoreView {

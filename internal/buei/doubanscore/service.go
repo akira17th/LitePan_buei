@@ -201,6 +201,8 @@ type TaskWall struct {
 	Status   string `json:"status"`
 	Recorded int    `json:"recorded"`
 	Scored   int    `json:"scored"`
+	// NeedsQuery 是「未评分 + 待更新」的数量，左侧任务列表据此显示徽标。
+	NeedsQuery int `json:"needs_query"`
 }
 
 // ScoreView 是单个作品的豆瓣评分视图。
@@ -560,7 +562,7 @@ func yearValue(year *int) int {
 	return *year
 }
 
-// Tasks 返回左侧任务索引（含已评分数量，来自主库聚合，不访问索引库）。
+// Tasks 返回左侧任务索引（含「未评分 + 待更新」数量，左右两侧口径一致）。
 func (s *Service) Tasks(ctx context.Context) ([]TaskWall, error) {
 	tasks, err := s.tasks.ListTasks(ctx)
 	if err != nil {
@@ -577,14 +579,45 @@ func (s *Service) Tasks(ctx context.Context) ([]TaskWall, error) {
 		}
 		c := counts[t.ID]
 		out = append(out, TaskWall{
-			ID:       t.ID,
-			Name:     t.Name,
-			Status:   t.Status,
-			Recorded: c.Total,
-			Scored:   c.Scored,
+			ID:         t.ID,
+			Name:       t.Name,
+			Status:     t.Status,
+			Recorded:   c.Total,
+			Scored:     c.Scored,
+			NeedsQuery: s.needsQueryCount(ctx, t.ID),
 		})
 	}
 	return out, nil
+}
+
+// needsQueryCount 统计一个任务里「未评分 + 待更新」的数量，与海报墙筛选用同一套口径：
+// 未评分 = 没有评分（含未匹配、未刮削 TMDB 等），待更新 = 已有评分但按规则还会再查。
+// 索引读不到（输出目录还没生成 / 被改名）或读取失败时按 0 处理，不让任务列表整体失败。
+func (s *Service) needsQueryCount(ctx context.Context, strmTaskID int64) int {
+	if strmTaskID <= 0 {
+		return 0
+	}
+	items, err := s.loadAllItems(ctx, strmTaskID)
+	if err != nil || len(items) == 0 {
+		return 0
+	}
+	scores, err := s.scores.ListByTask(ctx, strmTaskID)
+	if err != nil {
+		return 0
+	}
+	byID := make(map[string]*domain.BueiDoubanScore, len(scores))
+	for _, sc := range scores {
+		byID[sc.ItemID] = sc
+	}
+	now := s.now()
+	count := 0
+	for _, item := range items {
+		view := buildWallItem(strmTaskID, "", item, byID[item.ID], now)
+		if matchFilter(view, "unscored") || matchFilter(view, "pending") {
+			count++
+		}
+	}
+	return count
 }
 
 // TaskLibraries 返回 strm_task_id → 关联媒体库映射。

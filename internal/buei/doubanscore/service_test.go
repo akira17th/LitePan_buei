@@ -434,3 +434,47 @@ func TestDescribeLookupErrorClassifiesFailures(t *testing.T) {
 		t.Fatal("无错误时应返回空文案")
 	}
 }
+
+// buei: 左侧任务列表徽标 = 「未评分 + 待更新」数量，与海报墙筛选口径一致。
+func TestTasksBadgeCountsUnscoredAndPending(t *testing.T) {
+	now := time.Date(2025, 12, 20, 9, 0, 0, 0, time.UTC)
+	items := map[int64][]strmscrape.Item{
+		1: {
+			// 有评分且完结超过 1 个月：不再更新
+			{ID: "done", Title: "完结老剧", MediaType: strmscrape.MediaTypeTV, TVState: strmscrape.TVStateEnded, EndDate: "2025-01-01", TMDBID: "1"},
+			// 有评分但在连载：待更新
+			{ID: "updating", Title: "连载剧", MediaType: strmscrape.MediaTypeTV, TVState: strmscrape.TVStateUpdating, TMDBID: "2"},
+			// 没有评分：未评分
+			{ID: "empty", Title: "无评分电影", MediaType: strmscrape.MediaTypeMovie, ReleaseDate: "2025-01-01", TMDBID: "3"},
+		},
+	}
+	scores := newFakeScores()
+	scores.data[scoreKey(1, "done")] = &domain.BueiDoubanScore{
+		StrmTaskID: 1, ItemID: "done", Rating: floatPtr(8.8), Status: domain.BueiDoubanScoreMatched,
+	}
+	scores.data[scoreKey(1, "updating")] = &domain.BueiDoubanScore{
+		StrmTaskID: 1, ItemID: "updating", Rating: floatPtr(7.5), Status: domain.BueiDoubanScoreMatched,
+	}
+	svc := testService(t, items, scores, now)
+
+	tasks, err := svc.Tasks(context.Background())
+	if err != nil {
+		t.Fatalf("Tasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("任务数量异常：%+v", tasks)
+	}
+	// 未评分 1（empty）+ 待更新 1（updating）= 2
+	if tasks[0].NeedsQuery != 2 {
+		t.Fatalf("徽标数量应为 2，实际 %d（%+v）", tasks[0].NeedsQuery, tasks[0])
+	}
+
+	// 与海报墙的口径核对
+	page, err := svc.Items(context.Background(), ItemQuery{StrmTaskID: 1})
+	if err != nil {
+		t.Fatalf("Items: %v", err)
+	}
+	if tasks[0].NeedsQuery != page.Stats.Unscored+page.Stats.Pending {
+		t.Fatalf("徽标应与「未评分 + 待更新」一致：%d vs %d + %d", tasks[0].NeedsQuery, page.Stats.Unscored, page.Stats.Pending)
+	}
+}

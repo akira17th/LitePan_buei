@@ -497,7 +497,7 @@ onUnmounted(() => {
           @click="selectTask(task)"
         >
           <span class="douban__task-name" :title="task.name">{{ task.name }}</span>
-          <span v-if="task.scored" class="douban__task-badge">{{ task.scored }}</span>
+          <span v-if="task.needs_query" class="douban__task-badge" title="未评分 + 待更新">{{ task.needs_query }}</span>
         </button>
       </aside>
 
