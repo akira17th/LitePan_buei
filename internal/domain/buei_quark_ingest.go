@@ -15,6 +15,8 @@ type QuarkIngestFavorite struct {
 	FolderName     string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	// UpdateSchedule 是用户在收藏弹窗里设置的更新时间（仅用于展示更新节奏）。
+	UpdateSchedule IngestUpdateSchedule
 }
 
 // QuarkIngestFavoriteRepository 负责夸克入库收藏的持久化。

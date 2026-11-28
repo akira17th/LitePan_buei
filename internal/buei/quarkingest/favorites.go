@@ -14,6 +14,8 @@ type FavoriteInput struct {
 	FolderID       string
 	ParentFolderID string
 	FolderName     string
+	// UpdateSchedule 是收藏的更新时间设置（只用于在收藏打开时提示更新节奏）。
+	UpdateSchedule domain.IngestUpdateSchedule
 }
 
 // ListFavorites 返回指定夸克账号保存的收藏。
@@ -165,11 +167,16 @@ func normalizeFavorite(in FavoriteInput) (*domain.QuarkIngestFavorite, error) {
 	if folderName == "" {
 		return nil, domain.Errorf(domain.CodeValidation, "收藏文件夹名称不能为空")
 	}
+	schedule, err := in.UpdateSchedule.Normalize()
+	if err != nil {
+		return nil, err
+	}
 	return &domain.QuarkIngestFavorite{
 		AccountID:      in.AccountID,
 		Link:           link,
 		FolderID:       folderID,
 		ParentFolderID: strings.TrimSpace(in.ParentFolderID),
 		FolderName:     folderName,
+		UpdateSchedule: schedule,
 	}, nil
 }

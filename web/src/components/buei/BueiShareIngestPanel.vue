@@ -144,6 +144,58 @@ const favoriteQuarkFolderId = ref("");
 const favoriteQuarkParentFolderId = ref("");
 const favoriteQuarkFolderName = ref("");
 const favoriteFolderPickerOpen = ref(false);
+// #region buei:ingest-update
+// 收藏的更新时间：-1 表示不设置，0 每天，1–7 周一–周日；只用于收藏打开时提示更新节奏。
+const INGEST_UPDATE_NONE = -1;
+const favoriteUpdateWeekday = ref(INGEST_UPDATE_NONE);
+const favoriteUpdateHour = ref(20);
+const favoriteUpdateMinute = ref(0);
+const UPDATE_WEEKDAY_OPTIONS = [
+  { value: -1, label: "不设置" },
+  { value: 0, label: "每天" },
+  { value: 1, label: "周一" },
+  { value: 2, label: "周二" },
+  { value: 3, label: "周三" },
+  { value: 4, label: "周四" },
+  { value: 5, label: "周五" },
+  { value: 6, label: "周六" },
+  { value: 7, label: "周日" },
+];
+const UPDATE_WEEKDAY_NAMES = ["每天", "周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+// 格式化成「每天 20:30 左右更新」/「每周一 20:30 左右更新」，未设置时返回空串。
+function formatUpdateSchedule(weekday?: number, hour?: number, minute?: number) {
+  const day = weekday ?? -1;
+  if (day < 0 || day > 7) return "";
+  const h = Math.min(23, Math.max(0, Math.trunc(hour ?? 0)));
+  const m = Math.min(59, Math.max(0, Math.trunc(minute ?? 0)));
+  return `${day === 0 ? "每天" : `每${UPDATE_WEEKDAY_NAMES[day]}`} ${pad2(h)}:${pad2(m)} 左右更新`;
+}
+
+// 当前打开收藏的更新时间，显示在名称后面。
+const activeUpdateText = computed(() => {
+  if (provider.value === "quark") {
+    const favorite = activeQuarkFavorite.value;
+    if (!favorite) return "";
+    return formatUpdateSchedule(favorite.update_weekday, favorite.update_hour, favorite.update_minute);
+  }
+  const id = Number(String(activeFavoriteKey.value ?? "").replace(/^g:/, ""));
+  if (!id) return "";
+  const link = savedLinks.value.find((item) => item.id === id);
+  if (!link) return "";
+  return formatUpdateSchedule(link.update_weekday, link.update_hour, link.update_minute);
+});
+
+function clampUpdateHour() {
+  const next = Math.trunc(Number(favoriteUpdateHour.value) || 0);
+  favoriteUpdateHour.value = Math.min(23, Math.max(0, next));
+}
+
+function clampUpdateMinute() {
+  const next = Math.trunc(Number(favoriteUpdateMinute.value) || 0);
+  favoriteUpdateMinute.value = Math.min(59, Math.max(0, next));
+}
+// #endregion buei:ingest-update
 const quarkFlattening = ref(false);
 const quarkDeleting = ref(false);
 
@@ -2004,6 +2056,11 @@ function resetFavoriteDialog() {
   favoriteQuarkParentFolderId.value = "";
   favoriteQuarkFolderName.value = "";
   favoriteFolderPickerOpen.value = false;
+  // #region buei:ingest-update
+  favoriteUpdateWeekday.value = INGEST_UPDATE_NONE;
+  favoriteUpdateHour.value = 20;
+  favoriteUpdateMinute.value = 0;
+  // #endregion buei:ingest-update
 }
 
 function openAddFavorite() {
@@ -2033,6 +2090,9 @@ function openEditQuarkFavorite(favorite: UnifiedFavorite) {
   favoriteQuarkParentFolderId.value = entry.parent_folder_id;
   favoriteQuarkFolderName.value = entry.folder_name;
   favoriteError.value = "";
+  // #region buei:ingest-update
+  applyFavoriteUpdateSchedule(entry.update_weekday, entry.update_hour, entry.update_minute);
+  // #endregion buei:ingest-update
   favoriteDialogOpen.value = true;
   void ensureFavoriteQuarkInbox();
 }
@@ -2046,8 +2106,36 @@ function openEditGuangyaFavorite(favorite: UnifiedFavorite) {
   favoriteLink.value = link.url || link.share_id;
   favoritePassword.value = link.password || "";
   favoriteError.value = "";
+  // #region buei:ingest-update
+  applyFavoriteUpdateSchedule(link.update_weekday, link.update_hour, link.update_minute);
+  // #endregion buei:ingest-update
   favoriteDialogOpen.value = true;
 }
+
+// #region buei:ingest-update
+// 编辑收藏时回填已保存的更新时间；没有设置时保持「不设置」，同时保留默认的 20:00。
+function applyFavoriteUpdateSchedule(weekday?: number, hour?: number, minute?: number) {
+  const day = weekday ?? INGEST_UPDATE_NONE;
+  if (day < 0 || day > 7) {
+    favoriteUpdateWeekday.value = INGEST_UPDATE_NONE;
+    return;
+  }
+  favoriteUpdateWeekday.value = day;
+  favoriteUpdateHour.value = Math.min(23, Math.max(0, Math.trunc(Number(hour) || 0)));
+  favoriteUpdateMinute.value = Math.min(59, Math.max(0, Math.trunc(Number(minute) || 0)));
+}
+
+// 保存收藏时提交的更新时间；未设置时按 -1 提交（后端会清空），空输入按 0 处理。
+function favoriteUpdatePayload() {
+  const hour = Math.min(23, Math.max(0, Math.trunc(Number(favoriteUpdateHour.value) || 0)));
+  const minute = Math.min(59, Math.max(0, Math.trunc(Number(favoriteUpdateMinute.value) || 0)));
+  return {
+    update_weekday: favoriteUpdateWeekday.value,
+    update_hour: hour,
+    update_minute: minute,
+  };
+}
+// #endregion buei:ingest-update
 
 function openEditFavorite(favorite: UnifiedFavorite) {
   if (favorite.provider === "quark") {
@@ -2185,6 +2273,13 @@ async function submitFavorite() {
       // 磁力收藏：先静默刷新收藏列表，保存位置才能按离线账号锁定（不能等套用后再刷新）。
       if (favoriteIsMagnet.value) await loadSavedLinks(true);
       // #endregion buei:guangya magnet ingest
+      // #region buei:ingest-update
+      // 更新时间单独保存，不重新解析分享链接；编辑时始终提交一次，便于清空。
+      const scheduleTarget = res.saved_link_id || editingFavorite?.id || 0;
+      if (scheduleTarget && (editingFavorite || favoriteUpdateWeekday.value >= 0)) {
+        await bueiGuangyaShareApi.updateSavedSchedule(scheduleTarget, favoriteUpdatePayload());
+      }
+      // #endregion buei:ingest-update
       applyParsedGuangya(res, link);
       if (!favoriteIsMagnet.value) await loadSavedLinks();
       if (res.saved_link_id > 0) {
@@ -2212,6 +2307,9 @@ async function submitFavorite() {
       folder_id: favoriteQuarkFolderId.value,
       parent_folder_id: favoriteQuarkParentFolderId.value,
       folder_name: favoriteQuarkFolderName.value,
+      // #region buei:ingest-update
+      ...favoriteUpdatePayload(),
+      // #endregion buei:ingest-update
     };
     let saved: QuarkIngestFavorite;
     if (favoriteEditing.value) {
@@ -3404,6 +3502,9 @@ onBeforeUnmount(() => {
         <div class="gys__main">
           <div v-if="hasSource" class="gys__sharehead">
             <span class="gys__sharetitle" :title="sourceTitle">{{ sourceTitle }}</span>
+            <!-- #region buei:ingest-update -->
+            <span v-if="activeUpdateText" class="gys__shareupdate">{{ activeUpdateText }}</span>
+            <!-- #endregion buei:ingest-update -->
             <span class="gys__sharesub">{{ sourceSubtitle }}</span>
             <a
               v-if="activeFavoriteLink"
@@ -4365,6 +4466,48 @@ onBeforeUnmount(() => {
         </div>
       </template>
 
+      <!-- #region buei:ingest-update -->
+      <div class="gys__editor-field">
+        <span>更新时间</span>
+        <div class="gys__editor-update">
+          <AppSelect
+            :model-value="favoriteUpdateWeekday"
+            :options="UPDATE_WEEKDAY_OPTIONS"
+            :disabled="favoriteSaving"
+            @update:model-value="(v) => (favoriteUpdateWeekday = Number(v))"
+          />
+          <template v-if="favoriteUpdateWeekday >= 0">
+            <label class="gys__editor-time">
+              <input
+                v-model.number="favoriteUpdateHour"
+                type="number"
+                min="0"
+                max="23"
+                :disabled="favoriteSaving"
+                @change="clampUpdateHour"
+                @blur="clampUpdateHour"
+              />
+              <span>时</span>
+            </label>
+            <label class="gys__editor-time">
+              <input
+                v-model.number="favoriteUpdateMinute"
+                type="number"
+                min="0"
+                max="59"
+                :disabled="favoriteSaving"
+                @change="clampUpdateMinute"
+                @blur="clampUpdateMinute"
+              />
+              <span>分</span>
+            </label>
+            <span class="gys__editor-update-hint">左右更新</span>
+          </template>
+        </div>
+        <small>24 小时制，只在收藏打开时提示更新节奏。</small>
+      </div>
+      <!-- #endregion buei:ingest-update -->
+
       <p v-if="favoriteError" class="gys__editor-error">{{ favoriteError }}</p>
     </div>
     <template #footer>
@@ -4570,6 +4713,22 @@ onBeforeUnmount(() => {
   font-size: 11px;
   color: var(--text-muted);
 }
+
+/* #region buei:ingest-update */
+/* 收藏更新时间：跟在名称后面的浅色胶囊，提醒该收藏的更新节奏 */
+.gys__shareupdate {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* #endregion buei:ingest-update */
 
 .gys__sharejump {
   display: inline-flex;
@@ -6493,6 +6652,59 @@ onBeforeUnmount(() => {
 .gys__editor-field > input:focus {
   border-color: var(--brand);
 }
+
+/* #region buei:ingest-update */
+/* 更新时间：星期下拉 + 时 / 分（24 小时制） */
+.gys__editor-update {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.gys__editor-update > :deep(.select) {
+  width: 88px;
+  flex: 0 0 auto;
+}
+
+.gys__editor-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.gys__editor-time > input {
+  width: 52px;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  text-align: center;
+  outline: none;
+  -moz-appearance: textfield;
+}
+
+.gys__editor-time > input::-webkit-outer-spin-button,
+.gys__editor-time > input::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+.gys__editor-time > input:focus {
+  border-color: var(--brand);
+}
+
+.gys__editor-update-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* #endregion buei:ingest-update */
 
 .gys__editor-provider {
   display: flex;

@@ -61,6 +61,8 @@ func (h *Handler) registerBueiRoutes(r chi.Router) {
 		r.Post("/discard", h.bueiGuangyaShareDiscard)
 		r.Get("/saved", h.bueiGuangyaShareSavedList)
 		r.Put("/saved/{id}", h.bueiGuangyaShareSavedUpdate)
+		// buei:ingest-update —— 收藏更新时间设置（仅展示用）。
+		r.Put("/saved/{id}/schedule", h.bueiGuangyaShareSavedSchedule)
 		r.Delete("/saved/{id}", h.bueiGuangyaShareSavedDelete)
 	})
 	r.Route("/tools/quark-ingest", func(r chi.Router) {

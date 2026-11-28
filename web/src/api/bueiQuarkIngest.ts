@@ -24,6 +24,10 @@ export interface QuarkIngestFavorite {
   folder_name: string;
   created_at?: string;
   updated_at?: string;
+  // buei:ingest-update —— 收藏的更新时间：-1 不设置，0 每天，1–7 周一–周日。
+  update_weekday?: number;
+  update_hour?: number;
+  update_minute?: number;
 }
 
 export interface QuarkIngestFavoritePayload {
@@ -32,6 +36,10 @@ export interface QuarkIngestFavoritePayload {
   folder_id: string;
   parent_folder_id: string;
   folder_name: string;
+  /** buei:ingest-update —— 不传表示不设置更新时间。 */
+  update_weekday?: number;
+  update_hour?: number;
+  update_minute?: number;
 }
 
 export interface QuarkIngestPreset {

@@ -377,3 +377,45 @@ func TestGuangyaShareLinkRepoFixedOrder(t *testing.T) {
 		}
 	}
 }
+
+// buei:ingest-update —— 收藏更新时间默认不设置，保存 / 清空都要能读回。
+func TestGuangyaShareLinkRepoUpdateSchedule(t *testing.T) {
+	ctx := context.Background()
+	db := newGuangyaShareTestDB(t)
+	repo := store.NewGuangyaShareLinkRepo(db)
+
+	saved, err := repo.Create(ctx, &domain.GuangyaShareLink{ShareID: "1969_sched", Title: "更新时间测试"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if saved.UpdateSchedule.IsSet() {
+		t.Fatalf("新收藏不应设置更新时间：%+v", saved.UpdateSchedule)
+	}
+
+	want := domain.IngestUpdateSchedule{Weekday: 3, Hour: 21, Minute: 5}
+	if err := repo.UpdateSchedule(ctx, saved.ID, want); err != nil {
+		t.Fatalf("update schedule: %v", err)
+	}
+	got, err := repo.Get(ctx, saved.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.UpdateSchedule != want {
+		t.Fatalf("更新时间未保存：期望 %+v，实际 %+v", want, got.UpdateSchedule)
+	}
+
+	if err := repo.UpdateSchedule(ctx, saved.ID, domain.IngestUpdateSchedule{Weekday: domain.IngestUpdateNone}); err != nil {
+		t.Fatalf("clear schedule: %v", err)
+	}
+	cleared, err := repo.Get(ctx, saved.ID)
+	if err != nil {
+		t.Fatalf("get cleared: %v", err)
+	}
+	if cleared.UpdateSchedule.IsSet() || cleared.UpdateSchedule.Weekday != domain.IngestUpdateNone {
+		t.Fatalf("更新时间应被清空：%+v", cleared.UpdateSchedule)
+	}
+
+	if err := repo.UpdateSchedule(ctx, 0, want); err == nil {
+		t.Fatal("收藏 ID 为 0 时应报错")
+	}
+}

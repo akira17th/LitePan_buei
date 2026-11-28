@@ -370,6 +370,19 @@ func (r *fakeLinkRepo) UpdateRenameReplace(_ context.Context, id int64, rule dom
 	return nil
 }
 
+func (r *fakeLinkRepo) UpdateSchedule(_ context.Context, id int64, schedule domain.IngestUpdateSchedule) error {
+	link := r.links[id]
+	if link == nil {
+		return domain.Errf(domain.CodeNotFound)
+	}
+	normalized, err := schedule.Normalize()
+	if err != nil {
+		return err
+	}
+	link.UpdateSchedule = normalized
+	return nil
+}
+
 func (r *fakeLinkRepo) Delete(_ context.Context, id int64) error {
 	if r.links[id] == nil {
 		return domain.Errf(domain.CodeNotFound)
@@ -920,5 +933,39 @@ func TestServiceNeedPasswordDoesNotSave(t *testing.T) {
 	}
 	if len(repo.links) != 0 {
 		t.Fatalf("need-password share should not be saved before code is verified, got %d", len(repo.links))
+	}
+}
+
+// buei:ingest-update —— 收藏更新时间保存与清空。
+func TestUpdateSavedSchedule(t *testing.T) {
+	repo := newFakeLinkRepo()
+	link, err := repo.Create(context.Background(), &domain.GuangyaShareLink{ShareID: "1969_sched", Title: "更新时间"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	svc := &Service{links: repo}
+
+	want := domain.IngestUpdateSchedule{Weekday: 5, Hour: 19, Minute: 45}
+	updated, err := svc.UpdateSavedSchedule(context.Background(), link.ID, want)
+	if err != nil {
+		t.Fatalf("UpdateSavedSchedule: %v", err)
+	}
+	if updated.UpdateSchedule != want {
+		t.Fatalf("更新时间未保存：期望 %+v，实际 %+v", want, updated.UpdateSchedule)
+	}
+
+	cleared, err := svc.UpdateSavedSchedule(context.Background(), link.ID, domain.IngestUpdateSchedule{Weekday: domain.IngestUpdateNone})
+	if err != nil {
+		t.Fatalf("清空更新时间：%v", err)
+	}
+	if cleared.UpdateSchedule.IsSet() {
+		t.Fatalf("更新时间应被清空：%+v", cleared.UpdateSchedule)
+	}
+
+	if _, err := svc.UpdateSavedSchedule(context.Background(), link.ID, domain.IngestUpdateSchedule{Weekday: 2, Hour: 25}); err == nil {
+		t.Fatal("小时越界应报错")
+	}
+	if _, err := svc.UpdateSavedSchedule(context.Background(), 999, want); err == nil {
+		t.Fatal("收藏不存在应报错")
 	}
 }

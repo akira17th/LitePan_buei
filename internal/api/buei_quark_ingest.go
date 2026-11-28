@@ -336,6 +336,12 @@ type bueiQuarkIngestFavoriteDTO struct {
 	FolderName     string `json:"folder_name"`
 	CreatedAt      string `json:"created_at,omitempty"`
 	UpdatedAt      string `json:"updated_at,omitempty"`
+	// #region buei:ingest-update
+	// 收藏的更新时间：-1 表示不设置，0 每天，1–7 周一–周日。
+	UpdateWeekday int `json:"update_weekday"`
+	UpdateHour    int `json:"update_hour"`
+	UpdateMinute  int `json:"update_minute"`
+	// #endregion buei:ingest-update
 }
 
 type bueiQuarkIngestFavoriteBody struct {
@@ -344,7 +350,28 @@ type bueiQuarkIngestFavoriteBody struct {
 	FolderID       string `json:"folder_id"`
 	ParentFolderID string `json:"parent_folder_id"`
 	FolderName     string `json:"folder_name"`
+	// #region buei:ingest-update
+	// 收藏的更新时间；不传 update_weekday 表示不设置。
+	UpdateWeekday *int `json:"update_weekday"`
+	UpdateHour    int  `json:"update_hour"`
+	UpdateMinute  int  `json:"update_minute"`
+	// #endregion buei:ingest-update
 }
+
+// #region buei:ingest-update
+// bueiQuarkIngestFavoriteSchedule 把请求体里的更新时间转成领域结构。
+func bueiQuarkIngestFavoriteSchedule(body bueiQuarkIngestFavoriteBody) domain.IngestUpdateSchedule {
+	if body.UpdateWeekday == nil {
+		return domain.IngestUpdateSchedule{Weekday: domain.IngestUpdateNone}
+	}
+	return domain.IngestUpdateSchedule{
+		Weekday: *body.UpdateWeekday,
+		Hour:    body.UpdateHour,
+		Minute:  body.UpdateMinute,
+	}
+}
+
+// #endregion buei:ingest-update
 
 func bueiQuarkIngestFavoriteToDTO(favorite *domain.QuarkIngestFavorite) *bueiQuarkIngestFavoriteDTO {
 	if favorite == nil {
@@ -359,6 +386,11 @@ func bueiQuarkIngestFavoriteToDTO(favorite *domain.QuarkIngestFavorite) *bueiQua
 		FolderName:     favorite.FolderName,
 		CreatedAt:      FormatAPITime(favorite.CreatedAt),
 		UpdatedAt:      FormatAPITime(favorite.UpdatedAt),
+		// #region buei:ingest-update
+		UpdateWeekday: favorite.UpdateSchedule.Weekday,
+		UpdateHour:    favorite.UpdateSchedule.Hour,
+		UpdateMinute:  favorite.UpdateSchedule.Minute,
+		// #endregion buei:ingest-update
 	}
 }
 
@@ -398,6 +430,7 @@ func (h *Handler) bueiQuarkIngestFavoriteCreate(w http.ResponseWriter, r *http.R
 		FolderID:       body.FolderID,
 		ParentFolderID: body.ParentFolderID,
 		FolderName:     body.FolderName,
+		UpdateSchedule: bueiQuarkIngestFavoriteSchedule(body),
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -426,6 +459,7 @@ func (h *Handler) bueiQuarkIngestFavoriteUpdate(w http.ResponseWriter, r *http.R
 		FolderID:       body.FolderID,
 		ParentFolderID: body.ParentFolderID,
 		FolderName:     body.FolderName,
+		UpdateSchedule: bueiQuarkIngestFavoriteSchedule(body),
 	})
 	if err != nil {
 		writeErr(w, err)

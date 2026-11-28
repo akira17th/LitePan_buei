@@ -92,6 +92,8 @@ type GuangyaShareLink struct {
 	LastBrowsePath []GuangyaShareBrowseCrumb
 	// RenameReplace 是上次使用的替换文本重命名规则。
 	RenameReplace GuangyaShareRenameReplace
+	// UpdateSchedule 是用户在收藏弹窗里设置的更新时间（仅用于展示更新节奏）。
+	UpdateSchedule IngestUpdateSchedule
 	// buei: MagnetAccountID 是磁力收藏离线使用的光鸭账号 ID；仅列表返回时在内存中填充，不落库。
 	MagnetAccountID int64
 }
@@ -136,6 +138,8 @@ type GuangyaShareLinkRepository interface {
 	UpdateBrowsePath(ctx context.Context, id int64, crumbs []GuangyaShareBrowseCrumb) error
 	// UpdateRenameReplace 保存该收藏的“替换文本”重命名规则。
 	UpdateRenameReplace(ctx context.Context, id int64, rule GuangyaShareRenameReplace) error
+	// UpdateSchedule 保存该收藏的更新时间设置（未设置时清空）。
+	UpdateSchedule(ctx context.Context, id int64, schedule IngestUpdateSchedule) error
 	// UpdateIdentity 按收藏 ID 更新分享身份（链接、分享 ID、标题、提取码），保留目标预设与重命名规则。
 	// clearBrowsePath 用于分享 ID 变化时清理已失效的浏览路径和转存历史。
 	UpdateIdentity(ctx context.Context, id int64, shareID, url, password, title, owner string, clearBrowsePath bool) (*GuangyaShareLink, error)

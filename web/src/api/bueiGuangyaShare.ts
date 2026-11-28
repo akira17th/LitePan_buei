@@ -106,6 +106,10 @@ export interface GuangyaShareSavedLink {
   last_used_at: string;
   // 磁力收藏离线使用的光鸭账号 ID；非磁力为 0。
   magnet_account_id?: number;
+  // buei:ingest-update —— 收藏的更新时间：-1 不设置，0 每天，1–7 周一–周日。
+  update_weekday?: number;
+  update_hour?: number;
+  update_minute?: number;
 }
 
 export interface GuangyaShareListPayload {
@@ -204,6 +208,9 @@ export const bueiGuangyaShareApi = {
   saved: () => http.get<{ items: GuangyaShareSavedLink[] }>("/admin/tools/guangya-share/saved"),
   updateSaved: (id: number, payload: { url: string; password: string }) =>
     http.put<GuangyaShareParseResult>(`/admin/tools/guangya-share/saved/${id}`, payload),
+  // buei:ingest-update —— 保存收藏的更新时间（只用于展示更新节奏）。
+  updateSavedSchedule: (id: number, payload: { update_weekday: number; update_hour: number; update_minute: number }) =>
+    http.put<GuangyaShareSavedLink>(`/admin/tools/guangya-share/saved/${id}/schedule`, payload),
   progress: (id: string) =>
     http.get<GuangyaShareTransferProgress>("/admin/tools/guangya-share/progress", { id }),
   discard: (savedLinkId: number, files: { file_id: string; original_name: string }[]) =>

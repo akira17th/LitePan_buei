@@ -463,6 +463,23 @@ func (s *Service) UpdateSavedLink(ctx context.Context, in UpdateSavedInput) (*Pa
 	return result, nil
 }
 
+// UpdateSavedSchedule 保存光鸭收藏的更新时间设置（只用于在收藏打开时提示更新节奏）。
+func (s *Service) UpdateSavedSchedule(ctx context.Context, id int64, schedule domain.IngestUpdateSchedule) (*domain.GuangyaShareLink, error) {
+	if s == nil {
+		return nil, domain.Errorf(domain.CodeInternal, "光鸭分享服务未初始化")
+	}
+	if s.links == nil {
+		return nil, domain.Errorf(domain.CodeNotImplement, "收藏功能未启用")
+	}
+	if id <= 0 {
+		return nil, domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
+	}
+	if err := s.links.UpdateSchedule(ctx, id, schedule); err != nil {
+		return nil, err
+	}
+	return s.links.Get(ctx, id)
+}
+
 // SavedLinks 返回已收藏的分享链接，按收藏 ID 固定顺序。
 // SavedLinks 返回全部收藏；磁力收藏的 Owner 填充为离线时使用的光鸭账号名（仅展示用）。
 func (s *Service) SavedLinks(ctx context.Context) ([]*domain.GuangyaShareLink, error) {

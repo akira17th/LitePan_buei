@@ -22,7 +22,8 @@ func NewGuangyaShareLinkRepo(db *DB) domain.GuangyaShareLinkRepository {
 const guangyaShareLinkColumns = `id, share_id, url, password, title, owner, created_at, updated_at, last_used_at,
 	last_account_id, last_parent_id, last_base_path, last_base_dirs, last_title, last_season, last_is_series,
 	last_browse_path, rename_replace_enabled, rename_replace_find, rename_replace_with, rename_replace_rules, auto_strm,
-	auto_scrape, auto_scrape_task_id, auto_emby, emby_config_id, emby_mode, emby_library_id`
+	auto_scrape, auto_scrape_task_id, auto_emby, emby_config_id, emby_mode, emby_library_id,
+	update_weekday, update_hour, update_minute`
 
 func (r *guangyaShareLinkRepo) List(ctx context.Context) ([]*domain.GuangyaShareLink, error) {
 	rows, err := r.db.read.QueryContext(ctx,
@@ -314,6 +315,33 @@ func (r *guangyaShareLinkRepo) UpdateRenameReplace(ctx context.Context, id int64
 	return nil
 }
 
+func (r *guangyaShareLinkRepo) UpdateSchedule(ctx context.Context, id int64, schedule domain.IngestUpdateSchedule) error {
+	if id <= 0 {
+		return domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
+	}
+	schedule, err := schedule.Normalize()
+	if err != nil {
+		return err
+	}
+	result, err := r.db.write.ExecContext(ctx,
+		`UPDATE buei_guangya_share_links
+		 SET update_weekday=?, update_hour=?, update_minute=?, updated_at=?
+		 WHERE id=?`,
+		schedule.Weekday, schedule.Hour, schedule.Minute, tsValue(time.Now().UTC()), id,
+	)
+	if err != nil {
+		return wrapDB(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return wrapDB(err)
+	}
+	if affected == 0 {
+		return domain.Errf(domain.CodeNotFound)
+	}
+	return nil
+}
+
 func (r *guangyaShareLinkRepo) Delete(ctx context.Context, id int64) error {
 	if id <= 0 {
 		return domain.Errorf(domain.CodeValidation, "收藏 ID 不能为空")
@@ -368,6 +396,9 @@ func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShare
 		embyConfigID   string
 		embyMode       string
 		embyLibraryID  string
+		updateWeekday  int
+		updateHour     int
+		updateMinute   int
 	)
 	if err := scanner.Scan(
 		&link.ID, &link.ShareID, &link.URL, &link.Password, &link.Title, &link.Owner,
@@ -376,12 +407,14 @@ func scanGuangyaShareLink(scanner guangyaShareLinkScanner) (*domain.GuangyaShare
 		&lastTitle, &lastSeason, &lastIsSeries, &lastBrowsePath,
 		&replaceEnabled, &replaceFind, &replaceWith, &replaceRules, &autoStrm, &autoScrape, &scrapeTaskID,
 		&autoEmby, &embyConfigID, &embyMode, &embyLibraryID,
+		&updateWeekday, &updateHour, &updateMinute,
 	); err != nil {
 		return nil, err
 	}
 	link.CreatedAt = parseTS(createdAt)
 	link.UpdatedAt = parseTS(updatedAt)
 	link.LastUsedAt = parseTS(lastUsed)
+	link.UpdateSchedule = domain.IngestUpdateSchedule{Weekday: updateWeekday, Hour: updateHour, Minute: updateMinute}
 	if lastAccountID > 0 {
 		dest := &domain.GuangyaShareDestination{
 			AccountID:     lastAccountID,

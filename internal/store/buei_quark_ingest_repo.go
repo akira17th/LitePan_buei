@@ -18,7 +18,8 @@ func NewQuarkIngestFavoriteRepo(db *DB) domain.QuarkIngestFavoriteRepository {
 	return &quarkIngestFavoriteRepo{db: db}
 }
 
-const quarkIngestFavoriteColumns = `id, account_id, link, folder_id, parent_folder_id, folder_name, created_at, updated_at`
+const quarkIngestFavoriteColumns = `id, account_id, link, folder_id, parent_folder_id, folder_name, created_at, updated_at,
+	update_weekday, update_hour, update_minute`
 
 func (r *quarkIngestFavoriteRepo) ListByAccount(ctx context.Context, accountID int64) ([]*domain.QuarkIngestFavorite, error) {
 	rows, err := r.db.read.QueryContext(ctx,
@@ -60,11 +61,13 @@ func (r *quarkIngestFavoriteRepo) Create(ctx context.Context, favorite *domain.Q
 	}
 	result, err := r.db.write.ExecContext(ctx,
 		`INSERT INTO buei_quark_ingest_favorites
-		   (account_id, link, folder_id, parent_folder_id, folder_name, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,?)`,
+		   (account_id, link, folder_id, parent_folder_id, folder_name, created_at, updated_at,
+		    update_weekday, update_hour, update_minute)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		favorite.AccountID, strings.TrimSpace(favorite.Link), strings.TrimSpace(favorite.FolderID),
 		strings.TrimSpace(favorite.ParentFolderID), strings.TrimSpace(favorite.FolderName),
 		tsValue(createdAt), tsValue(updatedAt),
+		favorite.UpdateSchedule.Weekday, favorite.UpdateSchedule.Hour, favorite.UpdateSchedule.Minute,
 	)
 	if err != nil {
 		return nil, wrapDB(err)
@@ -82,10 +85,12 @@ func (r *quarkIngestFavoriteRepo) Update(ctx context.Context, favorite *domain.Q
 	}
 	result, err := r.db.write.ExecContext(ctx,
 		`UPDATE buei_quark_ingest_favorites
-		 SET link=?, folder_id=?, parent_folder_id=?, folder_name=?, updated_at=?
+		 SET link=?, folder_id=?, parent_folder_id=?, folder_name=?,
+		     update_weekday=?, update_hour=?, update_minute=?, updated_at=?
 		 WHERE id=? AND account_id=?`,
 		strings.TrimSpace(favorite.Link), strings.TrimSpace(favorite.FolderID),
 		strings.TrimSpace(favorite.ParentFolderID), strings.TrimSpace(favorite.FolderName),
+		favorite.UpdateSchedule.Weekday, favorite.UpdateSchedule.Hour, favorite.UpdateSchedule.Minute,
 		tsValue(time.Now().UTC()),
 		favorite.ID, favorite.AccountID,
 	)
@@ -167,6 +172,9 @@ func scanQuarkIngestFavorite(row rowScanner) (*domain.QuarkIngestFavorite, error
 		&favorite.FolderName,
 		&createdAt,
 		&updatedAt,
+		&favorite.UpdateSchedule.Weekday,
+		&favorite.UpdateSchedule.Hour,
+		&favorite.UpdateSchedule.Minute,
 	); err != nil {
 		return nil, err
 	}

@@ -422,6 +422,10 @@ type bueiGuangyaShareSavedLinkDTO struct {
 	LastUsedAt string `json:"last_used_at"`
 	// buei: 磁力收藏离线使用的光鸭账号 ID；非磁力为 0。
 	MagnetAccountID int64 `json:"magnet_account_id"`
+	// buei:ingest-update —— 收藏的更新时间：-1 表示不设置，0 每天，1–7 周一–周日。
+	UpdateWeekday int `json:"update_weekday"`
+	UpdateHour    int `json:"update_hour"`
+	UpdateMinute  int `json:"update_minute"`
 }
 
 func bueiGuangyaShareSavedLinkToDTO(link *domain.GuangyaShareLink) bueiGuangyaShareSavedLinkDTO {
@@ -435,6 +439,11 @@ func bueiGuangyaShareSavedLinkToDTO(link *domain.GuangyaShareLink) bueiGuangyaSh
 		CreatedAt:  FormatAPITime(link.CreatedAt),
 		UpdatedAt:  FormatAPITime(link.UpdatedAt),
 		LastUsedAt: FormatAPITime(link.LastUsedAt),
+		// #region buei:ingest-update
+		UpdateWeekday: link.UpdateSchedule.Weekday,
+		UpdateHour:    link.UpdateSchedule.Hour,
+		UpdateMinute:  link.UpdateSchedule.Minute,
+		// #endregion buei:ingest-update
 	}
 	// #region buei:guangya magnet ingest
 	// 磁力收藏：Owner 已由服务层填充为光鸭账号名；这里带上账号 ID 供前端锁定保存位置。
@@ -521,6 +530,44 @@ func (h *Handler) bueiGuangyaShareSavedUpdate(w http.ResponseWriter, r *http.Req
 	}
 	writeOK(w, bueiGuangyaShareParseResultToDTO(res))
 }
+
+// #region buei:ingest-update
+// 保存收藏的更新时间设置；仅用于收藏打开时提示更新节奏，不触发任何任务。
+func (h *Handler) bueiGuangyaShareSavedSchedule(w http.ResponseWriter, r *http.Request) {
+	if !ensureServiceReady(w, h.buei.GuangyaShare != nil) {
+		return
+	}
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	var in struct {
+		UpdateWeekday *int `json:"update_weekday"`
+		UpdateHour    int  `json:"update_hour"`
+		UpdateMinute  int  `json:"update_minute"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	schedule := domain.IngestUpdateSchedule{Weekday: domain.IngestUpdateNone}
+	if in.UpdateWeekday != nil {
+		schedule = domain.IngestUpdateSchedule{
+			Weekday: *in.UpdateWeekday,
+			Hour:    in.UpdateHour,
+			Minute:  in.UpdateMinute,
+		}
+	}
+	link, err := h.buei.GuangyaShare.UpdateSavedSchedule(r.Context(), id, schedule)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeOK(w, bueiGuangyaShareSavedLinkToDTO(link))
+}
+
+// #endregion buei:ingest-update
 
 func (h *Handler) bueiGuangyaShareSavedDelete(w http.ResponseWriter, r *http.Request) {
 	if !ensureServiceReady(w, h.buei.GuangyaShare != nil) {
