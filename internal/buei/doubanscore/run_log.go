@@ -21,6 +21,15 @@ type TaskRunStat struct {
 	Success  int      `json:"success"`           // 查询成功（含豆瓣无评分的正常应答）条数
 	Failed   int      `json:"failed"`            // 查询失败（风控/限流/超时/网络等）条数
 	Reasons  []string `json:"reasons,omitempty"` // 失败原因（按出现次数从多到少）
+	// Items 是本轮真正查过的媒体项目（名称 + 结果 + 失败原因），弹窗按任务展示明细。
+	Items []RunLogItem `json:"items,omitempty"`
+}
+
+// RunLogItem 是本次自动查询中的一个媒体项目。
+type RunLogItem struct {
+	Title  string `json:"title"`
+	State  string `json:"state"`            // success | failed
+	Detail string `json:"detail,omitempty"` // 成功：豆瓣结果；失败：具体原因
 }
 
 // RunLog 是一轮自动查询的整体日志。
@@ -48,6 +57,7 @@ type taskRunAcc struct {
 	success  int
 	failed   int
 	reasons  map[string]int
+	items    []RunLogItem
 }
 
 // beginTask 开始记录一个任务的统计。
@@ -58,25 +68,25 @@ func (r *runLogRecorder) beginTask(taskID int64, taskName string) {
 	r.tasks = append(r.tasks, taskRunAcc{taskID: taskID, taskName: taskName, reasons: map[string]int{}})
 }
 
-// recordSuccess 记一次成功。
-func (r *runLogRecorder) recordSuccess() {
-	if r == nil || len(r.tasks) == 0 {
-		return
-	}
-	r.tasks[len(r.tasks)-1].success++
-}
-
-// recordFailure 记一次失败（reason 是 DescribeLookupError 归类后的文案）。
-func (r *runLogRecorder) recordFailure(reason string) {
+// recordItem 记一个项目的查询结果（name 是媒体名称，detail 是结果或失败原因）。
+func (r *runLogRecorder) recordItem(title string, failed bool, detail string) {
 	if r == nil || len(r.tasks) == 0 {
 		return
 	}
 	acc := &r.tasks[len(r.tasks)-1]
-	acc.failed++
-	if reason == "" {
-		reason = "未知错误"
+	item := RunLogItem{Title: strings.TrimSpace(title), State: "success", Detail: strings.TrimSpace(detail)}
+	if failed {
+		item.State = "failed"
+		acc.failed++
+		reason := item.Detail
+		if reason == "" {
+			reason = "未知错误"
+		}
+		acc.reasons[reason]++
+	} else {
+		acc.success++
 	}
-	acc.reasons[reason]++
+	acc.items = append(acc.items, item)
 }
 
 // finish 生成整轮日志并持久化；待查条数为 0 的任务不出现。
@@ -100,6 +110,7 @@ func (r *runLogRecorder) finish(ctx context.Context, configs domain.ConfigReposi
 			Pending:  pending,
 			Success:  acc.success,
 			Failed:   acc.failed,
+			Items:    acc.items,
 		}
 		for reason := range acc.reasons {
 			stat.Reasons = append(stat.Reasons, reason)

@@ -113,6 +113,9 @@ type doubanClient struct {
 	mu                 sync.Mutex
 	last               time.Time
 	searchBlockedUntil time.Time
+
+	// buei:devlog —— 开发环境的 HTTP 调试输出（nil 表示不记录）。
+	debugf func(format string, args ...any)
 }
 
 func newDoubanClient(interval time.Duration) *doubanClient {
@@ -210,11 +213,26 @@ func (c *doubanClient) do(ctx context.Context, rawURL string, hdr doubanHeaders)
 		req.Header.Set("Referer", hdr.referer)
 	}
 
+	if c.debugf != nil {
+		c.debugf("  HTTP GET %s", rawURL)
+	}
+	started := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
+		if c.debugf != nil {
+			c.debugf("  HTTP 失败（%s）：%v", time.Since(started).Round(time.Millisecond), err)
+		}
 		return nil, true, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	if c.debugf != nil {
+		host := ""
+		if resp.Request != nil && resp.Request.URL != nil {
+			host = resp.Request.URL.Host
+		}
+		c.debugf("  HTTP %d %s（%s）", resp.StatusCode, host, time.Since(started).Round(time.Millisecond))
+	}
 
 	// 搜索页被风控时会 302 到 sec.douban.com 的验证页（跟着跳转后是 200 HTML）。
 	if resp.Request != nil && resp.Request.URL != nil && strings.Contains(resp.Request.URL.Host, "sec.douban.com") {

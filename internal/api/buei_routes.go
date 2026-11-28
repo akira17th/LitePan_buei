@@ -47,6 +47,8 @@ func (h *Handler) registerBueiRoutes(r chi.Router) {
 		r.Get("/state", h.bueiDoubanScoreState)
 		r.Post("/query", h.bueiDoubanScoreQuery)
 		r.Post("/stop", h.bueiDoubanScoreStop)
+		// buei:douban-override —— 手动编辑豆瓣 ID / 评分 / 不再查询。
+		r.Post("/override", h.bueiDoubanScoreOverride)
 		// buei:douban-library —— 任务 ↔ Emby 媒体库关联（评分联动刷库）。
 		r.Get("/libraries", h.bueiDoubanLibraryList)
 		r.Post("/library", h.bueiDoubanLibrarySave)

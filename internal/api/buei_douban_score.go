@@ -106,6 +106,37 @@ func (h *Handler) bueiDoubanScoreQuery(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, progress)
 }
 
+// buei:douban-override —— 卡片「齿轮」弹窗：手动填写豆瓣 ID / 豆瓣评分 / 不再自动查询。
+type bueiDoubanScoreOverrideRequest struct {
+	StrmTaskID  int64    `json:"strm_task_id"`
+	ItemID      string   `json:"item_id"`
+	DoubanID    string   `json:"douban_id"`
+	Rating      *float64 `json:"rating"`
+	NoAutoQuery bool     `json:"no_auto_query"`
+}
+
+func (h *Handler) bueiDoubanScoreOverride(w http.ResponseWriter, r *http.Request) {
+	if !ensureServiceReady(w, h.buei.DoubanScore != nil) {
+		return
+	}
+	var req bueiDoubanScoreOverrideRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := h.buei.DoubanScore.SaveOverride(r.Context(), doubanscore.OverrideRequest{
+		StrmTaskID:  req.StrmTaskID,
+		ItemID:      req.ItemID,
+		DoubanID:    req.DoubanID,
+		Rating:      req.Rating,
+		NoAutoQuery: req.NoAutoQuery,
+	}); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeOK(w, map[string]any{"saved": true})
+}
+
 func (h *Handler) bueiDoubanScoreStop(w http.ResponseWriter, r *http.Request) {
 	if !ensureServiceReady(w, h.buei.DoubanScore != nil) {
 		return

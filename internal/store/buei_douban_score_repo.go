@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"litepan/internal/domain"
 )
@@ -20,6 +21,7 @@ func (r *bueiDoubanScoreRepo) ListByTask(ctx context.Context, strmTaskID int64) 
 	rows, err := r.db.read.QueryContext(ctx, `
 SELECT strm_task_id, item_id, title, year, media_type, query_title, query_year,
        douban_id, douban_title, douban_year, rating, votes, is_tv, status, message,
+       manual_douban_id, manual_rating, no_auto,
        checked_at, updated_at
 FROM buei_douban_scores
 WHERE strm_task_id = ?
@@ -92,7 +94,8 @@ ON CONFLICT(strm_task_id, item_id) DO UPDATE SET
 
 func (r *bueiDoubanScoreRepo) Counts(ctx context.Context) (map[int64]domain.BueiDoubanScoreCounts, error) {
 	rows, err := r.db.read.QueryContext(ctx, `
-SELECT strm_task_id, COUNT(*), COALESCE(SUM(CASE WHEN rating IS NOT NULL THEN 1 ELSE 0 END), 0)
+SELECT strm_task_id, COUNT(*),
+       COALESCE(SUM(CASE WHEN rating IS NOT NULL OR manual_rating IS NOT NULL THEN 1 ELSE 0 END), 0)
 FROM buei_douban_scores
 GROUP BY strm_task_id`)
 	if err != nil {
@@ -122,24 +125,45 @@ func (r *bueiDoubanScoreRepo) DeleteByTask(ctx context.Context, strmTaskID int64
 	return wrapDB(err)
 }
 
+// SaveOverride 只写三个手动覆盖列：已有记录保留查询结果，没有记录时新建一行。
+func (r *bueiDoubanScoreRepo) SaveOverride(ctx context.Context, strmTaskID int64, itemID string, o domain.BueiDoubanScoreOverride) error {
+	if strmTaskID <= 0 || itemID == "" {
+		return domain.Errorf(domain.CodeValidation, "豆瓣评分覆盖项缺少任务或项目 ID")
+	}
+	_, err := r.db.write.ExecContext(ctx, `
+INSERT INTO buei_douban_scores (strm_task_id, item_id, updated_at, manual_douban_id, manual_rating, no_auto)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(strm_task_id, item_id) DO UPDATE SET
+  manual_douban_id=excluded.manual_douban_id,
+  manual_rating=excluded.manual_rating,
+  no_auto=excluded.no_auto,
+  updated_at=excluded.updated_at`,
+		strmTaskID, itemID, tsValue(time.Now()),
+		o.ManualDoubanID, floatOrNull(o.ManualRating), boolToInt(o.NoAutoQuery))
+	return wrapDB(err)
+}
+
 type bueiDoubanScoreScanner interface {
 	Scan(dest ...any) error
 }
 
 func scanBueiDoubanScore(row bueiDoubanScoreScanner) (*domain.BueiDoubanScore, error) {
 	var (
-		s         domain.BueiDoubanScore
-		year      sql.NullInt64
-		queryYear sql.NullInt64
-		doubanYr  sql.NullInt64
-		rating    sql.NullFloat64
-		isTV      int
-		checkedAt sql.NullString
-		updatedAt sql.NullString
+		s          domain.BueiDoubanScore
+		year       sql.NullInt64
+		queryYear  sql.NullInt64
+		doubanYr   sql.NullInt64
+		rating     sql.NullFloat64
+		manualRate sql.NullFloat64
+		isTV       int
+		noAuto     int
+		checkedAt  sql.NullString
+		updatedAt  sql.NullString
 	)
 	if err := row.Scan(
 		&s.StrmTaskID, &s.ItemID, &s.Title, &year, &s.MediaType, &s.QueryTitle, &queryYear,
 		&s.DoubanID, &s.DoubanTitle, &doubanYr, &rating, &s.Votes, &isTV, &s.Status, &s.Message,
+		&s.ManualDoubanID, &manualRate, &noAuto,
 		&checkedAt, &updatedAt,
 	); err != nil {
 		return nil, wrapDB(err)
@@ -151,7 +175,12 @@ func scanBueiDoubanScore(row bueiDoubanScoreScanner) (*domain.BueiDoubanScore, e
 		v := rating.Float64
 		s.Rating = &v
 	}
+	if manualRate.Valid {
+		v := manualRate.Float64
+		s.ManualRating = &v
+	}
 	s.IsTV = isTV != 0
+	s.NoAutoQuery = noAuto != 0
 	s.CheckedAt = parseTS(checkedAt)
 	s.UpdatedAt = parseTS(updatedAt)
 	return &s, nil

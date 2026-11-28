@@ -77,6 +77,13 @@ func TestNeedsQueryRules(t *testing.T) {
 		{"无评分且完结超过三个月", &domain.BueiDoubanScore{Status: domain.BueiDoubanScoreNotFound}, tvItemWithEnd("2026-02-01"), false},
 		{"无评分且上映超过三个月", &domain.BueiDoubanScore{Status: domain.BueiDoubanScoreNotFound}, movieItemWithRelease("2026-01-01"), false},
 		{"无评分且上映恰好三个月整", &domain.BueiDoubanScore{Status: domain.BueiDoubanScoreNotFound}, movieItemWithRelease("2026-02-21"), true},
+		// 3 个月冷静期只适用于「成功查过仍无评分」；刚入库的旧片、上次查询失败的会继续查。
+		{"从未查询且上映超过三个月", nil, movieItemWithRelease("2001-05-10"), true},
+		{"从未查询且完结超过三个月", nil, tvItemWithEnd("2018-06-01"), true},
+		{"上次查询失败且完结超过三个月", &domain.BueiDoubanScore{Status: domain.BueiDoubanScoreError}, tvItemWithEnd("2018-06-01"), true},
+		{"只有手动覆盖项且上映超过三个月", &domain.BueiDoubanScore{ManualDoubanID: "1292052"}, movieItemWithRelease("2001-05-10"), true},
+		{"成功查询过但豆瓣暂无评分", &domain.BueiDoubanScore{Status: domain.BueiDoubanScoreMatched}, movieItemWithRelease("2026-01-01"), false},
+		{"成功查询过但没有条目", &domain.BueiDoubanScore{Status: domain.BueiDoubanScoreNotFound}, movieItemWithRelease("2001-05-10"), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

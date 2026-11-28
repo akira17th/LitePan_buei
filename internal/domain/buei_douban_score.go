@@ -41,6 +41,14 @@ type BueiDoubanScore struct {
 	Status  string
 	Message string
 
+	// ManualDoubanID / ManualRating / NoAutoQuery 是手动编辑弹窗写入的覆盖项：
+	//   - ManualDoubanID 非空时，查询豆瓣评分直接用该条目，不再按片名搜索；
+	//   - ManualRating 非空时，界面展示与 NFO 都以它为准（不覆盖查询结果，只做显示覆盖）；
+	//   - NoAutoQuery 为 true 时，每日自动查询不再查它，手动「查询 / 重查」仍然有效。
+	ManualDoubanID string
+	ManualRating   *float64
+	NoAutoQuery    bool
+
 	// CheckedAt 是最近一次向豆瓣查询的时间。
 	CheckedAt time.Time
 	UpdatedAt time.Time
@@ -52,10 +60,19 @@ type BueiDoubanScoreCounts struct {
 	Scored int // 有豆瓣评分的项目数
 }
 
+// BueiDoubanScoreOverride 是手动编辑弹窗的三个覆盖项。
+type BueiDoubanScoreOverride struct {
+	ManualDoubanID string
+	ManualRating   *float64
+	NoAutoQuery    bool
+}
+
 // BueiDoubanScoreRepository 豆瓣评分仓储。
 type BueiDoubanScoreRepository interface {
 	ListByTask(ctx context.Context, strmTaskID int64) ([]*BueiDoubanScore, error)
 	Upsert(ctx context.Context, scores []*BueiDoubanScore) error
 	Counts(ctx context.Context) (map[int64]BueiDoubanScoreCounts, error)
 	DeleteByTask(ctx context.Context, strmTaskID int64) error
+	// SaveOverride 写入手动覆盖项：记录不存在时新建一行（评分等查询结果留空）。
+	SaveOverride(ctx context.Context, strmTaskID int64, itemID string, o BueiDoubanScoreOverride) error
 }

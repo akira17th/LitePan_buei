@@ -23,5 +23,8 @@ func wireBueiDoubanScore(logs *logx.Manager, st *storeBundle, strmSvc *strm.Serv
 		Log:       logs.For(logx.ModuleSystem),
 		// 开发环境不启动每天 08:00 的后台查询，避免本地调试时打豆瓣。
 		SchedulerDisabled: bueiDevMode(),
+		// 开发环境把豆瓣查询过程（片名 / 候选打分 / 命中 / 失败原因 / HTTP）打到控制台；
+		// 把日志级别调到 debug 也视为调试模式，方便临时排查生产机上的匹配问题。
+		DevVerbose: bueiDevMode() || logs.Level() == "debug",
 	})
 }

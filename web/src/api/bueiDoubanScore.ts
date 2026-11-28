@@ -26,6 +26,10 @@ export interface BueiDoubanScoreView {
   query_title?: string;
   checked_at?: string;
   needs_query: boolean;
+  /** buei:douban-override —— 手动编辑的豆瓣 ID / 评分 / 不再自动查询。 */
+  manual_douban_id?: string;
+  manual_rating?: number;
+  no_auto_query: boolean;
 }
 
 export interface BueiDoubanWallItem {
@@ -39,6 +43,8 @@ export interface BueiDoubanWallItem {
   poster_url?: string;
   status: string;
   added_at?: string;
+  /** 作品 NFO / 目录名里的 TMDB ID，用于 TMDB 跳转。 */
+  tmdb_id?: string;
   douban?: BueiDoubanScoreView;
 }
 
@@ -134,6 +140,14 @@ export interface BueiDoubanRunLogTask {
   success: number;
   failed: number;
   reasons?: string[];
+  /** 本轮真正查过的媒体项目（名称 + 结果 + 失败原因）。 */
+  items?: BueiDoubanRunLogItem[];
+}
+
+export interface BueiDoubanRunLogItem {
+  title: string;
+  state: "success" | "failed";
+  detail?: string;
 }
 
 /** buei:douban-library —— 任务 ↔ Emby 媒体库关联。 */
@@ -196,6 +210,17 @@ export function queryBueiDoubanScore(body: BueiDoubanQueryBody) {
 
 export function stopBueiDoubanScore() {
   return http.post<BueiDoubanState>("/admin/buei/douban-score/stop");
+}
+
+/** buei:douban-override —— 保存手动编辑项：豆瓣 ID / 豆瓣评分 / 不再自动查询。 */
+export function saveBueiDoubanOverride(body: {
+  strm_task_id: number;
+  item_id: string;
+  douban_id: string;
+  rating: number | null;
+  no_auto_query: boolean;
+}) {
+  return http.post<{ saved: boolean }>("/admin/buei/douban-score/override", body);
 }
 
 /** 读取 Emby 媒体库列表与各任务的关联。 */

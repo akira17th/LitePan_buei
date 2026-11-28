@@ -221,6 +221,7 @@ func pickSuggest(items []LookupResult, want string, wantYear *int, mediaType str
 func (s *Service) lookupDouban(ctx context.Context, title string, year *int, mediaType string) (*LookupResult, error) {
 	query := cleanQueryTitle(title)
 	if query == "" {
+		s.devf("  清洗后片名为空，跳过查询")
 		return nil, nil
 	}
 
@@ -231,33 +232,48 @@ func (s *Service) lookupDouban(ctx context.Context, title string, year *int, med
 		attempted++
 		hits, err := s.douban.search(ctx, query)
 		if err != nil {
+			s.devf("  search 失败：%v", err)
 			failed++
 			errs = append(errs, err)
-		} else if best := pickSearch(hits, query, year, mediaType); best != nil {
-			return best, nil
+		} else {
+			s.devHits("search", hits, query, year, mediaType)
+			if best := pickSearch(hits, query, year, mediaType); best != nil {
+				return best, nil
+			}
 		}
+	} else {
+		s.devf("  search 处于风控冷却期，直接跳过")
 	}
 
 	attempted++
 	hits, err := s.douban.searchRexxar(ctx, query)
 	if err != nil {
+		s.devf("  rexxar 失败：%v", err)
 		failed++
 		errs = append(errs, err)
-	} else if best := pickSearch(hits, query, year, mediaType); best != nil {
-		return best, nil
+	} else {
+		s.devHits("rexxar", hits, query, year, mediaType)
+		if best := pickSearch(hits, query, year, mediaType); best != nil {
+			return best, nil
+		}
 	}
 
 	attempted++
 	sugs, err := s.douban.suggest(ctx, query)
 	if err != nil {
+		s.devf("  suggest 失败：%v", err)
 		failed++
 		errs = append(errs, err)
-	} else if best := pickSuggest(sugs, query, year, mediaType); best != nil {
-		// suggest 不带评分，用条目详情补上（同时校正年份与电影/剧集）。
-		if detail, derr := s.douban.subjectDetail(ctx, best.DoubanID); derr == nil && detail != nil {
-			return detail, nil
+	} else {
+		s.devSuggestHits(sugs, query, year, mediaType)
+		if best := pickSuggest(sugs, query, year, mediaType); best != nil {
+			// suggest 不带评分，用条目详情补上（同时校正年份与电影/剧集）。
+			s.devf("  suggest 命中，读取豆瓣条目详情 %s 补评分", best.DoubanID)
+			if detail, derr := s.douban.subjectDetail(ctx, best.DoubanID); derr == nil && detail != nil {
+				return detail, nil
+			}
+			return best, nil
 		}
-		return best, nil
 	}
 
 	if attempted > 0 && failed == attempted {

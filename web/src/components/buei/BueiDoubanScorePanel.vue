@@ -19,11 +19,13 @@ import {
   type BueiDoubanWallItem,
 } from "@/api/bueiDoubanScore";
 import AdminEmptyState from "@/components/admin/AdminEmptyState.vue";
+import BueiDoubanOverrideModal from "@/components/buei/BueiDoubanOverrideModal.vue";
+import BueiDoubanRunLogModal from "@/components/buei/BueiDoubanRunLogModal.vue";
 import BueiDoubanRunModal from "@/components/buei/BueiDoubanRunModal.vue";
 import AppButton from "@/components/base/AppButton.vue";
-import AppModal from "@/components/base/AppModal.vue";
 import AppSelect from "@/components/base/AppSelect.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 import { useAdminPageLoading } from "@/composables/useAdminLoadingBar";
 import { toast } from "@/composables/useToast";
 
@@ -54,6 +56,8 @@ const librarySaving = ref(false);
 // buei:run-log —— 每日自动查询日志弹窗。
 const showRunLogModal = ref(false);
 const runLog = computed<BueiDoubanRunLog | null>(() => state.value?.run_log ?? null);
+// buei:douban-override —— 卡片「齿轮」弹窗（手动豆瓣 ID / 评分 / 不再查询）。
+const overrideItem = ref<BueiDoubanWallItem | null>(null);
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let loadSeq = 0;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -108,15 +112,6 @@ const filterChips = computed(() => [
   { key: "scored" as BueiDoubanFilter, label: "已评分", count: stats.value.scored },
 ]);
 
-function formatDuration(ms: number) {
-  if (!ms || ms < 0) return "—";
-  const totalSec = Math.round(ms / 1000);
-  if (totalSec < 60) return `${totalSec} 秒`;
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return s ? `${m} 分 ${s} 秒` : `${m} 分钟`;
-}
-
 function formatDateTime(raw?: string) {
   if (!raw) return "—";
   const d = new Date(raw);
@@ -153,6 +148,22 @@ function doubanURL(item: BueiDoubanWallItem) {
 function doubanLinkTitle(item: BueiDoubanWallItem) {
   const name = item.douban?.douban_title;
   return name ? `在豆瓣打开：${name}` : "在豆瓣打开";
+}
+
+function tmdbURL(item: BueiDoubanWallItem) {
+  const id = (item.tmdb_id || "").trim();
+  if (!id) return "";
+  const kind = item.media_type === "tv" ? "tv" : "movie";
+  return `https://www.themoviedb.org/${kind}/${id}`;
+}
+
+function openOverride(item: BueiDoubanWallItem) {
+  if (running.value) return;
+  overrideItem.value = item;
+}
+
+async function onOverrideSaved() {
+  await Promise.all([loadTasks(), loadItems(true)]);
 }
 
 function scoreOf(item: BueiDoubanWallItem) {
@@ -331,6 +342,17 @@ function onKeywordInput() {
   }, 300);
 }
 
+// 单条「查询 / 重查」结束时取该项目的失败原因（DescribeLookupError 已归类）：
+// 失败要在 toast 里直接告诉用户是风控 / 限流 / 超时还是网络问题，不能只说“查询完成”。
+function singleItemFailureReason(itemId: string) {
+  if (!itemId) return "";
+  const p = state.value?.progress;
+  if (!p || p.running) return "";
+  const status = p.items?.[itemId];
+  if (status && status.state === "failed") return status.detail || "查询失败";
+  return p.error || "";
+}
+
 function schedulePoll() {
   if (pollTimer) clearTimeout(pollTimer);
   pollTimer = setTimeout(async () => {
@@ -342,9 +364,15 @@ function schedulePoll() {
     }
     if (!pendingRefresh.value) return;
     // 查询真的结束了：统一刷新任务计数与海报墙，并结束卡片上的「查询中」。
+    const targetItemId = busyItemId.value;
     pendingRefresh.value = false;
     busyItemId.value = "";
+    const failure = singleItemFailureReason(targetItemId);
     await Promise.all([loadTasks(), loadItems(true)]);
+    if (failure) {
+      toast.error(failure);
+      return;
+    }
     toast.success("豆瓣评分查询完成");
   }, POLL_INTERVAL);
 }
@@ -552,18 +580,33 @@ onUnmounted(() => {
                   :class="{ 'is-ended': item.tv_state === 'ended' }"
                 >{{ tvStateText(item) }}</span>
               </span>
-              <a
-                v-if="doubanURL(item)"
-                class="dcard__douban"
-                :href="doubanURL(item)"
-                target="_blank"
-                rel="noopener noreferrer"
-                :title="doubanLinkTitle(item)"
-                aria-label="在豆瓣打开"
-                @click.stop
-              >
-                豆瓣<span class="dcard__douban-arrow" aria-hidden="true">↗</span>
-              </a>
+              <div class="dcard__links">
+                <a
+                  v-if="doubanURL(item)"
+                  class="dcard__jump"
+                  :href="doubanURL(item)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  :title="doubanLinkTitle(item)"
+                  aria-label="在豆瓣打开"
+                  @click.stop
+                >
+                  豆瓣<span class="dcard__jump-arrow" aria-hidden="true">↗</span>
+                </a>
+                <!-- buei:douban-score —— TMDB 跳转（样式与豆瓣入口一致） -->
+                <a
+                  v-if="tmdbURL(item)"
+                  class="dcard__jump"
+                  :href="tmdbURL(item)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="在 TMDB 打开"
+                  aria-label="在 TMDB 打开"
+                  @click.stop
+                >
+                  TMDB<span class="dcard__jump-arrow" aria-hidden="true">↗</span>
+                </a>
+              </div>
               <!-- 查询中：整张海报盖一层 loading，直到后台真的查完 -->
               <div v-if="busyItemId === item.id" class="dcard__busy" role="status" aria-live="polite">
                 <BusySpinner :size="26" />
@@ -577,6 +620,17 @@ onUnmounted(() => {
                   @click.stop="refreshItem(item)"
                 >
                   {{ scoreOf(item) == null ? "查询" : "重查" }}
+                </button>
+                <!-- buei:douban-override —— 右下角齿轮：手动编辑豆瓣 ID / 评分 / 不再查询 -->
+                <button
+                  type="button"
+                  class="dcard__gear"
+                  :disabled="running"
+                  title="手动编辑豆瓣 ID / 评分"
+                  aria-label="手动编辑豆瓣 ID / 评分"
+                  @click.stop="openOverride(item)"
+                >
+                  <SvgIcon name="cogs" :size="13" />
                 </button>
               </div>
             </div>
@@ -616,39 +670,21 @@ onUnmounted(() => {
     />
     <!-- #endregion buei:douban-score -->
 
-    <!-- #region buei:run-log —— 每日自动查询日志（只保留最近一次） -->
-    <AppModal :open="showRunLogModal" size="md" title="自动查询日志" @close="showRunLogModal = false">
-      <div v-if="runLog" class="rlog">
-        <div class="rlog__meta">
-          <span>{{ formatDateTime(runLog.finished_at) }} 结束</span>
-          <span class="rlog__sep">·</span>
-          <span>耗时 {{ formatDuration(runLog.duration_ms) }}</span>
-        </div>
-        <div class="rlog__summary">
-          <span class="rlog__pill">待查 {{ runLog.total }}</span>
-          <span class="rlog__pill rlog__pill--ok">成功 {{ runLog.success }}</span>
-          <span class="rlog__pill" :class="{ 'rlog__pill--fail': runLog.failed > 0 }">失败 {{ runLog.failed }}</span>
-        </div>
-        <div v-if="!runLog.tasks.length" class="rlog__empty">这次没有需要查询的作品。</div>
-        <div v-else class="rlog__list">
-          <div v-for="task in runLog.tasks" :key="task.task_id" class="rlog__task">
-            <div class="rlog__task-head">
-              <span class="rlog__task-name" :title="task.task_name">{{ task.task_name }}</span>
-              <span class="rlog__task-stats">
-                待查 {{ task.pending }} · 成功 {{ task.success }}<template v-if="task.failed"> · 失败 {{ task.failed }}</template>
-              </span>
-            </div>
-            <div v-if="task.reasons?.length" class="rlog__reasons">
-              <span v-for="reason in task.reasons" :key="reason" class="rlog__reason">{{ reason }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div v-else class="rlog rlog--empty">还没有自动查询记录。</div>
-      <template #footer>
-        <AppButton type="button" variant="ghost" @click="showRunLogModal = false">关闭</AppButton>
-      </template>
-    </AppModal>
+    <!-- #region buei:douban-override —— 手动编辑豆瓣 ID / 评分 / 不再查询 -->
+    <BueiDoubanOverrideModal
+      v-if="overrideItem"
+      :item="overrideItem"
+      @close="overrideItem = null"
+      @saved="onOverrideSaved"
+    />
+    <!-- #endregion buei:douban-override -->
+
+    <!-- #region buei:run-log —— 每日自动查询日志（只保留最近一次，按任务展示项目明细） -->
+    <BueiDoubanRunLogModal
+      v-if="showRunLogModal"
+      :run-log="runLog"
+      @close="showRunLogModal = false"
+    />
     <!-- #endregion buei:run-log -->
   </div>
 </template>
@@ -890,120 +926,7 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
-/* buei:run-log —— 自动查询日志弹窗 */
-.rlog {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 120px;
-}
-
-.rlog--empty {
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.rlog__meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.rlog__sep {
-  opacity: 0.5;
-}
-
-.rlog__summary {
-  display: flex;
-  gap: 6px;
-}
-
-.rlog__pill {
-  padding: 2px 10px;
-  border-radius: var(--radius-pill);
-  background: var(--surface-sunken);
-  color: var(--text-muted);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.rlog__pill--ok {
-  color: var(--success);
-  background: color-mix(in srgb, var(--success) 10%, transparent);
-}
-
-.rlog__pill--fail {
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
-}
-
-.rlog__empty {
-  padding: 18px 0;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.rlog__list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 46vh;
-  overflow-y: auto;
-  min-height: 0;
-}
-
-.rlog__task {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 9px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface);
-}
-
-.rlog__task-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.rlog__task-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.rlog__task-stats {
-  flex-shrink: 0;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.rlog__reasons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.rlog__reason {
-  padding: 2px 8px;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
-  color: var(--danger);
-  font-size: 11px;
-}
+/* buei:run-log —— 日志弹窗样式已移到 BueiDoubanRunLogModal.vue */
 
 /* 下拉默认内边距比旁边的搜索框/筛选项大，压到同一行高（30px）才不显突兀 */
 .douban__sort :deep(.select__trigger) {
@@ -1175,6 +1098,37 @@ onUnmounted(() => {
   opacity: 0.7;
 }
 
+/* buei:douban-override —— 右下角齿轮：与「查询」按钮同样只在鼠标悬停时出现 */
+.dcard__gear {
+  pointer-events: auto;
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(2, 6, 23, 0.55);
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  backdrop-filter: blur(5px);
+  transition: background var(--transition), color var(--transition);
+}
+
+.dcard__gear:hover {
+  background: rgba(2, 6, 23, 0.8);
+  color: #fff;
+}
+
+.dcard__gear:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
 .dcard--busy {
   cursor: progress;
 }
@@ -1235,12 +1189,19 @@ onUnmounted(() => {
   min-height: 16px;
 }
 
-/* 豆瓣条目快捷入口：只在已匹配到条目时出现，海报右上角 */
-.dcard__douban {
+/* 豆瓣 / TMDB 快捷入口：只在已匹配时出现，海报右上角逐个往下列 */
+.dcard__links {
   position: absolute;
   right: 8px;
   top: 8px;
   z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.dcard__jump {
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -1257,12 +1218,12 @@ onUnmounted(() => {
   transition: background var(--transition), color var(--transition);
 }
 
-.dcard__douban:hover {
+.dcard__jump:hover {
   background: #00b51d;
   color: #fff;
 }
 
-.dcard__douban-arrow {
+.dcard__jump-arrow {
   font-size: 9px;
 }
 

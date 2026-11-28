@@ -64,25 +64,33 @@ type Options struct {
 	Interval time.Duration
 	// Lookup 可替换查询实现（测试用），留空走真实豆瓣接口。
 	Lookup func(ctx context.Context, title string, year *int, mediaType string) (*LookupResult, error)
+	// LookupByID 可替换按豆瓣 ID 取条目的实现（测试用），留空走真实豆瓣接口。
+	LookupByID func(ctx context.Context, doubanID string) (*LookupResult, error)
 
 	// SchedulerDisabled 为 true 时不启动每日自动查询（本地开发用），手动查询仍然可用。
 	SchedulerDisabled bool
+	// DevVerbose 为 true 时把豆瓣查询过程（入参 / 候选打分 / 命中 / 失败原因）打到控制台，
+	// 由 LITEPAN_DEV=1 打开；生产环境保持 false，不产生额外日志。
+	DevVerbose bool
 }
 
 // Service 负责豆瓣评分的查询、保存与每日自动刷新。
 type Service struct {
-	tasks   TaskSource
-	items   ItemSource
-	scores  domain.BueiDoubanScoreRepository
-	ratings RatingWriter
-	libs    domain.BueiDoubanTaskLibraryRepository
-	emby    EmbyRefresher
-	configs domain.ConfigRepository
-	log     *slog.Logger
-	now     func() time.Time
-	douban  *doubanClient
-	lookup  func(ctx context.Context, title string, year *int, mediaType string) (*LookupResult, error)
-	noSched bool
+	tasks    TaskSource
+	items    ItemSource
+	scores   domain.BueiDoubanScoreRepository
+	ratings  RatingWriter
+	libs     domain.BueiDoubanTaskLibraryRepository
+	emby     EmbyRefresher
+	configs  domain.ConfigRepository
+	log      *slog.Logger
+	now      func() time.Time
+	douban   *doubanClient
+	lookup   func(ctx context.Context, title string, year *int, mediaType string) (*LookupResult, error)
+	lookupID func(ctx context.Context, doubanID string) (*LookupResult, error)
+	noSched  bool
+	// devVerbose 打开开发环境的查询日志（见 devlog.go）。
+	devVerbose bool
 
 	mu        sync.Mutex
 	running   bool
@@ -104,21 +112,30 @@ func New(opts Options) *Service {
 		log = slog.Default()
 	}
 	s := &Service{
-		tasks:   opts.Tasks,
-		items:   opts.Items,
-		scores:  opts.Scores,
-		ratings: opts.Ratings,
-		libs:    opts.Libraries,
-		emby:    opts.Emby,
-		configs: opts.Configs,
-		log:     log,
-		now:     now,
-		douban:  newDoubanClient(opts.Interval),
-		lookup:  opts.Lookup,
-		noSched: opts.SchedulerDisabled,
+		tasks:      opts.Tasks,
+		items:      opts.Items,
+		scores:     opts.Scores,
+		ratings:    opts.Ratings,
+		libs:       opts.Libraries,
+		emby:       opts.Emby,
+		configs:    opts.Configs,
+		log:        log,
+		now:        now,
+		douban:     newDoubanClient(opts.Interval),
+		lookup:     opts.Lookup,
+		lookupID:   opts.LookupByID,
+		noSched:    opts.SchedulerDisabled,
+		devVerbose: opts.DevVerbose,
 	}
 	if s.lookup == nil {
 		s.lookup = s.lookupDouban
+	}
+	if s.lookupID == nil {
+		s.lookupID = s.douban.subjectDetail
+	}
+	if s.devVerbose {
+		// 开发环境：连底层 HTTP 请求（URL / 状态码 / 耗时）一起打到控制台。
+		s.douban.debugf = s.devf
 	}
 	return s
 }
@@ -199,6 +216,10 @@ type ScoreView struct {
 	QueryTitle  string   `json:"query_title,omitempty"`
 	CheckedAt   string   `json:"checked_at,omitempty"`
 	NeedsQuery  bool     `json:"needs_query"`
+	// 手动编辑项：名称可能为空，编辑弹窗据此回填。
+	ManualDoubanID string   `json:"manual_douban_id,omitempty"`
+	ManualRating   *float64 `json:"manual_rating,omitempty"`
+	NoAutoQuery    bool     `json:"no_auto_query"`
 }
 
 // WallItem 是海报墙上的一部作品（STRM 索引项 + 豆瓣评分）。
@@ -214,9 +235,11 @@ type WallItem struct {
 	Status     string `json:"status"`
 	AddedAt    string `json:"added_at,omitempty"`
 	// ReleaseDate / EndDate 来自 STRM 索引（刮削写入 NFO 的发行日期与剧集完结日期）。
-	ReleaseDate string     `json:"release_date,omitempty"`
-	EndDate     string     `json:"end_date,omitempty"`
-	Douban      *ScoreView `json:"douban,omitempty"`
+	ReleaseDate string `json:"release_date,omitempty"`
+	EndDate     string `json:"end_date,omitempty"`
+	// TMDBID 来自 STRM 索引（NFO / 目录名），海报墙据此提供 TMDB 跳转。
+	TMDBID string     `json:"tmdb_id,omitempty"`
+	Douban *ScoreView `json:"douban,omitempty"`
 }
 
 // ItemStats 是当前任务海报墙的统计。
@@ -338,7 +361,7 @@ func (s *Service) Items(ctx context.Context, q ItemQuery) (ItemPage, error) {
 	for _, item := range items {
 		score := byID[item.ID]
 		view := buildWallItem(q.StrmTaskID, taskName, item, score, now)
-		if score != nil && score.Rating != nil {
+		if view.Douban != nil && view.Douban.Rating != nil {
 			stats.Scored++
 		} else {
 			stats.Unscored++
@@ -433,6 +456,7 @@ func buildWallItem(taskID int64, taskName string, item strmscrape.Item, score *d
 		AddedAt:     item.AddedAt,
 		ReleaseDate: item.ReleaseDate,
 		EndDate:     item.EndDate,
+		TMDBID:      item.TMDBID,
 	}
 	douban := &ScoreView{NeedsQuery: needsQuery(score, item, now)}
 	if score != nil {
@@ -446,9 +470,26 @@ func buildWallItem(taskID int64, taskName string, item strmscrape.Item, score *d
 		douban.Message = score.Message
 		douban.QueryTitle = score.QueryTitle
 		douban.CheckedAt = formatTS(score.CheckedAt)
+		douban.ManualDoubanID = score.ManualDoubanID
+		douban.ManualRating = score.ManualRating
+		douban.NoAutoQuery = score.NoAutoQuery
 	}
+	applyScoreOverride(douban, score)
 	view.Douban = douban
 	return view
+}
+
+// applyScoreOverride 把手动编辑项合并到视图上：手动评分与手动豆瓣 ID 覆盖查询结果。
+func applyScoreOverride(view *ScoreView, score *domain.BueiDoubanScore) {
+	if view == nil || score == nil {
+		return
+	}
+	if score.ManualRating != nil {
+		view.Rating = score.ManualRating
+	}
+	if strings.TrimSpace(score.ManualDoubanID) != "" {
+		view.DoubanID = strings.TrimSpace(score.ManualDoubanID)
+	}
 }
 
 func matchFilter(view WallItem, filter string) bool {
@@ -682,6 +723,8 @@ func (s *Service) StartQuery(req RunRequest) (Progress, error) {
 	progress := s.progress
 	s.mu.Unlock()
 
+	s.devf("开始查询（scope=%s，task=%d，指定项目 %d 个，force=%v）", scope, req.StrmTaskID, len(req.ItemIDs), req.Force)
+
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -705,6 +748,14 @@ func (s *Service) StartQuery(req RunRequest) (Progress, error) {
 		}
 		progress := s.progress
 		s.mu.Unlock()
+
+		// buei:devlog —— 开发环境把本轮汇总打到控制台。
+		s.devf("本轮结束：待查 %d · 已查 %d · 跳过 %d · 失败 %d · 耗时 %s",
+			progress.Total, progress.Queried, progress.Skipped, progress.Failed,
+			time.Since(startedAt).Round(time.Second))
+		if progress.Error != "" {
+			s.devf("本轮错误：%s", progress.Error)
+		}
 
 		// 无论成功、失败还是被停止，都记下这次执行时间：
 		// 否则失败后每分钟的调度检查都会立刻重试，形成对豆瓣的持续压力。
@@ -842,12 +893,20 @@ func (s *Service) execute(ctx context.Context, req RunRequest, scope string) {
 		// buei: —— 「n/m」总数只统计真正要查的条目；跳过的排除在外，
 		// 并记录原因供弹窗展示（runTask 里按 skipReason 直接跳过）。
 		kept := items[:0:0]
+		skipCounts := make(map[string]int, 8)
 		for _, item := range items {
 			if d := decideQuery(scores[item.ID], item, now); !d.Query {
 				skipReasons[item.ID] = d.Reason
+				skipCounts[d.Reason]++
 				continue
 			}
 			kept = append(kept, item)
+		}
+		if s.devVerbose {
+			s.devf("任务「%s」：索引 %d 项，待查 %d 项，跳过 %d 项", task.Name, len(items), len(kept), len(items)-len(kept))
+			for reason, count := range skipCounts {
+				s.devf("  跳过 %d 项：%s", count, reason)
+			}
 		}
 		loaded = append(loaded, taskItems{task: task, items: kept})
 		total += len(kept)
@@ -955,9 +1014,21 @@ func (s *Service) runTask(ctx context.Context, taskID int64, items []strmscrape.
 			p.CurrentItemID = item.ID
 		})
 
-		res, lookupErr := s.lookup(ctx, item.Title, item.Year, item.MediaType)
+		// buei:devlog —— 开发环境把每个项目的查询入参与结果打到控制台。
+		manualID := ""
+		if prev != nil {
+			manualID = strings.TrimSpace(prev.ManualDoubanID)
+		}
+		s.devLookupInput(item, manualID)
+
+		res, lookupErr := s.lookupItem(ctx, item, prev)
 		if lookupErr != nil && ctx.Err() != nil {
 			break
+		}
+		if lookupErr != nil {
+			s.devFailure(lookupErr)
+		} else {
+			s.devResult(res)
 		}
 		score := buildScore(taskID, item, prev, res, lookupErr, s.now())
 		batch = append(batch, score)
@@ -973,13 +1044,9 @@ func (s *Service) runTask(ctx context.Context, taskID int64, items []strmscrape.
 		default:
 			status.Detail = fmt.Sprintf("豆瓣 %.1f 分 · %d 人评价", *score.Rating, score.Votes)
 		}
-		// buei:run-log —— 每日自动任务记录各任务成败与失败原因。
+		// buei:run-log —— 每日自动任务记录每个被查项目的名称与结果（失败附具体原因）。
 		if runLog != nil {
-			if lookupErr != nil {
-				runLog.recordFailure(status.Detail)
-			} else {
-				runLog.recordSuccess()
-			}
+			runLog.recordItem(item.Title, lookupErr != nil, status.Detail)
 		}
 		s.setProgress(func(p *Progress) {
 			p.Items[item.ID] = status
@@ -1016,6 +1083,7 @@ func (s *Service) writeNFORatings(ctx context.Context, taskID int64, ratings []s
 	if s.ratings == nil || len(ratings) == 0 {
 		return
 	}
+	s.devf("任务 %d：写入 NFO 评分 %d 项", taskID, len(ratings))
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 	defer cancel()
 	if err := s.ratings.UpdateItemRatings(writeCtx, taskID, ratings); err != nil {
@@ -1068,7 +1136,29 @@ func buildScore(taskID int64, item strmscrape.Item, prev *domain.BueiDoubanScore
 			score.Message = "豆瓣暂无评分"
 		}
 	}
+	// 手动覆盖项始终跟随旧记录：手动豆瓣 ID 优先用于跳转 / NFO，手动评分优先展示。
+	if prev != nil {
+		score.ManualDoubanID = strings.TrimSpace(prev.ManualDoubanID)
+		score.ManualRating = prev.ManualRating
+		score.NoAutoQuery = prev.NoAutoQuery
+		if score.ManualRating != nil {
+			score.Rating = score.ManualRating
+		}
+		if score.ManualDoubanID != "" {
+			score.DoubanID = score.ManualDoubanID
+		}
+	}
 	return score
+}
+
+// lookupItem 查询单个作品的豆瓣条目：手动指定了豆瓣 ID 时直接读该条目，否则按片名 + 年份搜索。
+func (s *Service) lookupItem(ctx context.Context, item strmscrape.Item, prev *domain.BueiDoubanScore) (*LookupResult, error) {
+	if prev != nil {
+		if id := strings.TrimSpace(prev.ManualDoubanID); id != "" {
+			return s.lookupID(ctx, id)
+		}
+	}
+	return s.lookup(ctx, item.Title, item.Year, item.MediaType)
 }
 
 func truncateMessage(msg string) string {

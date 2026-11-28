@@ -103,6 +103,21 @@ func (f *fakeScores) DeleteByTask(_ context.Context, taskID int64) error {
 	return nil
 }
 
+func (f *fakeScores) SaveOverride(_ context.Context, taskID int64, itemID string, o domain.BueiDoubanScoreOverride) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := scoreKey(taskID, itemID)
+	sc := f.data[key]
+	if sc == nil {
+		sc = &domain.BueiDoubanScore{StrmTaskID: taskID, ItemID: itemID}
+		f.data[key] = sc
+	}
+	sc.ManualDoubanID = o.ManualDoubanID
+	sc.ManualRating = o.ManualRating
+	sc.NoAutoQuery = o.NoAutoQuery
+	return nil
+}
+
 type fakeConfigs map[string]string
 
 func (f fakeConfigs) Get(_ context.Context, key string) (string, bool, error) {
