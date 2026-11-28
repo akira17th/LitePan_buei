@@ -12,7 +12,8 @@ import (
 )
 
 // buei:douban-override —— 海报墙卡片「齿轮」弹窗的手动编辑项：
-//   - 豆瓣 ID：查询豆瓣评分时直接用该条目，不再按片名搜索；
+//   - 豆瓣 ID：作品唯一的豆瓣 ID 字段（名称匹配得到的与手动填写的都是同一个），
+//     非空时查询豆瓣评分直接读该条目，不再按片名搜索；清空则回到名称匹配；
 //   - 豆瓣评分：手动指定评分（0–10，最多一位小数），展示与 NFO 都以它为准；
 //   - 不再查询：打开后每日自动查询跳过该项目，手动「查询 / 重查」仍然有效。
 
@@ -44,9 +45,9 @@ func (s *Service) SaveOverride(ctx context.Context, req OverrideRequest) error {
 		rating = &v
 	}
 	override := domain.BueiDoubanScoreOverride{
-		ManualDoubanID: doubanID,
-		ManualRating:   rating,
-		NoAutoQuery:    req.NoAutoQuery,
+		DoubanID:     doubanID,
+		ManualRating: rating,
+		NoAutoQuery:  req.NoAutoQuery,
 	}
 	if err := s.scores.SaveOverride(ctx, req.StrmTaskID, itemID, override); err != nil {
 		return err

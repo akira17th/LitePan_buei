@@ -17,8 +17,8 @@ const emit = defineEmits<{
   (e: "saved"): void;
 }>();
 
-// 手动值优先；没有手动值时回填按片名匹配到的豆瓣条目 ID，方便直接确认或修改。
-const doubanID = ref(props.item.douban?.manual_douban_id || props.item.douban?.douban_id || "");
+// 豆瓣 ID 与名称匹配得到的是同一个字段：有就回填，方便确认或直接清空改为按名搜索。
+const doubanID = ref(props.item.douban?.douban_id ?? "");
 const ratingText = ref(
   props.item.douban?.manual_rating != null ? props.item.douban.manual_rating.toFixed(1) : "",
 );
@@ -92,7 +92,7 @@ function onDoubanIDInput(raw: string) {
           @input="onDoubanIDInput(($event.target as HTMLInputElement).value)"
         />
         <span class="override__hint" :class="{ 'override__hint--error': idError }">
-          {{ idError || "已匹配的豆瓣条目会自动填入；填写后查询评分直接查该条目，不再按片名搜索。" }}
+          {{ idError || "名称匹配到的或手动填写的豆瓣条目 ID；非空时直接按此 ID 查评分，清空则回到按片名搜索。" }}
         </span>
       </label>
 

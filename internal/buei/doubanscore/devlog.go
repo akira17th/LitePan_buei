@@ -19,13 +19,13 @@ func (s *Service) devf(format string, args ...any) {
 	s.log.Info("[豆瓣评分] " + fmt.Sprintf(format, args...))
 }
 
-// devLookupInput 打印一次查询的入参（片名 / 年份 / 类型 / 手动豆瓣 ID）。
-func (s *Service) devLookupInput(item strmscrape.Item, manualID string) {
+// devLookupInput 打印一次查询的入参（片名 / 年份 / 类型 / 已知道的豆瓣 ID）。
+func (s *Service) devLookupInput(item strmscrape.Item, doubanID string) {
 	if s == nil || !s.devVerbose {
 		return
 	}
-	if manualID != "" {
-		s.devf("查询[%s]《%s》（%s · %s）→ 手动豆瓣 ID %s", item.ID, item.Title, devYear(item.Year), devKind(item.MediaType), manualID)
+	if doubanID != "" {
+		s.devf("查询[%s]《%s》（%s · %s）→ 豆瓣 ID %s（直接查评分，不再按片名搜索）", item.ID, item.Title, devYear(item.Year), devKind(item.MediaType), doubanID)
 		return
 	}
 	s.devf("查询[%s]《%s》（%s · %s）→ 搜索片名 %q", item.ID, item.Title, devYear(item.Year), devKind(item.MediaType), cleanQueryTitle(item.Title))

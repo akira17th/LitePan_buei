@@ -36,12 +36,12 @@ func TestDecideQueryRespectsOverrides(t *testing.T) {
 	if d := decideQuery(nil, unscraped, now); d.Query {
 		t.Fatal("未刮削 TMDB 且没有手动豆瓣 ID 时不应查询")
 	}
-	if d := decideQuery(&domain.BueiDoubanScore{ManualDoubanID: "1292052"}, unscraped, now); !d.Query {
-		t.Fatal("手动指定豆瓣 ID 后应当可以查询")
+	if d := decideQuery(&domain.BueiDoubanScore{DoubanID: "1292052"}, unscraped, now); !d.Query {
+		t.Fatal("已有豆瓣 ID 后应当可以查询")
 	}
 }
 
-func TestRunTaskUsesManualDoubanID(t *testing.T) {
+func TestRunTaskUsesStoredDoubanID(t *testing.T) {
 	now := time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)
 	items := map[int64][]strmscrape.Item{
 		1: {{ID: "a", Title: "手动指定条目的电影", MediaType: strmscrape.MediaTypeMovie}},
@@ -49,11 +49,11 @@ func TestRunTaskUsesManualDoubanID(t *testing.T) {
 	scores := newFakeScores()
 	scores.data[scoreKey(1, "a")] = &domain.BueiDoubanScore{
 		StrmTaskID: 1, ItemID: "a", MediaType: strmscrape.MediaTypeMovie,
-		ManualDoubanID: "1292052",
+		DoubanID: "1292052",
 	}
 	svc := testService(t, items, scores, now)
 	svc.lookup = func(context.Context, string, *int, string) (*LookupResult, error) {
-		t.Fatal("手动指定豆瓣 ID 时不应按片名搜索")
+		t.Fatal("已有豆瓣 ID 时不应按片名搜索")
 		return nil, nil
 	}
 	svc.lookupID = func(_ context.Context, id string) (*LookupResult, error) {
@@ -72,8 +72,8 @@ func TestRunTaskUsesManualDoubanID(t *testing.T) {
 	if sc == nil || sc.Rating == nil || *sc.Rating != 9.7 {
 		t.Fatalf("应按手动豆瓣 ID 查到评分：%+v", sc)
 	}
-	if sc.DoubanID != "1292052" || sc.ManualDoubanID != "1292052" {
-		t.Fatalf("豆瓣 ID 应保留手动值：%+v", sc)
+	if sc.DoubanID != "1292052" {
+		t.Fatalf("豆瓣 ID 应保留：%+v", sc)
 	}
 }
 
@@ -176,5 +176,134 @@ func TestRunLogRecordsItemResults(t *testing.T) {
 	}
 	if task.Items[1].State != "failed" || task.Items[1].Detail != DescribeLookupError(errDoubanChallenge) {
 		t.Fatalf("失败项目应带具体原因：%+v", task.Items[1])
+	}
+}
+
+// buei:force —— 手动点卡片「查询 / 重查」必须直接去查：未刮削 TMDB、已有评分过期、
+// 已设「不再查询」/「手动评分」这些调度规则都不能拦下它。
+func TestForceQueryBypassesAllRules(t *testing.T) {
+	now := time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)
+	items := map[int64][]strmscrape.Item{
+		1: {
+			// 没有 TMDB ID：正常规则会跳过。
+			{ID: "no-tmdb", Title: "未刮削的电影", MediaType: strmscrape.MediaTypeMovie},
+			// 上映超过 3 个月 + 已有评分：正常规则不再刷新。
+			{ID: "old", Title: "老片", MediaType: strmscrape.MediaTypeMovie, ReleaseDate: "2001-05-10", TMDBID: "27205"},
+			// 手动设为不再查询。
+			{ID: "no-auto", Title: "不再查询的剧", MediaType: strmscrape.MediaTypeTV, TMDBID: "1399"},
+			// 手动设置了评分。
+			{ID: "manual", Title: "手动评分的电影", MediaType: strmscrape.MediaTypeMovie, TMDBID: "603"},
+		},
+	}
+	scores := newFakeScores()
+	scores.data[scoreKey(1, "old")] = &domain.BueiDoubanScore{
+		StrmTaskID: 1, ItemID: "old", Rating: floatPtr(7.2), Status: domain.BueiDoubanScoreMatched,
+	}
+	scores.data[scoreKey(1, "no-auto")] = &domain.BueiDoubanScore{
+		StrmTaskID: 1, ItemID: "no-auto", Rating: floatPtr(8.0), Status: domain.BueiDoubanScoreMatched,
+		NoAutoQuery: true,
+	}
+	scores.data[scoreKey(1, "manual")] = &domain.BueiDoubanScore{
+		StrmTaskID: 1, ItemID: "manual", ManualRating: floatPtr(9.5),
+	}
+	svc := testService(t, items, scores, now)
+
+	queried := make(map[string]bool)
+	svc.lookup = func(_ context.Context, title string, _ *int, _ string) (*LookupResult, error) {
+		queried[title] = true
+		return &LookupResult{DoubanID: "1", DoubanTitle: title, Rating: floatPtr(9.9), Votes: 1}, nil
+	}
+
+	if _, err := svc.StartQuery(RunRequest{
+		StrmTaskID: 1,
+		ItemIDs:    []string{"no-tmdb", "old", "no-auto", "manual"},
+		Force:      true,
+	}); err != nil {
+		t.Fatalf("StartQuery: %v", err)
+	}
+	waitIdle(t, svc)
+
+	for _, title := range []string{"未刮削的电影", "老片", "不再查询的剧", "手动评分的电影"} {
+		if !queried[title] {
+			t.Fatalf("手动查询应直接查《%s》，不应被规则拦下", title)
+		}
+	}
+	if sc := scores.data[scoreKey(1, "old")]; sc == nil || sc.Rating == nil || *sc.Rating != 9.9 {
+		t.Fatalf("老片应被重新查询并更新评分：%+v", sc)
+	}
+	// 手动评分是展示覆盖项：查询照常执行，但评分仍以手动值为准。
+	if sc := scores.data[scoreKey(1, "manual")]; sc == nil || sc.ManualRating == nil || *sc.ManualRating != 9.5 {
+		t.Fatalf("手动评分不应被查询冲掉：%+v", sc)
+	}
+}
+
+// buei:douban-id —— 已经有豆瓣 ID（名称匹配过一次）的作品，查询评分时直接用该 ID，
+// 不再重复按片名搜索；只有 ID 查不到时才退回片名搜索。
+func TestRunTaskReusesMatchedDoubanID(t *testing.T) {
+	now := time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)
+	items := map[int64][]strmscrape.Item{
+		1: {{ID: "a", Title: "老片", MediaType: strmscrape.MediaTypeMovie, TMDBID: "27205"}},
+	}
+	scores := newFakeScores()
+	scores.data[scoreKey(1, "a")] = &domain.BueiDoubanScore{
+		StrmTaskID: 1, ItemID: "a", DoubanID: "27205", Status: domain.BueiDoubanScoreNotFound,
+	}
+	svc := testService(t, items, scores, now)
+	svc.lookup = func(context.Context, string, *int, string) (*LookupResult, error) {
+		t.Fatal("已经有豆瓣 ID 时不应再按片名搜索")
+		return nil, nil
+	}
+	svc.lookupID = func(_ context.Context, id string) (*LookupResult, error) {
+		if id != "27205" {
+			t.Fatalf("应按已有豆瓣 ID 查询，实际用了 %q", id)
+		}
+		return &LookupResult{DoubanID: id, DoubanTitle: "盗梦空间", Rating: floatPtr(9.4), Votes: 100, Source: "detail"}, nil
+	}
+
+	if _, err := svc.StartQuery(RunRequest{StrmTaskID: 1}); err != nil {
+		t.Fatalf("StartQuery: %v", err)
+	}
+	waitIdle(t, svc)
+
+	sc := scores.data[scoreKey(1, "a")]
+	if sc == nil || sc.Rating == nil || *sc.Rating != 9.4 {
+		t.Fatalf("应按已有豆瓣 ID 查到评分：%+v", sc)
+	}
+}
+
+// 按已有豆瓣 ID 查不到时不做名称兜底：如实记下失败原因，由用户决定是否清掉 ID。
+func TestRunTaskReportsErrorWhenDoubanIDFails(t *testing.T) {
+	now := time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)
+	items := map[int64][]strmscrape.Item{
+		1: {{ID: "a", Title: "老片", MediaType: strmscrape.MediaTypeMovie, TMDBID: "27205"}},
+	}
+	scores := newFakeScores()
+	scores.data[scoreKey(1, "a")] = &domain.BueiDoubanScore{
+		StrmTaskID: 1, ItemID: "a", DoubanID: "99999999", Rating: floatPtr(7.0),
+		Status: domain.BueiDoubanScoreMatched,
+	}
+	svc := testService(t, items, scores, now)
+	svc.lookupID = func(context.Context, string) (*LookupResult, error) {
+		return nil, errLookupFailed
+	}
+	svc.lookup = func(context.Context, string, *int, string) (*LookupResult, error) {
+		t.Fatal("按豆瓣 ID 查询失败时不应退回片名搜索")
+		return nil, nil
+	}
+
+	if _, err := svc.StartQuery(RunRequest{StrmTaskID: 1}); err != nil {
+		t.Fatalf("StartQuery: %v", err)
+	}
+	waitIdle(t, svc)
+
+	sc := scores.data[scoreKey(1, "a")]
+	if sc == nil || sc.Status != domain.BueiDoubanScoreError {
+		t.Fatalf("应记录查询失败状态：%+v", sc)
+	}
+	if sc.DoubanID != "99999999" {
+		t.Fatalf("失败的 ID 应保留给用户确认：%+v", sc)
+	}
+	if sc.Rating == nil || *sc.Rating != 7.0 {
+		t.Fatalf("查询失败不应抹掉已有评分：%+v", sc)
 	}
 }

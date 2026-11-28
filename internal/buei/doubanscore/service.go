@@ -216,10 +216,9 @@ type ScoreView struct {
 	QueryTitle  string   `json:"query_title,omitempty"`
 	CheckedAt   string   `json:"checked_at,omitempty"`
 	NeedsQuery  bool     `json:"needs_query"`
-	// 手动编辑项：名称可能为空，编辑弹窗据此回填。
-	ManualDoubanID string   `json:"manual_douban_id,omitempty"`
-	ManualRating   *float64 `json:"manual_rating,omitempty"`
-	NoAutoQuery    bool     `json:"no_auto_query"`
+	// 手动编辑项：编辑弹窗据此回填（豆瓣 ID 只有 DoubanID 一个字段，不另存）。
+	ManualRating *float64 `json:"manual_rating,omitempty"`
+	NoAutoQuery  bool     `json:"no_auto_query"`
 }
 
 // WallItem 是海报墙上的一部作品（STRM 索引项 + 豆瓣评分）。
@@ -329,7 +328,8 @@ type RunRequest struct {
 	StrmTaskID int64
 	ItemIDs    []string
 	AllTasks   bool
-	Force      bool
+	// Force 为 true 时跳过全部调度规则直接查（卡片「查询 / 重查」用）。
+	Force bool
 }
 
 // Items 返回海报墙数据（STRM 索引项目 + 豆瓣评分，服务端过滤/排序/分页）。
@@ -470,7 +470,6 @@ func buildWallItem(taskID int64, taskName string, item strmscrape.Item, score *d
 		douban.Message = score.Message
 		douban.QueryTitle = score.QueryTitle
 		douban.CheckedAt = formatTS(score.CheckedAt)
-		douban.ManualDoubanID = score.ManualDoubanID
 		douban.ManualRating = score.ManualRating
 		douban.NoAutoQuery = score.NoAutoQuery
 	}
@@ -479,17 +478,12 @@ func buildWallItem(taskID int64, taskName string, item strmscrape.Item, score *d
 	return view
 }
 
-// applyScoreOverride 把手动编辑项合并到视图上：手动评分与手动豆瓣 ID 覆盖查询结果。
+// applyScoreOverride 把手动评分合并到视图上（豆瓣 ID 只有 DoubanID 一个字段，无需覆盖）。
 func applyScoreOverride(view *ScoreView, score *domain.BueiDoubanScore) {
-	if view == nil || score == nil {
+	if view == nil || score == nil || score.ManualRating == nil {
 		return
 	}
-	if score.ManualRating != nil {
-		view.Rating = score.ManualRating
-	}
-	if strings.TrimSpace(score.ManualDoubanID) != "" {
-		view.DoubanID = strings.TrimSpace(score.ManualDoubanID)
-	}
+	view.Rating = score.ManualRating
 }
 
 func matchFilter(view WallItem, filter string) bool {
@@ -895,15 +889,24 @@ func (s *Service) execute(ctx context.Context, req RunRequest, scope string) {
 		kept := items[:0:0]
 		skipCounts := make(map[string]int, 8)
 		for _, item := range items {
-			if d := decideQuery(scores[item.ID], item, now); !d.Query {
-				skipReasons[item.ID] = d.Reason
-				skipCounts[d.Reason]++
-				continue
+			// buei:force —— 手动点卡片「查询 / 重查」时（force）不应用任何调度规则：
+			// 用户点查询就是要查这一项，不能被「未刮削 TMDB / 已有评分 / 冷静期 /
+			// 手动评分 / 不再查询」这类规则拦下。
+			if !req.Force {
+				if d := decideQuery(scores[item.ID], item, now); !d.Query {
+					skipReasons[item.ID] = d.Reason
+					skipCounts[d.Reason]++
+					continue
+				}
 			}
 			kept = append(kept, item)
 		}
 		if s.devVerbose {
-			s.devf("任务「%s」：索引 %d 项，待查 %d 项，跳过 %d 项", task.Name, len(items), len(kept), len(items)-len(kept))
+			if req.Force {
+				s.devf("任务「%s」：索引 %d 项，手动查询（force）跳过全部调度规则，待查 %d 项", task.Name, len(items), len(kept))
+			} else {
+				s.devf("任务「%s」：索引 %d 项，待查 %d 项，跳过 %d 项", task.Name, len(items), len(kept), len(items)-len(kept))
+			}
 			for reason, count := range skipCounts {
 				s.devf("  跳过 %d 项：%s", count, reason)
 			}
@@ -1014,13 +1017,7 @@ func (s *Service) runTask(ctx context.Context, taskID int64, items []strmscrape.
 			p.CurrentItemID = item.ID
 		})
 
-		// buei:devlog —— 开发环境把每个项目的查询入参与结果打到控制台。
-		manualID := ""
-		if prev != nil {
-			manualID = strings.TrimSpace(prev.ManualDoubanID)
-		}
-		s.devLookupInput(item, manualID)
-
+		// buei:devlog —— 开发环境把每个项目的查询入参与结果打到控制台（入参日志在 lookupItem 里）。
 		res, lookupErr := s.lookupItem(ctx, item, prev)
 		if lookupErr != nil && ctx.Err() != nil {
 			break
@@ -1136,28 +1133,29 @@ func buildScore(taskID int64, item strmscrape.Item, prev *domain.BueiDoubanScore
 			score.Message = "豆瓣暂无评分"
 		}
 	}
-	// 手动覆盖项始终跟随旧记录：手动豆瓣 ID 优先用于跳转 / NFO，手动评分优先展示。
+	// 手动覆盖项始终跟随旧记录：手动评分优先展示，不再查询标记也保留。
 	if prev != nil {
-		score.ManualDoubanID = strings.TrimSpace(prev.ManualDoubanID)
 		score.ManualRating = prev.ManualRating
 		score.NoAutoQuery = prev.NoAutoQuery
 		if score.ManualRating != nil {
 			score.Rating = score.ManualRating
 		}
-		if score.ManualDoubanID != "" {
-			score.DoubanID = score.ManualDoubanID
-		}
 	}
 	return score
 }
 
-// lookupItem 查询单个作品的豆瓣条目：手动指定了豆瓣 ID 时直接读该条目，否则按片名 + 年份搜索。
+// lookupItem 查询单个作品的豆瓣条目。
+// 作品只有一个豆瓣 ID 字段（名称匹配得到的与编辑弹窗填写的都是同一个可信 ID）：
+// 只要它非空就直接读该条目的评分，不再按片名搜索；ID 为空时才按片名 + 年份搜索。
+// 按 ID 查不到时如实返回错误，由用户自行决定是否清掉 ID 回退到名称匹配。
 func (s *Service) lookupItem(ctx context.Context, item strmscrape.Item, prev *domain.BueiDoubanScore) (*LookupResult, error) {
 	if prev != nil {
-		if id := strings.TrimSpace(prev.ManualDoubanID); id != "" {
+		if id := strings.TrimSpace(prev.DoubanID); id != "" {
+			s.devLookupInput(item, id)
 			return s.lookupID(ctx, id)
 		}
 	}
+	s.devLookupInput(item, "")
 	return s.lookup(ctx, item.Title, item.Year, item.MediaType)
 }
 

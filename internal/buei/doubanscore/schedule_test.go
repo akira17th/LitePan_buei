@@ -81,7 +81,7 @@ func TestNeedsQueryRules(t *testing.T) {
 		{"从未查询且上映超过三个月", nil, movieItemWithRelease("2001-05-10"), true},
 		{"从未查询且完结超过三个月", nil, tvItemWithEnd("2018-06-01"), true},
 		{"上次查询失败且完结超过三个月", &domain.BueiDoubanScore{Status: domain.BueiDoubanScoreError}, tvItemWithEnd("2018-06-01"), true},
-		{"只有手动覆盖项且上映超过三个月", &domain.BueiDoubanScore{ManualDoubanID: "1292052"}, movieItemWithRelease("2001-05-10"), true},
+		{"只有手动覆盖项且上映超过三个月", &domain.BueiDoubanScore{DoubanID: "1292052"}, movieItemWithRelease("2001-05-10"), true},
 		{"成功查询过但豆瓣暂无评分", &domain.BueiDoubanScore{Status: domain.BueiDoubanScoreMatched}, movieItemWithRelease("2026-01-01"), false},
 		{"成功查询过但没有条目", &domain.BueiDoubanScore{Status: domain.BueiDoubanScoreNotFound}, movieItemWithRelease("2001-05-10"), false},
 	}

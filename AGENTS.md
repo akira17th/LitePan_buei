@@ -364,7 +364,7 @@ HTTP
 - 迁移文件在 `internal/store/migrations/NNNN_name.sql`，按版本号顺序执行，记录在 `schema_migrations`。
 - 迁移 SQL 按分号拆分执行，**字符串字面量里不要出现分号**。
 - 已执行的迁移绝不能修改或改编号；只能新增后续迁移。
-- 当前最新迁移为 `0043_buei_douban_score_manual.sql`（豆瓣评分手动覆盖项：`manual_douban_id` / `manual_rating` / `no_auto`）；buei 新迁移从 `0044` 起。
+- 当前最新迁移为 `0044_buei_douban_score_single_id.sql`（把 `manual_douban_id` 合并回唯一的 `douban_id` 后删除该列；`0043` 为豆瓣评分手动覆盖项 `manual_rating` / `no_auto`）；buei 新迁移从 `0045` 起。
 - 说明：`0033_buei_guangya_share_provider.sql`（夸克分享 provider）已随功能回撤删除，但部分已有数据库仍记录该版本；恢复夸克功能时沿用原文件即可，新迁移不要复用 0033。
 
 ### 4.8 全局设置
@@ -695,8 +695,9 @@ web/src/composables/useBueiXxx.ts
 - **存储位置**：评分写主库 `buei_douban_scores`，主键 `(strm_task_id, item_id)`。不要写进 `data/strmscrape/{task_id}.sqlite`：索引是「可重建缓存」，`rebuildIndexLocked` 会 `DELETE FROM items`，上游 bump `indexSchemaVersion` 时整库重建，评分会丢光。
 - **查询**：三条来源按可靠性回退（`douban.go`）——① `search.douban.com/movie/subject_search`（rating + 「剧集」label，最准，但匿名访问容易被 302 到 `sec.douban.com` 风控页，命中后冷却 30 分钟不再尝试）→ ② `m.douban.com/rexxar/api/v2/search/subjects`（移动端 API，自带评分，缺类型标记，需带手机 UA + `Referer: https://m.douban.com/`）→ ③ `j/subject_suggest`（ID / 年份 / `episode`）+ `rexxar/api/v2/movie/{id}` 详情补评分（剧集会被 301 到 `/tv/{id}`，Go 自动跟随）。片名先清洗（去年份、季集标记、`{tmdb-xxx}`），再按「标题全等 / 包含 + 年份（差 ≥2 年直接放弃）+ 电影↔剧集」打分，阈值 60；同时过滤 `type=celebrity` 的影人。请求间隔 900ms，429/5xx 退避重试，别调快。
 - **调度**：`internal/buei/doubanscore/schedule.go` 决定「是否需要查询」——没有评分要查；日期未知（电影没有 `release_date`、剧集没有 `end_date`，即未完结或还没刮削出日期）要查；日期距今不满 1 个月要查；只有「有评分 + 电影上映 / 剧集完结超过 1 个月」才跳过。参照日期来自 STRM 刮削写入 NFO 的 `release_date` / `end_date`（见 §7.11），不再自己记录「首次观察到的完结时间」（`buei_douban_scores.ended_at` 已随迁移 `0041` 删除，那种观察值不准确）。每天 08:00（服务器本地时区）跑全部任务，启动时若已过点且当天没跑过会补跑；状态存 config key `buei_douban_score_state`。
+- **手动查询不受规则影响**：卡片「查询 / 重查」发 `POST /query` 时带 `force=true`，`execute` 装载阶段完全跳过 `decideQuery` 过滤（不再按「未刮削 TMDB / 已有评分 / 1 个月刷新窗 / 3 个月冷静期 / 手动评分 / 不再查询」筛项目），`runTask` 里的 `needsQuery` 判断也被 `force` 短路，所以点按钮就是直接去查这一项。规则只作用于每日自动任务与「立即查询」弹窗的计划清单。
 - **接口**：`GET /api/admin/buei/douban-score/tasks`、`GET /items`（服务端过滤/排序/分页，一次读全任务索引再按评分合并）、`GET /plan`（「立即查询」弹窗的将查/跳过清单，`decideQuery` 规则与执行一致）、`GET /state`、`POST /query`（`strm_task_id` / `item_ids` + `force` / `all_tasks`）、`POST /stop`。`Progress.items[item_id]`（`title` / `state` = queried|skipped|failed / `detail`）与 `current_item_id` 供弹窗逐项展示；`DescribeLookupError` 把底层错误归类成「风控拦截 / 限流 / 超时 / 网络失败 / 其它」。
-- **无 TMDB 不查**：`decideQuery` 对 `TMDBID` 为空（未刮削）且没有手动豆瓣 ID 的作品直接跳过（「未刮削 TMDB，跳过」），强制重查（卡片「重查」）不受此限制；卡片入口不受影响，弹窗清单会把它列在「无需查询」。
+- **无 TMDB 不查**：`decideQuery` 对 `TMDBID` 为空（未刮削）且没有豆瓣 ID（`douban_id`）的作品直接跳过（「未刮削 TMDB，跳过」），强制重查（卡片「重查」）不受此限制；卡片入口不受影响，弹窗清单会把它列在「无需查询」。
 - **手动执行只查当前任务**：没有「全部任务」按钮（每日 08:00 自动任务仍查全部任务）；「立即查询」打开 `BueiDoubanRunModal.vue`——`GET /plan` 展示将查询/无需查询两组清单，确认后 `POST /query`，弹窗内 2 秒轮询 `/state` 逐项显示状态与结果，查询中可关闭（面板接管轮询）。
 - **刷新**：整任务查询结束后写 `last_run_at` 与统计；单条「查询 / 重查」不走调度、不重置每日计划；单条查询结束（3 秒轮询到 `running=false`）时从 `progress.items[item_id]` 取该项目结果，`state=failed` 就把 `detail`（`DescribeLookupError` 归类后的风控 / 限流 / 超时 / 网络原因）直接以 toast 错误提示，而不是笼统报「查询完成」。
 - **输出目录缺失**：读取 STRM 索引时若报「STRM 输出目录不存在 / 无效」，按空数据处理（`isStrmDirMissing`），海报墙显示「没有索引项目」，后台查询把该任务计 0 条，不记错误、不打断整轮。
@@ -707,7 +708,8 @@ web/src/composables/useBueiXxx.ts
 - **查询进度总数**：`Progress.total` 只统计真正要查询的条目（跳过项在装载阶段就被过滤掉，进 `Plan.Skip` 清单）；弹窗顶部「n/m」与面板顶部进度同源，跳过数不再计入 m。
 - **媒体库联动刷库**：工具栏在评分筛选右侧有媒体库选择器（`GET /libraries` 返回 Emby 全部媒体库 + 各任务绑定；`POST /library` 保存/解除，`library_id` 传空即解除）。查到评分并写入 NFO 的任务在整轮结束（或被停止）时触发其关联媒体库刷库——`embyproxy.RefreshLibraryDirect`（直接 `POST /Items/{LibraryId}/Refresh`，configID 留空用首个反代配置），每轮每库去重只刷一次；Emby 未配置或任务未关联时静默跳过。手动与每日自动查询都联动。
 - **自动查询日志**：每日自动任务（scope=all）整轮结束（含被停止、失败中断）落盘 config key `buei_douban_score_run_log`（`run_log.go`），按 STRM 任务记录**本轮真正查过的每个媒体项目**（`items`：名称 + `state` = success|failed + `detail`，失败时 `detail` 是 `DescribeLookupError` 归类后的具体原因），并保留「待查 / 成功 / 失败」统计与失败原因汇总；一个项目都没查的任务不出现；每次执行整体覆盖，只保留最近一次；面板头部「自动日志」按钮打开 `BueiDoubanRunLogModal.vue`：左侧是有执行项目的 STRM 任务列表（带成功/失败数），点任务后右侧逐条显示项目名称与结果，失败项用红色并显示原因；手动查询不记录（弹窗内已逐项可见）。
-- **手动编辑（卡片右下角齿轮）**：鼠标移到卡片上才出现的小齿轮按钮打开 `BueiDoubanOverrideModal.vue`，三项存在 `buei_douban_scores` 的 `manual_douban_id` / `manual_rating` / `no_auto`（迁移 `0043`，普通查询 Upsert 不覆盖这三列）：① 豆瓣 ID——输入框回填已匹配到的条目 ID（手动值优先），填写后查询评分直接读该条目详情（`lookupItem` → `subjectDetail`），不再按片名搜索，未刮削 TMDB 的作品也会因为它而允许查询；② 豆瓣评分——0–10、最多一位小数（后端 `SaveOverride` 四舍五入到一位并校验范围），展示与 NFO 都以手动评分为准，保存时直接写 NFO 并刷新该任务关联的 Emby 媒体库；③ 不再查询——`decideQuery` 直接跳过（「已设为不再自动查询」），手动卡片「查询 / 重查」（`force`）不受影响。手动设置了评分的作品同样不再自动查询（「已手动设置评分」）。接口 `POST /api/admin/buei/douban-score/override`。
+- **豆瓣 ID 是唯一可信 ID**：作品只有一个豆瓣 ID 字段（`buei_douban_scores.douban_id`），名称匹配得到的和用户在编辑弹窗填写的都是它，不再分开存。`lookupItem` 只要看到 ID 就 `subjectDetail` 直接读该条目的评分/年份/类型，不再重复按片名搜索（避免同名作品被换掉、省请求）；ID 为空才按片名 + 年份搜索。**按 ID 查不到时不做名称兜底**——如实记录失败（`status=error` + 具体原因，卡片/弹窗/toast/自动日志都能看到），由用户决定是否清空 ID 让它回退到名称匹配。开发日志会打印「豆瓣 ID …（直接查评分，不再按片名搜索）」。
+- **手动编辑（卡片右下角齿轮）**：鼠标移到卡片上才出现的小齿轮按钮打开 `BueiDoubanOverrideModal.vue`，字段为 `buei_douban_scores` 的 `douban_id` / `manual_rating` / `no_auto`（`manual_rating` / `no_auto` 来自迁移 `0043`，普通查询 Upsert 不覆盖这两列）：① 豆瓣 ID——输入框回填当前 `douban_id`（名称匹配得到的与手动填写的是同一个字段），保存后查询评分直接读该条目详情（`lookupItem` → `subjectDetail`），不再按片名搜索，未刮削 TMDB 的作品也会因为它而允许查询；清空后下次查询回到名称匹配；② 豆瓣评分——0–10、最多一位小数（后端 `SaveOverride` 四舍五入到一位并校验范围），展示与 NFO 都以手动评分为准，保存时直接写 NFO 并刷新该任务关联的 Emby 媒体库；③ 不再查询——`decideQuery` 直接跳过（「已设为不再自动查询」），手动卡片「查询 / 重查」（`force`）不受影响。手动设置了评分的作品同样不再自动查询（「已手动设置评分」）。这些覆盖项只影响自动查询与「立即查询」计划，卡片「查询 / 重查」（force）依旧直接查。接口 `POST /api/admin/buei/douban-score/override`。
 - **跳转入口**：卡片右上角依次是「豆瓣 ↗」与「TMDB ↗」两个同款按钮，分别按 `douban_id` / `tmdb_id` 打开豆瓣条目与 `themoviedb.org/tv|movie/{id}`，缺 ID 时不显示。
 - **3 个月冷静期**：上映/完结超过 3 个月（`settleMonths`）并且**成功查过一次**仍无评分的作品不再追查（`decideQuery` + `queriedWithoutRating`，`status` 为 `matched` / `not_found` 才算成功查过），避免每日 08:00 反复空查；**从没查过**（旧影片刚入库、评分行只有手动覆盖项）或**上次查询失败**（`status=error`，风控 / 限流 / 超时 / 网络）的仍继续查；日期未知的作品不受此限制（继续查）。
 

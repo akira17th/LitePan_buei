@@ -41,13 +41,13 @@ type BueiDoubanScore struct {
 	Status  string
 	Message string
 
-	// ManualDoubanID / ManualRating / NoAutoQuery 是手动编辑弹窗写入的覆盖项：
-	//   - ManualDoubanID 非空时，查询豆瓣评分直接用该条目，不再按片名搜索；
+	// ManualRating / NoAutoQuery 是手动编辑弹窗写入的覆盖项：
 	//   - ManualRating 非空时，界面展示与 NFO 都以它为准（不覆盖查询结果，只做显示覆盖）；
 	//   - NoAutoQuery 为 true 时，每日自动查询不再查它，手动「查询 / 重查」仍然有效。
-	ManualDoubanID string
-	ManualRating   *float64
-	NoAutoQuery    bool
+	// 注：豆瓣 ID 只有 DoubanID 一个字段——名称匹配得到的和用户在编辑弹窗填写的都是同一个可信 ID，
+	// 只要它非空，查询评分就直接读该条目，不再按片名搜索。
+	ManualRating *float64
+	NoAutoQuery  bool
 
 	// CheckedAt 是最近一次向豆瓣查询的时间。
 	CheckedAt time.Time
@@ -60,11 +60,12 @@ type BueiDoubanScoreCounts struct {
 	Scored int // 有豆瓣评分的项目数
 }
 
-// BueiDoubanScoreOverride 是手动编辑弹窗的三个覆盖项。
+// BueiDoubanScoreOverride 是手动编辑弹窗的三个字段。
+// DoubanID 写的就是作品唯一的豆瓣 ID 字段（与名称匹配得到的是同一个）。
 type BueiDoubanScoreOverride struct {
-	ManualDoubanID string
-	ManualRating   *float64
-	NoAutoQuery    bool
+	DoubanID     string
+	ManualRating *float64
+	NoAutoQuery  bool
 }
 
 // BueiDoubanScoreRepository 豆瓣评分仓储。

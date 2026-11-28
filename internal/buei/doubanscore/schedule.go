@@ -84,7 +84,7 @@ func decideQuery(score *domain.BueiDoubanScore, item strmscrape.Item, now time.T
 	}
 	manualID := ""
 	if score != nil {
-		manualID = strings.TrimSpace(score.ManualDoubanID)
+		manualID = strings.TrimSpace(score.DoubanID)
 	}
 	if strings.TrimSpace(item.TMDBID) == "" && manualID == "" {
 		return queryDecision{Query: false, Reason: "未刮削 TMDB，跳过"}

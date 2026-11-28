@@ -112,7 +112,7 @@ func (f *fakeScores) SaveOverride(_ context.Context, taskID int64, itemID string
 		sc = &domain.BueiDoubanScore{StrmTaskID: taskID, ItemID: itemID}
 		f.data[key] = sc
 	}
-	sc.ManualDoubanID = o.ManualDoubanID
+	sc.DoubanID = o.DoubanID
 	sc.ManualRating = o.ManualRating
 	sc.NoAutoQuery = o.NoAutoQuery
 	return nil

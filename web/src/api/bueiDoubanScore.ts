@@ -26,8 +26,7 @@ export interface BueiDoubanScoreView {
   query_title?: string;
   checked_at?: string;
   needs_query: boolean;
-  /** buei:douban-override —— 手动编辑的豆瓣 ID / 评分 / 不再自动查询。 */
-  manual_douban_id?: string;
+  /** buei:douban-override —— 手动编辑的手动评分 / 不再自动查询（豆瓣 ID 就是上面的 douban_id）。 */
   manual_rating?: number;
   no_auto_query: boolean;
 }

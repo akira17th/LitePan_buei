@@ -21,7 +21,7 @@ func (r *bueiDoubanScoreRepo) ListByTask(ctx context.Context, strmTaskID int64) 
 	rows, err := r.db.read.QueryContext(ctx, `
 SELECT strm_task_id, item_id, title, year, media_type, query_title, query_year,
        douban_id, douban_title, douban_year, rating, votes, is_tv, status, message,
-       manual_douban_id, manual_rating, no_auto,
+       manual_rating, no_auto,
        checked_at, updated_at
 FROM buei_douban_scores
 WHERE strm_task_id = ?
@@ -125,21 +125,22 @@ func (r *bueiDoubanScoreRepo) DeleteByTask(ctx context.Context, strmTaskID int64
 	return wrapDB(err)
 }
 
-// SaveOverride 只写三个手动覆盖列：已有记录保留查询结果，没有记录时新建一行。
+// SaveOverride 写手动编辑弹窗的三个字段：豆瓣 ID（作品唯一的 ID，与名称匹配共用）/
+// 手动评分 / 不再自动查询。已有记录保留查询结果（标题、评分等）。
 func (r *bueiDoubanScoreRepo) SaveOverride(ctx context.Context, strmTaskID int64, itemID string, o domain.BueiDoubanScoreOverride) error {
 	if strmTaskID <= 0 || itemID == "" {
 		return domain.Errorf(domain.CodeValidation, "豆瓣评分覆盖项缺少任务或项目 ID")
 	}
 	_, err := r.db.write.ExecContext(ctx, `
-INSERT INTO buei_douban_scores (strm_task_id, item_id, updated_at, manual_douban_id, manual_rating, no_auto)
+INSERT INTO buei_douban_scores (strm_task_id, item_id, updated_at, douban_id, manual_rating, no_auto)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(strm_task_id, item_id) DO UPDATE SET
-  manual_douban_id=excluded.manual_douban_id,
+  douban_id=excluded.douban_id,
   manual_rating=excluded.manual_rating,
   no_auto=excluded.no_auto,
   updated_at=excluded.updated_at`,
 		strmTaskID, itemID, tsValue(time.Now()),
-		o.ManualDoubanID, floatOrNull(o.ManualRating), boolToInt(o.NoAutoQuery))
+		o.DoubanID, floatOrNull(o.ManualRating), boolToInt(o.NoAutoQuery))
 	return wrapDB(err)
 }
 
@@ -163,7 +164,7 @@ func scanBueiDoubanScore(row bueiDoubanScoreScanner) (*domain.BueiDoubanScore, e
 	if err := row.Scan(
 		&s.StrmTaskID, &s.ItemID, &s.Title, &year, &s.MediaType, &s.QueryTitle, &queryYear,
 		&s.DoubanID, &s.DoubanTitle, &doubanYr, &rating, &s.Votes, &isTV, &s.Status, &s.Message,
-		&s.ManualDoubanID, &manualRate, &noAuto,
+		&manualRate, &noAuto,
 		&checkedAt, &updatedAt,
 	); err != nil {
 		return nil, wrapDB(err)
